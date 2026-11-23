@@ -726,3 +726,21 @@ export const rebaseOnto = (
 /** Leaves out the commit a rebase or a cherry-pick is stuck on. */
 export const skipOperation = (repoId: string) =>
   gitInvoke<WorkingStatus>("skip_operation", { repoId });
+
+// ---------- keeping status fast ----------
+
+export interface StatusHint {
+  /** How long the last `git status` took. */
+  lastMs: number;
+  /** git's untracked cache is already on. */
+  untrackedCache: boolean;
+  /** Slow, and the untracked cache would help: offer to switch it on. */
+  canSpeedUp: boolean;
+}
+
+export const getStatusHint = (repoId: string) =>
+  gitInvoke<StatusHint>("get_status_hint", { repoId });
+
+/** Switches on git's untracked cache for this repository (a change to its configuration). */
+export const speedUpStatus = (repoId: string) =>
+  gitInvoke<StatusHint>("speed_up_status", { repoId });

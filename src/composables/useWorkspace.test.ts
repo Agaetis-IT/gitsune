@@ -227,6 +227,8 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
       after: "a".repeat(40),
     }),
     skipOperation: async () => cleanStatus(),
+    statusHint: async () => ({ lastMs: 20, untrackedCache: false, canSpeedUp: false }),
+    speedUpStatus: async () => ({ lastMs: 10, untrackedCache: true, canSpeedUp: false }),
     remotes: async () => ["origin"],
     fetch: async () => ({ status: cleanStatus(), summary: "" }),
     pull: async () => ({ status: cleanStatus(), summary: "Already up to date." }),
@@ -1548,7 +1550,8 @@ describe("checkout", () => {
     });
     await workspace.checkout(tab, { kind: "branch", name: "other" });
     expect(tab.dialog).toBeNull();
-    expect(lastOf(workspace.notices.value)?.text).toBe("index.lock exists");
+    expect(lastOf(workspace.notices.value)?.text).toContain("lock file");
+    expect(lastOf(workspace.notices.value)?.action?.label).toBe("Try again");
   });
 
   it("refuses in read-only mode without asking the backend", async () => {
@@ -1717,7 +1720,7 @@ describe("fetch, pull and push", () => {
     });
 
     const running = workspace.fetchRemote(tab);
-    expect(tab.remote?.kind).toBe("fetch");
+    await vi.waitFor(() => expect(tab.remote?.kind).toBe("fetch"));
     expect(tab.busy).toBe(false);
     const opId = tab.remote?.id ?? "";
     progress?.({ repoId: "/fake/a", opId, line: "Receiving objects:  45% (45/100)" });
@@ -1749,6 +1752,7 @@ describe("fetch, pull and push", () => {
     const push = vi.fn(async () => result());
     const { workspace, tab } = await openWorktree(cleanStatus(), { fetch, push });
     const first = workspace.fetchRemote(tab);
+    await vi.waitFor(() => expect(tab.remote?.kind).toBe("fetch"));
     await workspace.push(tab);
     expect(push).not.toHaveBeenCalled();
     release?.();
@@ -1942,10 +1946,8 @@ describe("fetch, pull and push", () => {
       },
     });
     await workspace.fetchRemote(tab);
-    expect(lastOf(workspace.notices.value)).toMatchObject({
-      kind: "error",
-      text: "Authentication failed",
-    });
+    expect(lastOf(workspace.notices.value)?.kind).toBe("error");
+    expect(lastOf(workspace.notices.value)?.text).toContain("Authentication failed");
     expect(tab.remote).toBeNull();
   });
 });
@@ -2415,5 +2417,98 @@ describe("rebase", () => {
     await workspace.skipOperation(tab);
     expect(rebase).not.toHaveBeenCalled();
     expect(skipOperation).not.toHaveBeenCalled();
+  });
+});
+
+describe("polish: slow status, locks, network errors, empty remotes", () => {
+  it("offers once to speed up a slow status, and turns the cache on when asked", async () => {
+    const statusHint = vi.fn(async () => ({
+      lastMs: 900,
+      untrackedCache: false,
+      canSpeedUp: true,
+    }));
+    const speedUpStatus = vi.fn(async () => ({
+      lastMs: 200,
+      untrackedCache: true,
+      canSpeedUp: false,
+    }));
+    const { workspace, tab } = await openWorktree(cleanStatus(), { statusHint, speedUpStatus });
+    await vi.waitFor(() =>
+      expect(workspace.notices.value.some((n) => n.action?.label === "Turn it on")).toBe(true),
+    );
+    const offer = workspace.notices.value.find((n) => n.action?.label === "Turn it on");
+    expect(offer?.text).toContain("0.9 s");
+    expect(offer?.text).toContain("core.untrackedCache");
+
+    await workspace.refreshStatus(tab);
+    await workspace.refreshStatus(tab);
+    expect(workspace.notices.value.filter((n) => n.action?.label === "Turn it on")).toHaveLength(1);
+
+    await offer?.action?.run();
+    expect(speedUpStatus).toHaveBeenCalledWith("/fake/a");
+    expect(lastOf(workspace.notices.value)?.text).toContain("0.2 s");
+  });
+
+  it("a fast status is never mentioned, and the check stops after a few reads", async () => {
+    const statusHint = vi.fn(async () => ({
+      lastMs: 30,
+      untrackedCache: false,
+      canSpeedUp: false,
+    }));
+    const { workspace, tab } = await openWorktree(cleanStatus(), { statusHint });
+    for (let i = 0; i < 6; i++) await workspace.refreshStatus(tab);
+    await vi.waitFor(() => expect(statusHint).toHaveBeenCalled());
+    expect(statusHint.mock.calls.length).toBeLessThanOrEqual(3);
+    expect(workspace.notices.value.some((n) => n.action?.label === "Turn it on")).toBe(false);
+  });
+
+  it("a lock held by another git process is explained, never removed, and can be retried", async () => {
+    let locked = true;
+    const stage = vi.fn(async () => {
+      if (locked) throw new GitCommandError("locked", "Unable to create index.lock: File exists");
+      return cleanStatus();
+    });
+    const { workspace, tab } = await openWorktree(dirty(), { stage });
+    await workspace.stage(tab, ["a.ts"]);
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toContain("lock file");
+    expect(notice?.text).toContain("never deletes");
+    expect(notice?.action?.label).toBe("Try again");
+    expect(tab.busy).toBe(false);
+
+    locked = false;
+    await notice?.action?.run();
+    await vi.waitFor(() => expect(stage).toHaveBeenCalledTimes(2));
+  });
+
+  it("explains an authentication failure and an unreachable remote in plain words", async () => {
+    const auth = await openWorktree(cleanStatus(), {
+      fetch: async () => {
+        throw new GitCommandError("authFailed", "Authentication failed for 'https://x'");
+      },
+    });
+    await auth.workspace.fetchRemote(auth.tab);
+    const text = lastOf(auth.workspace.notices.value)?.text ?? "";
+    expect(text).toContain("refused the credentials");
+    expect(text).toContain("Authentication failed for 'https://x'");
+
+    const down = await openWorktree(cleanStatus(), {
+      fetch: async () => {
+        throw new GitCommandError("unreachable", "Could not resolve host: x");
+      },
+    });
+    await down.workspace.fetchRemote(down.tab);
+    expect(lastOf(down.workspace.notices.value)?.text).toContain("Cannot reach the remote");
+  });
+
+  it("fetching in a repository with no remote says so instead of claiming nothing is new", async () => {
+    const fetch = vi.fn(async () => ({ status: cleanStatus(), summary: "" }));
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      fetch,
+      remotes: async () => [],
+    });
+    await workspace.fetchRemote(tab);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(lastOf(workspace.notices.value)?.text).toContain("no remote");
   });
 });

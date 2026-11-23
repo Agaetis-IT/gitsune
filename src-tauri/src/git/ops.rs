@@ -31,7 +31,8 @@ impl OpCtx<'_> {
 
     /// Current status of the working tree (a background read: not logged, no locks).
     pub fn status(&self) -> Result<WorkingStatus, GitError> {
-        read_status(&self.runner(), self.workdir)
+        self.stores
+            .exclusive_status(|| read_status(&self.runner(), self.workdir))
     }
 
     fn has_head(&self) -> Result<bool, GitError> {
