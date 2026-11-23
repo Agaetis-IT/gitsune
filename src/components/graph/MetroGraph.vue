@@ -13,13 +13,16 @@ const props = withDefaults(
     fetchPage: FetchPage;
     density?: Density;
     selected?: number | null;
+    /** Vertical scroll to restore when the graph is shown (in pixels). */
+    initialScrollTop?: number;
   }>(),
-  { density: "compact", selected: null },
+  { density: "compact", selected: null, initialScrollTop: 0 },
 );
 
 const emit = defineEmits<{
   "update:selected": [row: number | null];
   "update:density": [density: Density];
+  "update:scrollTop": [scrollTop: number];
   select: [row: GraphRow];
   error: [message: string];
 }>();
@@ -132,6 +135,7 @@ function onScroll() {
   if (!el) return;
   scrollTop = el.scrollTop;
   scrollLeft = el.scrollLeft;
+  emit("update:scrollTop", scrollTop);
   tooltip.value = null;
   loadVisible();
   scheduleDraw();
@@ -205,6 +209,15 @@ function scrollToRow(row: number) {
   }
 }
 
+/** Selects a row and scrolls it to the middle of the view. */
+function focusRow(row: number) {
+  const el = scroller.value;
+  if (!el || row < 0 || row >= props.meta.total) return;
+  const m = metrics.value;
+  el.scrollTop = Math.max(0, rowTop(row, m) - (el.clientHeight - m.rowH) / 2);
+  select(row);
+}
+
 function onKeydown(event: KeyboardEvent) {
   const total = props.meta.total;
   if (total === 0) return;
@@ -250,6 +263,10 @@ onMounted(() => {
     scheduleDraw();
   });
   resizeObserver.observe(el);
+  if (props.initialScrollTop > 0) {
+    el.scrollTop = props.initialScrollTop;
+    scrollTop = el.scrollTop;
+  }
   themeObserver = new MutationObserver(() => {
     theme = readTheme();
     scheduleDraw();
@@ -298,7 +315,7 @@ watch(
 
 watch(() => [props.selected, graphViewportW.value, textX.value], scheduleDraw);
 
-defineExpose({ scrollToRow });
+defineExpose({ scrollToRow, focusRow });
 
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 </script>

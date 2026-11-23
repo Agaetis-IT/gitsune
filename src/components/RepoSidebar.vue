@@ -1,0 +1,105 @@
+<script setup lang="ts">
+import { ChevronDown, ChevronRight, Cloud, Eye, EyeOff, GitBranch, Tag } from "@lucide/vue";
+import { computed, ref } from "vue";
+import type { RepoTab } from "@/composables/useWorkspace";
+import type { RefInfo, RefKind } from "@/lib/api";
+
+const props = defineProps<{ tab: RepoTab }>();
+const emit = defineEmits<{
+  toggleRef: [fullName: string];
+  toggleKind: [kind: RefKind];
+  jump: [row: number];
+}>();
+
+const GROUPS: Array<{ kind: RefKind; title: string; icon: typeof GitBranch }> = [
+  { kind: "local", title: "Local branches", icon: GitBranch },
+  { kind: "remote", title: "Remotes", icon: Cloud },
+  { kind: "tag", title: "Tags", icon: Tag },
+];
+
+const collapsed = ref<Record<RefKind, boolean>>({ local: false, remote: false, tag: true });
+
+/** Row of each visible ref, to jump to its commit. */
+const rowOf = computed(
+  () => new Map((props.tab.source?.meta.refs ?? []).map((ref) => [ref.fullName, ref.row])),
+);
+
+const groups = computed(() =>
+  GROUPS.map((group) => {
+    const refs = props.tab.refs.filter((ref) => ref.kind === group.kind);
+    const hidden = refs.filter((ref) => props.tab.hidden.has(ref.fullName)).length;
+    return { ...group, refs, hidden };
+  }),
+);
+
+function onRefClick(ref: RefInfo) {
+  const row = rowOf.value.get(ref.fullName);
+  if (row !== undefined) emit("jump", row);
+}
+</script>
+
+<template>
+  <nav class="flex h-full flex-col overflow-y-auto text-sm" aria-label="Branches and tags">
+    <section v-for="group in groups" :key="group.kind" class="border-b py-1">
+      <div class="flex items-center pr-1">
+        <button
+          class="hover:bg-accent flex flex-1 items-center gap-1.5 rounded px-2 py-1.5 text-left font-medium"
+          :aria-expanded="!collapsed[group.kind]"
+          @click="collapsed[group.kind] = !collapsed[group.kind]"
+        >
+          <component :is="collapsed[group.kind] ? ChevronRight : ChevronDown" class="size-3.5" />
+          <component :is="group.icon" class="text-muted-foreground size-3.5" />
+          {{ group.title }}
+          <span class="text-muted-foreground ml-auto text-xs font-normal">
+            {{ group.refs.length - group.hidden }}/{{ group.refs.length }}
+          </span>
+        </button>
+        <button
+          v-if="group.refs.length"
+          class="text-muted-foreground hover:bg-accent hover:text-foreground rounded p-1.5"
+          :title="group.hidden === group.refs.length ? 'Show all' : 'Hide all'"
+          :aria-label="`${group.hidden === group.refs.length ? 'Show' : 'Hide'} all ${group.title.toLowerCase()}`"
+          @click="emit('toggleKind', group.kind)"
+        >
+          <component :is="group.hidden === group.refs.length ? EyeOff : Eye" class="size-3.5" />
+        </button>
+      </div>
+
+      <ul v-if="!collapsed[group.kind] && group.refs.length" class="pb-1">
+        <li
+          v-for="reference in group.refs"
+          :key="reference.fullName"
+          class="hover:bg-accent group flex items-center rounded pr-1 pl-7"
+          :class="{ 'opacity-50': tab.hidden.has(reference.fullName) }"
+        >
+          <button
+            class="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left"
+            :class="{ 'cursor-default': !rowOf.has(reference.fullName) }"
+            :title="reference.fullName"
+            @click="onRefClick(reference)"
+          >
+            <span class="truncate" :class="{ 'font-semibold': reference.isHead }">{{
+              reference.name
+            }}</span>
+            <span
+              v-if="reference.isHead"
+              class="bg-primary text-primary-foreground rounded px-1 text-[10px] leading-4 font-semibold"
+            >
+              HEAD
+            </span>
+          </button>
+          <button
+            class="text-muted-foreground hover:text-foreground rounded p-1 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+            :class="{ 'opacity-100': tab.hidden.has(reference.fullName) }"
+            :title="tab.hidden.has(reference.fullName) ? 'Show in graph' : 'Hide from graph'"
+            :aria-label="`${tab.hidden.has(reference.fullName) ? 'Show' : 'Hide'} ${reference.name}`"
+            @click="emit('toggleRef', reference.fullName)"
+          >
+            <component :is="tab.hidden.has(reference.fullName) ? EyeOff : Eye" class="size-3.5" />
+          </button>
+        </li>
+      </ul>
+      <p v-else-if="!group.refs.length" class="text-muted-foreground px-7 py-1 text-xs">None</p>
+    </section>
+  </nav>
+</template>

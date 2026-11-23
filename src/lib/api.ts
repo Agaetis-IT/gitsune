@@ -51,12 +51,18 @@ export interface Edge {
   bend: Bend;
 }
 
+/** A ref that seeds the graph, with the row of the commit it points at. */
+export interface GraphRef extends RefInfo {
+  row: number;
+}
+
 export interface GraphMeta {
   /** Number of rows (commits). */
   total: number;
   maxCols: number;
   lanes: Lane[];
-  refs: RefInfo[];
+  /** Visible refs only (hidden refs are left out). */
+  refs: GraphRef[];
   loadMs: number;
   layoutMs: number;
 }
@@ -90,8 +96,12 @@ export const openRepo = (path: string) => invoke<RepoInfo>("open_repo", { path }
 export const closeRepo = (repoId: string) => invoke<void>("close_repo", { repoId });
 export const listRefs = (repoId: string) => invoke<RefInfo[]>("list_refs", { repoId });
 
-/** Reads and lays out the whole graph; call it before requesting pages. */
-export const getGraphMeta = (repoId: string) => invoke<GraphMeta>("get_graph_meta", { repoId });
+/**
+ * Reads and lays out the graph; call it before requesting pages. Commits only reachable
+ * from `hiddenRefs` (full ref names such as `refs/heads/main`) are left out.
+ */
+export const getGraphMeta = (repoId: string, hiddenRefs: string[] = []) =>
+  invoke<GraphMeta>("get_graph_meta", { repoId, hiddenRefs });
 
 export const getGraphPage = (repoId: string, cursor: number, limit: number) =>
   invoke<GraphPage>("get_graph_page", { repoId, cursor, limit });

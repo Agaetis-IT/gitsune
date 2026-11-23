@@ -78,6 +78,15 @@ Clean transit-map style, inspired by GitKraken but not copying it:
 - Theme: colors are read from the CSS variables of the app (`--background`, `--foreground`, `--muted-foreground`) and the 12-color palette has a light and a dark variant (`palette.ts`, must stay in sync with `PALETTE_SIZE` in Rust).
 - In a plain browser during development (no Tauri) the app shows a recorded graph of an invented 500-commit repository (`src/dev/graph-demo.json`, generated from the Rust backend; see `dump_graph_fixture` in `src-tauri/src/git/tests.rs`). It is excluded from production builds.
 
+### 4.2.3 App shell (M5)
+
+- Tabs per repository (middle-click or the cross closes), a `+` button opening the system folder picker (`tauri-plugin-dialog`), and a welcome screen with the 8 most recently opened repositories (kept in the webview's local storage, best effort).
+- A repository already open is activated instead of opened twice. Selection and scroll position are remembered per tab.
+- Left sidebar: local branches, remotes and tags in collapsible groups (tags start collapsed), a visible/total counter, an eye per ref and per group, a `HEAD` badge, and a click on a ref jumps to its commit. Hidden refs are dimmed.
+- Right panel: summary, full id (with copy), author, date, parents and refs of the selected commit. Changed files and diff come with M6.
+- The theme button cycles system, light and dark.
+- Application state lives in `src/composables/useWorkspace.ts`, built on a `RepoBackend` interface (`src/lib/backend.ts`) so it can be tested without Tauri; in a plain browser during development a recorded demo repository replaces the backend (hidden refs have no effect there).
+
 ### 4.3 Interactions (v1)
 - Scroll and select a commit (updates the right panel).
 - Hover a station: tooltip with hash, message, author, date.
@@ -112,6 +121,12 @@ Lane state (active lanes at the cursor) is kept in Rust per repository so that p
 - Every page is a slice of the same cached layout, so lanes and columns never change between pages. The cache is replaced by the next `get_graph_meta` call; incremental updates come with M8.
 - Types for the frontend live in `src/lib/api.ts`.
 - Measured on the 100,000-commit synthetic repository: full build 412 ms, meta 599 KiB (3,989 lanes, 1,199 refs), a 200-row page about 0.7 ms and 48 KiB, all 100 pages of 1,000 rows walked in 305 ms.
+
+### 5.2.2 Hidden refs (M5)
+
+- `get_graph_meta(repoId, hiddenRefs)` takes full ref names (`refs/heads/x`). The graph is built from the refs that are **not** hidden: commits only reachable from hidden refs disappear, and the layout is computed again. `meta.refs` lists the visible refs, each with the `row` of its commit (used by the sidebar to jump to a branch).
+- Opening an already open repository keeps its cached graph.
+- Per-ref and per-kind toggles in the sidebar both go through this call. Hiding by clicking a lane and highlighting stay in M7.
 
 ### 5.3 Live refresh
 A `notify` watcher on `.git` (HEAD, `refs/`, `packed-refs`) triggers an incremental update: only new commits and changed refs are recomputed, and the frontend receives a `repo-changed` event with the affected range. Events are debounced.

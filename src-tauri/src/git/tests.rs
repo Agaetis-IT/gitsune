@@ -1,5 +1,6 @@
 //! Tests on tiny throwaway repositories built with the git CLI (invented data only).
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 
@@ -206,7 +207,7 @@ fn linear_repo(commits: usize) -> TempDir {
 fn pages_are_slices_of_one_consistent_layout() {
     let tmp = merged_repo();
     let (repo, _) = open_repository(tmp.path()).unwrap();
-    let cache = build_graph_cache(&repo).unwrap();
+    let cache = build_graph_cache(&repo, &HashSet::new()).unwrap();
 
     let meta = graph_meta(&cache);
     assert_eq!(meta.total, 4);
@@ -261,7 +262,7 @@ fn pages_are_slices_of_one_consistent_layout() {
 fn cursor_walks_the_whole_graph_without_gaps_or_repeats() {
     let tmp = linear_repo(25);
     let (repo, _) = open_repository(tmp.path()).unwrap();
-    let cache = build_graph_cache(&repo).unwrap();
+    let cache = build_graph_cache(&repo, &HashSet::new()).unwrap();
 
     let mut cursor = Some(0);
     let mut rows = Vec::new();
@@ -283,7 +284,7 @@ fn cursor_walks_the_whole_graph_without_gaps_or_repeats() {
 fn page_bounds_are_clamped() {
     let tmp = linear_repo(3);
     let (repo, _) = open_repository(tmp.path()).unwrap();
-    let cache = build_graph_cache(&repo).unwrap();
+    let cache = build_graph_cache(&repo, &HashSet::new()).unwrap();
 
     // A zero limit still makes progress.
     assert_eq!(graph_page(&repo, &cache, 0, 0).unwrap().rows.len(), 1);
@@ -297,7 +298,7 @@ fn page_bounds_are_clamped() {
 fn page_serializes_with_camel_case_keys() {
     let tmp = merged_repo();
     let (repo, _) = open_repository(tmp.path()).unwrap();
-    let cache = build_graph_cache(&repo).unwrap();
+    let cache = build_graph_cache(&repo, &HashSet::new()).unwrap();
     let page = graph_page(&repo, &cache, 0, 1).unwrap();
 
     let json = serde_json::to_value(&page).unwrap();
@@ -327,7 +328,7 @@ fn paging_a_synthetic_repository() {
     let (repo, _) = open_repository(Path::new(&path)).unwrap();
 
     let started = Instant::now();
-    let cache = build_graph_cache(&repo).unwrap();
+    let cache = build_graph_cache(&repo, &HashSet::new()).unwrap();
     let build = started.elapsed();
     let meta = graph_meta(&cache);
     println!(
@@ -386,9 +387,82 @@ fn dump_graph_fixture() {
     let path = std::env::var("SYNTH_REPO").expect("set SYNTH_REPO");
     let out = std::env::var("FIXTURE_OUT").expect("set FIXTURE_OUT");
     let (repo, _) = open_repository(Path::new(&path)).unwrap();
-    let cache = build_graph_cache(&repo).unwrap();
+    let cache = build_graph_cache(&repo, &HashSet::new()).unwrap();
     let meta = graph_meta(&cache);
     let page = graph_page(&repo, &cache, 0, meta.total).unwrap();
     let json = serde_json::json!({ "meta": meta, "rows": page.rows });
     std::fs::write(&out, serde_json::to_string(&json).unwrap()).unwrap();
+}
+
+#[test]
+fn hidden_refs_drop_the_commits_only_they_reach() {
+    let tmp = merged_repo_with_unmerged_branch();
+    let (repo, _) = open_repository(tmp.path()).unwrap();
+
+    let all = build_graph_cache(&repo, &HashSet::new()).unwrap();
+    assert_eq!(graph_meta(&all).total, 3);
+
+    let hide =
+        |names: &[&str]| -> HashSet<String> { names.iter().map(|n| n.to_string()).collect() };
+    let without_wip = build_graph_cache(&repo, &hide(&["refs/heads/wip"])).unwrap();
+    let meta = graph_meta(&without_wip);
+    assert_eq!(meta.total, 2);
+    assert!(meta.refs.iter().all(|r| r.info.name != "wip"));
+
+    // Hiding a ref whose commit is also reachable from a visible ref keeps that commit.
+    let without_tag = build_graph_cache(&repo, &hide(&["refs/tags/v1"])).unwrap();
+    assert_eq!(graph_meta(&without_tag).total, 3);
+
+    // Hiding everything gives an empty graph, and an empty page.
+    let none = build_graph_cache(
+        &repo,
+        &hide(&["refs/heads/main", "refs/heads/wip", "refs/tags/v1"]),
+    )
+    .unwrap();
+    let meta = graph_meta(&none);
+    assert_eq!(
+        (meta.total, meta.refs.len(), meta.lanes.len(), meta.max_cols),
+        (0, 0, 0, 0)
+    );
+    let page = graph_page(&repo, &none, 0, 10).unwrap();
+    assert!(page.rows.is_empty() && page.next_cursor.is_none());
+}
+
+#[test]
+fn graph_refs_point_at_the_row_that_shows_them() {
+    let tmp = merged_repo_with_unmerged_branch();
+    let (repo, _) = open_repository(tmp.path()).unwrap();
+    let cache = build_graph_cache(&repo, &HashSet::new()).unwrap();
+    let meta = graph_meta(&cache);
+    let page = graph_page(&repo, &cache, 0, 100).unwrap();
+
+    assert_eq!(meta.refs.len(), 3);
+    for reference in &meta.refs {
+        let row = &page.rows[reference.row];
+        assert!(
+            row.refs
+                .iter()
+                .any(|r| r.full_name == reference.info.full_name)
+        );
+    }
+    let json = serde_json::to_value(&meta).unwrap();
+    assert!(json["refs"][0]["row"].as_u64().is_some());
+    assert!(
+        json["refs"][0].get("fullName").is_some(),
+        "RefInfo fields are flattened"
+    );
+}
+
+/// main: first -> second (tag v1); wip: first -> side (not merged).
+fn merged_repo_with_unmerged_branch() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    commit(dir, "first");
+    git(dir, &["checkout", "-q", "-b", "wip"]);
+    commit(dir, "side");
+    git(dir, &["checkout", "-q", "main"]);
+    commit(dir, "second");
+    git(dir, &["tag", "v1"]);
+    tmp
 }

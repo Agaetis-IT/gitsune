@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -24,7 +24,8 @@ const POISONED: &str = "repository registry poisoned";
 impl RepoRegistry {
     fn insert(&self, id: String, repo: ThreadSafeRepository) -> Result<(), String> {
         let mut repos = self.repos.lock().map_err(|_| POISONED.to_string())?;
-        repos.insert(id, OpenRepo { repo, graph: None });
+        // Opening an already open repository keeps its cached graph.
+        repos.entry(id).or_insert(OpenRepo { repo, graph: None });
         Ok(())
     }
 
@@ -44,13 +45,15 @@ impl RepoRegistry {
         Ok(())
     }
 
-    /// Returns the repository and its graph, building (or rebuilding) the graph if needed.
+    /// Returns the repository and its graph.
     ///
+    /// With `rebuild_hiding` the graph is built again without the given hidden refs;
+    /// otherwise the cached one is used (built with no hidden refs if there is none yet).
     /// The graph is built outside the lock so other repositories stay usable meanwhile.
     fn graph(
         &self,
         id: &str,
-        rebuild: bool,
+        rebuild_hiding: Option<&HashSet<String>>,
     ) -> Result<(ThreadSafeRepository, Arc<GraphCache>), String> {
         let (repo, cached) = {
             let repos = self.repos.lock().map_err(|_| POISONED.to_string())?;
@@ -59,10 +62,14 @@ impl RepoRegistry {
                 .ok_or_else(|| format!("repository not open: {id}"))?;
             (open.repo.clone(), open.graph.clone())
         };
-        if let (false, Some(graph)) = (rebuild, cached) {
-            return Ok((repo, graph));
+        if let (None, Some(graph)) = (rebuild_hiding, &cached) {
+            return Ok((repo, graph.clone()));
         }
-        let graph = Arc::new(git::build_graph_cache(&repo)?);
+        let none = HashSet::new();
+        let graph = Arc::new(git::build_graph_cache(
+            &repo,
+            rebuild_hiding.unwrap_or(&none),
+        )?);
         let mut repos = self.repos.lock().map_err(|_| POISONED.to_string())?;
         if let Some(open) = repos.get_mut(id) {
             open.graph = Some(graph.clone());
@@ -88,14 +95,18 @@ pub fn list_refs(repo_id: String, registry: State<RepoRegistry>) -> Result<Vec<R
     git::list_refs(&registry.get(&repo_id)?)
 }
 
-/// Reads and lays out the whole graph (replacing any previous layout) and returns
-/// what the frontend needs before requesting pages: totals, lanes and refs.
+/// Reads and lays out the graph (replacing any previous layout) and returns what the
+/// frontend needs before requesting pages: totals, lanes and refs.
+///
+/// `hidden_refs` are full ref names whose commits are left out of the graph.
 #[tauri::command]
 pub async fn get_graph_meta(
     repo_id: String,
+    hidden_refs: Vec<String>,
     registry: State<'_, RepoRegistry>,
 ) -> Result<GraphMeta, String> {
-    let (_, graph) = registry.graph(&repo_id, true)?;
+    let hidden: HashSet<String> = hidden_refs.into_iter().collect();
+    let (_, graph) = registry.graph(&repo_id, Some(&hidden))?;
     Ok(git::graph_meta(&graph))
 }
 
@@ -107,6 +118,6 @@ pub async fn get_graph_page(
     limit: usize,
     registry: State<'_, RepoRegistry>,
 ) -> Result<GraphPage, String> {
-    let (repo, graph) = registry.graph(&repo_id, false)?;
+    let (repo, graph) = registry.graph(&repo_id, None)?;
     git::graph_page(&repo, &graph, cursor, limit)
 }
