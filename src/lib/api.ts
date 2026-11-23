@@ -54,6 +54,8 @@ export interface Edge {
 /** A ref that seeds the graph, with the row of the commit it points at. */
 export interface GraphRef extends RefInfo {
   row: number;
+  /** Lane of that commit, to highlight the branch. */
+  lane: number;
 }
 
 export interface GraphMeta {
@@ -186,3 +188,20 @@ export const getFileDiff = (
   oldPath: string | null,
   force: boolean,
 ) => invoke<FileDiff>("get_file_diff", { repoId, id, path, oldPath, force });
+
+export interface SearchResult {
+  /** Matching rows, newest first, at most the requested limit. */
+  rows: number[];
+  /** Number of matching commits (can exceed `rows.length`). */
+  total: number;
+}
+
+/** Most rows a search returns. */
+export const MAX_SEARCH_RESULTS = 2000;
+
+/**
+ * Commits whose message or author contains every word of `query` (case-insensitive), or
+ * whose id starts with it. Searches the commits of the current graph.
+ */
+export const searchCommits = (repoId: string, query: string, limit: number) =>
+  invoke<SearchResult>("search_commits", { repoId, query, limit });

@@ -136,6 +136,13 @@ Lane state (active lanes at the cursor) is kept in Rust per repository so that p
 - The frontend shows the diff **in place of the graph** (the graph stays underneath with its scroll and selection; Escape or the Graph button comes back), in unified or side-by-side layout (long lines wrap in the latter). Lines are highlighted one by one with highlight.js, loading each language the first time it is needed; diffs over 3,000 lines are shown without highlighting. Unified and side-by-side rows are plain DOM tables, not virtualised: 5,000 lines is the practical ceiling.
 - Selecting another commit clears the details and closes the open diff.
 
+### 5.4.1 Search, highlight and branch hiding (M7)
+
+- `search_commits(repoId, query, limit)` returns `{ rows, total }`: the rows (newest first, at most 2,000) of the **current graph** whose message (first 2,000 bytes, so the body too) or author contains **every** whitespace-separated word of the query, case-insensitively, or whose id starts with it. Because it searches the current graph, hidden refs are naturally excluded. The index (lowercased message, author and id of every commit) is built from the commits the first time a search is made and kept with the graph. On the 100,000-commit synthetic repository: index 273 ms once, then 3 to 5 ms per query.
+- The search bar (top of the graph, Ctrl/Cmd+F) searches 200 ms after typing, jumps to the first match (centered and selected), tints every match row, shows `n of total`, and Enter / Shift+Enter or the arrows step through the matches (wrapping). Esc clears. The same words are searched again when the graph is rebuilt, without jumping.
+- **Highlight**: a lane is drawn in full while the other lanes, their stations and the text of their commits fade. Clicking a lane line (not a station) opens a small menu with *Highlight this branch* and *Hide this branch*; the sidebar has a highlight button on each ref (refs now carry the `lane` of their commit), and a chip above the graph removes the highlight. Only lanes are highlighted, not the history below their fork point.
+- **Hide**: hiding the branch of a lane hides its local branch **and** its remote-tracking branches (`main`, `origin/main`, ...) through the same hidden-refs mechanism as the sidebar. Lanes that are not named after a ref (merged branches whose ref is gone) can only be highlighted.
+
 ### 5.3 Live refresh
 A `notify` watcher on `.git` (HEAD, `refs/`, `packed-refs`) triggers an incremental update: only new commits and changed refs are recomputed, and the frontend receives a `repo-changed` event with the affected range. Events are debounced.
 

@@ -7,6 +7,8 @@ import {
   type FileChange,
   type FileDiff,
   getGraphPage,
+  searchCommits,
+  type SearchResult,
   type GraphMeta,
   type GraphPage,
   listRefs,
@@ -32,6 +34,8 @@ export interface RepoBackend {
   graph(repoId: string, hiddenRefs: string[]): Promise<GraphSource>;
   /** Message and changed files of a commit. */
   commitDetail(repoId: string, commitId: string): Promise<CommitDetail>;
+  /** Rows of the current graph matching `query` (see `searchCommits`). */
+  search(repoId: string, query: string, limit: number): Promise<SearchResult>;
   /** Diff of one file of a commit; `force` allows files over the automatic size limit. */
   fileDiff(repoId: string, commitId: string, file: FileChange, force: boolean): Promise<FileDiff>;
 }
@@ -53,6 +57,7 @@ export const tauriBackend: RepoBackend = {
     return { meta, fetchPage: (cursor, limit) => getGraphPage(repoId, cursor, limit) };
   },
   commitDetail: getCommitDetail,
+  search: searchCommits,
   fileDiff: (repoId, commitId, file, force) =>
     getFileDiff(repoId, commitId, file.path, file.oldPath, force),
 };

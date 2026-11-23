@@ -7,6 +7,7 @@ import type {
   GraphRow,
   RefInfo,
   RepoInfo,
+  SearchResult,
 } from "@/lib/api";
 import type { GraphSource, RepoBackend } from "@/lib/backend";
 import { createRecentStore } from "@/lib/recents";
@@ -94,6 +95,14 @@ const commitRow = (row: number): GraphRow => ({
   refs: [],
 });
 
+/** Fake search: the query `n` matches rows 1..n, anything else matches nothing. */
+const searchFor = (query: string): SearchResult => {
+  const n = Number(query);
+  const rows =
+    Number.isInteger(n) && n > 0 ? Array.from({ length: n }, (_, i) => (i + 1) * 10) : [];
+  return { rows, total: rows.length };
+};
+
 const lastOf = <T>(items: T[]): T | undefined => items[items.length - 1];
 
 function fakeBackend(overrides: Partial<RepoBackend> = {}) {
@@ -103,6 +112,7 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
     open: async (path) => ({ info: infoFor(path), refs: REFS }),
     close: vi.fn(async () => {}),
     commitDetail: async (_repoId, id) => detailFor(id),
+    search: async (_repoId, query) => searchFor(query),
     fileDiff: async (_repoId, id, file, force) => diffFor(id, file, force),
     graph: async (id, hidden) => {
       graphCalls.push({ id, hidden });
@@ -424,5 +434,145 @@ describe("commit details and open file", () => {
     expect(tab.selected).toBeNull();
     expect(tab.detail).toBeNull();
     expect(tab.openFile).toBeNull();
+  });
+});
+
+describe("search", () => {
+  it("stores the matches and starts on the first one", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+
+    await workspace.search(tab, "3");
+    expect(tab.search.rows).toEqual([10, 20, 30]);
+    expect(tab.search.total).toBe(3);
+    expect(tab.search.current).toBe(0);
+    expect(tab.search.loading).toBe(false);
+    expect(tab.search.query).toBe("3");
+  });
+
+  it("steps through the matches in both directions and wraps around", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+    await workspace.search(tab, "3");
+
+    expect(workspace.stepMatch(tab, 1)).toBe(20);
+    expect(workspace.stepMatch(tab, 1)).toBe(30);
+    expect(workspace.stepMatch(tab, 1)).toBe(10);
+    expect(workspace.stepMatch(tab, -1)).toBe(30);
+    expect(tab.search.current).toBe(2);
+  });
+
+  it("has nothing to step through without matches", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+    await workspace.search(tab, "no match");
+    expect(tab.search.rows).toEqual([]);
+    expect(tab.search.current).toBe(-1);
+    expect(workspace.stepMatch(tab, 1)).toBeNull();
+  });
+
+  it("clears the results for a blank query and with clearSearch", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+    await workspace.search(tab, "2");
+    await workspace.search(tab, "   ");
+    expect(tab.search.rows).toEqual([]);
+    expect(tab.search.query).toBe("");
+
+    await workspace.search(tab, "2");
+    workspace.clearSearch(tab);
+    expect(tab.search.rows).toEqual([]);
+    expect(tab.search.query).toBe("");
+  });
+
+  it("ignores an answer that arrives after a newer search", async () => {
+    const answers: Array<() => void> = [];
+    const { workspace } = setup({
+      search: (_repoId, query) =>
+        new Promise((resolve) => answers.push(() => resolve(searchFor(query)))),
+    });
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+
+    const first = workspace.search(tab, "1");
+    const second = workspace.search(tab, "2");
+    answers[1](); // the newest answers first
+    answers[0](); // the stale one must not overwrite it
+    await Promise.all([first, second]);
+    expect(tab.search.rows).toEqual([10, 20]);
+    expect(tab.search.query).toBe("2");
+
+    // Clearing while a search is running also drops its answer.
+    const pending = workspace.search(tab, "3");
+    workspace.clearSearch(tab);
+    answers[2]();
+    await pending;
+    expect(tab.search.rows).toEqual([]);
+  });
+
+  it("reports a failed search", async () => {
+    const { workspace } = setup({
+      search: async () => {
+        throw new Error("index unavailable");
+      },
+    });
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+    await workspace.search(tab, "x");
+    expect(tab.search.error).toBe("index unavailable");
+    expect(tab.search.loading).toBe(false);
+    expect(tab.search.rows).toEqual([]);
+  });
+
+  it("runs the same words again when the graph is rebuilt", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+    await workspace.search(tab, "2");
+    tab.highlightLane = 4;
+
+    await workspace.toggleRef(tab, "refs/heads/feature/x");
+    expect(tab.highlightLane).toBeNull(); // lane ids changed
+    await vi.waitFor(() => expect(tab.search.rows).toEqual([10, 20]));
+    expect(tab.search.query).toBe("2");
+  });
+});
+
+describe("highlight and branch hiding", () => {
+  it("toggles the highlighted lane and clears it", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+
+    workspace.toggleHighlight(tab, 3);
+    expect(tab.highlightLane).toBe(3);
+    workspace.toggleHighlight(tab, 5);
+    expect(tab.highlightLane).toBe(5);
+    workspace.toggleHighlight(tab, 5);
+    expect(tab.highlightLane).toBeNull();
+    workspace.toggleHighlight(tab, 1);
+    workspace.clearHighlight(tab);
+    expect(tab.highlightLane).toBeNull();
+  });
+
+  it("hides the local and remote refs of a branch, and nothing for an unknown lane", async () => {
+    const { workspace, graphCalls } = setup();
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+
+    await workspace.hideBranch(tab, "origin/main");
+    expect([...tab.hidden].sort()).toEqual(["refs/heads/main", "refs/remotes/origin/main"]);
+    expect(lastOf(graphCalls)?.hidden.sort()).toEqual([
+      "refs/heads/main",
+      "refs/remotes/origin/main",
+    ]);
+
+    const calls = graphCalls.length;
+    await workspace.hideBranch(tab, "no such lane");
+    expect(graphCalls).toHaveLength(calls);
   });
 });

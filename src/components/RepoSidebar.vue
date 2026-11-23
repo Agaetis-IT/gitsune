@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronDown, ChevronRight, Cloud, Eye, EyeOff, GitBranch, Tag } from "@lucide/vue";
+import { ChevronDown, ChevronRight, Cloud, Eye, EyeOff, Focus, GitBranch, Tag } from "@lucide/vue";
 import { computed, ref } from "vue";
 import type { RepoTab } from "@/composables/useWorkspace";
 import type { RefInfo, RefKind } from "@/lib/api";
@@ -8,6 +8,7 @@ const props = defineProps<{ tab: RepoTab }>();
 const emit = defineEmits<{
   toggleRef: [fullName: string];
   toggleKind: [kind: RefKind];
+  toggleHighlight: [lane: number];
   jump: [row: number];
 }>();
 
@@ -18,6 +19,11 @@ const GROUPS: Array<{ kind: RefKind; title: string; icon: typeof GitBranch }> = 
 ];
 
 const collapsed = ref<Record<RefKind, boolean>>({ local: false, remote: false, tag: true });
+
+/** Lane of each visible ref, to highlight its branch. */
+const laneOf = computed(
+  () => new Map((props.tab.source?.meta.refs ?? []).map((ref) => [ref.fullName, ref.lane])),
+);
 
 /** Row of each visible ref, to jump to its commit. */
 const rowOf = computed(
@@ -87,6 +93,23 @@ function onRefClick(ref: RefInfo) {
             >
               HEAD
             </span>
+          </button>
+          <button
+            v-if="laneOf.has(reference.fullName)"
+            class="text-muted-foreground hover:text-foreground rounded p-1 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+            :class="{
+              'text-foreground opacity-100': tab.highlightLane === laneOf.get(reference.fullName),
+            }"
+            :title="
+              tab.highlightLane === laneOf.get(reference.fullName)
+                ? 'Remove the highlight'
+                : 'Highlight this branch'
+            "
+            :aria-label="`Highlight ${reference.name}`"
+            :aria-pressed="tab.highlightLane === laneOf.get(reference.fullName)"
+            @click="emit('toggleHighlight', laneOf.get(reference.fullName)!)"
+          >
+            <Focus class="size-3.5" />
           </button>
           <button
             class="text-muted-foreground hover:text-foreground rounded p-1 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"

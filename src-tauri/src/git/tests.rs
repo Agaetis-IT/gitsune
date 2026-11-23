@@ -454,7 +454,7 @@ fn graph_refs_point_at_the_row_that_shows_them() {
 }
 
 /// main: first -> second (tag v1); wip: first -> side (not merged).
-fn merged_repo_with_unmerged_branch() -> TempDir {
+pub(super) fn merged_repo_with_unmerged_branch() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     git(dir, &["init", "-q", "-b", "main"]);

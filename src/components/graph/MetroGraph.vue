@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { GraphMeta, GraphRow } from "@/lib/api";
+import type { GraphMeta, GraphRow, Lane } from "@/lib/api";
 import { draw, type Theme } from "@/lib/metro/draw";
-import { isOnStation, rowAtY } from "@/lib/metro/geometry";
+import { isOnStation, laneAt, rowAtY } from "@/lib/metro/geometry";
 import { type Density, graphContentWidth, METRICS, rowTop } from "@/lib/metro/metrics";
 import { DARK_PALETTE, LIGHT_PALETTE } from "@/lib/metro/palette";
 import { type FetchPage, RowCache } from "@/lib/metro/rowCache";
@@ -15,8 +15,18 @@ const props = withDefaults(
     selected?: number | null;
     /** Vertical scroll to restore when the graph is shown (in pixels). */
     initialScrollTop?: number;
+    /** Lane drawn in full while the others fade. */
+    highlightLane?: number | null;
+    /** Rows matching the current search, tinted. */
+    matches?: readonly number[];
   }>(),
-  { density: "compact", selected: null, initialScrollTop: 0 },
+  {
+    density: "compact",
+    selected: null,
+    initialScrollTop: 0,
+    highlightLane: null,
+    matches: () => [],
+  },
 );
 
 const emit = defineEmits<{
@@ -24,6 +34,8 @@ const emit = defineEmits<{
   "update:density": [density: Density];
   "update:scrollTop": [scrollTop: number];
   select: [row: GraphRow];
+  /** A lane line was clicked (position relative to this component); `null` for any other click. */
+  laneClick: [target: { lane: Lane; x: number; y: number } | null];
   error: [message: string];
 }>();
 
@@ -35,6 +47,7 @@ const hoverRow = ref<number | null>(null);
 const tooltip = ref<{ row: GraphRow; x: number; y: number } | null>(null);
 
 const metrics = computed(() => METRICS[props.density]);
+const matchSet = computed(() => new Set(props.matches));
 const contentH = computed(() => props.meta.total * metrics.value.rowH);
 const graphContentW = computed(() => graphContentWidth(props.meta.maxCols, metrics.value));
 // The lane area takes at most ~45% of the width and scrolls sideways on its own.
@@ -127,6 +140,8 @@ function render() {
     getRow: (row) => cache.getRow(row),
     selectedRow: props.selected,
     hoverRow: hoverRow.value,
+    highlightLane: props.highlightLane,
+    matchRows: matchSet.value,
   });
 }
 
@@ -165,6 +180,13 @@ function onPointerMove(event: PointerEvent) {
     }
   }
   tooltip.value = next;
+  if (scroller.value) {
+    const onLane =
+      next === null &&
+      point.x < graphViewportW.value &&
+      laneAt(point.x + scrollLeft, point.y + scrollTop, props.meta.lanes, m) !== null;
+    scroller.value.style.cursor = onLane ? "pointer" : "";
+  }
   if (row !== hoverRow.value) {
     hoverRow.value = row;
     scheduleDraw();
@@ -194,7 +216,25 @@ function select(row: number | null) {
 function onClick(event: MouseEvent) {
   const point = pointerPosition(event);
   if (!point) return;
-  const row = rowAtY(point.y + scrollTop, props.meta.total, metrics.value);
+  const m = metrics.value;
+  const row = rowAtY(point.y + scrollTop, props.meta.total, m);
+
+  // A click on a lane line (not on a station) offers actions on that lane.
+  if (point.x < graphViewportW.value) {
+    const data = row === null ? undefined : cache.getRow(row);
+    const onStation =
+      row !== null &&
+      data !== undefined &&
+      isOnStation(point.x + scrollLeft, point.y + scrollTop, row, data.col, m);
+    const lane = onStation
+      ? null
+      : laneAt(point.x + scrollLeft, point.y + scrollTop, props.meta.lanes, m);
+    if (lane) {
+      emit("laneClick", { lane, x: point.x, y: point.y });
+      return;
+    }
+  }
+  emit("laneClick", null);
   if (row !== null) select(row);
 }
 
@@ -313,7 +353,10 @@ watch(
   },
 );
 
-watch(() => [props.selected, graphViewportW.value, textX.value], scheduleDraw);
+watch(
+  () => [props.selected, props.highlightLane, props.matches, graphViewportW.value, textX.value],
+  scheduleDraw,
+);
 
 defineExpose({ scrollToRow, focusRow });
 

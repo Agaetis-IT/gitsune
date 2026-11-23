@@ -1,8 +1,42 @@
 import { computed, ref, shallowReactive, shallowRef } from "vue";
-import type { CommitDetail, FileChange, FileDiff, GraphRow, RefInfo, RefKind } from "@/lib/api";
+import {
+  type CommitDetail,
+  type FileChange,
+  type FileDiff,
+  type GraphRow,
+  MAX_SEARCH_RESULTS,
+  type RefInfo,
+  type RefKind,
+} from "@/lib/api";
+import { refsOfBranch } from "@/lib/branchRefs";
 import { type GraphSource, type RepoBackend } from "@/lib/backend";
 import type { Density } from "@/lib/metro/metrics";
 import { createRecentStore, type RecentRepo, type RecentStore } from "@/lib/recents";
+
+/** Result of the commit search of a tab. */
+export interface SearchState {
+  query: string;
+  /** Matching rows, newest first. */
+  rows: number[];
+  /** Number of matching commits (can exceed `rows.length`). */
+  total: number;
+  /** Index in `rows` of the current match, -1 when there is none. */
+  current: number;
+  loading: boolean;
+  error: string;
+  /** Incremented for each search so late answers can be ignored. */
+  request: number;
+}
+
+const emptySearch = (request: number): SearchState => ({
+  query: "",
+  rows: [],
+  total: 0,
+  current: -1,
+  loading: false,
+  error: "",
+  request,
+});
 
 /** One open repository. Only top-level properties are reactive (the graph data is large). */
 export interface RepoTab {
@@ -30,6 +64,9 @@ export interface RepoTab {
   detailRequest: number;
   /** File whose diff is shown in place of the graph. */
   openFile: FileChange | null;
+  /** Lane drawn in full while the others fade; `null` for no highlight. */
+  highlightLane: number | null;
+  search: SearchState;
 }
 
 export type DiffMode = "unified" | "split";
@@ -58,7 +95,10 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
       if (request !== tab.request) return;
       tab.source = source;
       clearSelection(tab);
+      tab.highlightLane = null;
       tab.scrollTop = 0;
+      // Rows changed: look for the same words in the new graph.
+      if (tab.search.query.trim()) void search(tab, tab.search.query);
     } catch (error) {
       if (request !== tab.request) return;
       tab.error = message(error);
@@ -98,6 +138,8 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
         detailError: "",
         detailRequest: 0,
         openFile: null,
+        highlightLane: null,
+        search: emptySearch(0),
       });
       tabs.value = [...tabs.value, tab];
       activeId.value = tab.id;
@@ -199,6 +241,60 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
     }
   }
 
+  /** Searches the commits of the tab's graph; results are kept in `tab.search`. */
+  async function search(tab: RepoTab, query: string): Promise<void> {
+    const request = tab.search.request + 1;
+    if (!query.trim()) {
+      tab.search = emptySearch(request);
+      return;
+    }
+    tab.search = { ...tab.search, query, loading: true, error: "", request };
+    try {
+      const result = await backend.search(tab.id, query, MAX_SEARCH_RESULTS);
+      if (request !== tab.search.request) return;
+      tab.search = {
+        query,
+        rows: result.rows,
+        total: result.total,
+        current: result.rows.length > 0 ? 0 : -1,
+        loading: false,
+        error: "",
+        request,
+      };
+    } catch (error) {
+      if (request !== tab.search.request) return;
+      tab.search = { ...emptySearch(request), query, error: message(error) };
+    }
+  }
+
+  /** Moves to the next (or previous) match; returns its row, `null` when there is none. */
+  function stepMatch(tab: RepoTab, delta: 1 | -1): number | null {
+    const { rows, current } = tab.search;
+    if (rows.length === 0) return null;
+    const next = current < 0 ? 0 : (current + delta + rows.length) % rows.length;
+    tab.search = { ...tab.search, current: next };
+    return rows[next];
+  }
+
+  const clearSearch = (tab: RepoTab): void => {
+    tab.search = emptySearch(tab.search.request + 1);
+  };
+
+  /** Highlights a lane, or removes the highlight if it is already the highlighted one. */
+  const toggleHighlight = (tab: RepoTab, lane: number): void => {
+    tab.highlightLane = tab.highlightLane === lane ? null : lane;
+  };
+
+  const clearHighlight = (tab: RepoTab): void => {
+    tab.highlightLane = null;
+  };
+
+  /** Hides the branch of a lane: its local branch and the remote-tracking ones. */
+  function hideBranch(tab: RepoTab, laneName: string): Promise<void> {
+    const names = refsOfBranch(tab.refs, laneName).map((ref) => ref.fullName);
+    return names.length > 0 ? setHidden(tab, names, true) : Promise.resolve();
+  }
+
   const openFile = (tab: RepoTab, file: FileChange | null): void => {
     tab.openFile = file;
   };
@@ -231,6 +327,12 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
     select,
     openFile,
     fileDiff,
+    search,
+    stepMatch,
+    clearSearch,
+    toggleHighlight,
+    clearHighlight,
+    hideBranch,
     forgetRecent,
   };
 }
