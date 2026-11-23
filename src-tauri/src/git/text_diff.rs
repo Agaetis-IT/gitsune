@@ -33,6 +33,9 @@ pub struct DiffLine {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hunk {
+    /// Identifies this hunk (its position and exact content): staging it again fails if the
+    /// file changed since it was shown.
+    pub id: String,
     pub old_start: u32,
     pub old_lines: u32,
     pub new_start: u32,
@@ -65,6 +68,18 @@ pub fn line_stats(old: &[u8], new: &[u8]) -> (u32, u32) {
 
 /// Diffs two texts. At most `max_lines` diff lines are produced.
 pub fn text_diff(old: &[u8], new: &[u8], max_lines: usize) -> TextDiff {
+    diff_with_raw(old, new, max_lines).0
+}
+
+/// The diff, plus for every hunk its lines as raw bytes (terminators included), which are
+/// needed to build a patch that git applies exactly.
+type RawHunk<'a> = Vec<(LineKind, &'a [u8])>;
+
+fn diff_with_raw<'a>(
+    old: &'a [u8],
+    new: &'a [u8],
+    max_lines: usize,
+) -> (TextDiff, Vec<RawHunk<'a>>) {
     let input = InternedInput::new(old, new);
     let mut diff = Diff::compute(Algorithm::Histogram, &input);
     diff.postprocess_lines(&input);
@@ -88,6 +103,7 @@ pub fn text_diff(old: &[u8], new: &[u8], max_lines: usize) -> TextDiff {
     }
 
     let mut hunks = Vec::new();
+    let mut raws: Vec<RawHunk> = Vec::new();
     let mut emitted = 0usize;
     let mut truncated = false;
     'groups: for group in groups {
@@ -99,15 +115,18 @@ pub fn text_diff(old: &[u8], new: &[u8], max_lines: usize) -> TextDiff {
         let (old_start, new_start) = (old_at, new_at);
 
         let mut lines = Vec::new();
-        let mut push = |kind: LineKind, old_idx: Option<u32>, new_idx: Option<u32>, raw: &[u8]| {
-            if emitted >= max_lines {
-                truncated = true;
-                return false;
-            }
-            emitted += 1;
-            lines.push(make_line(kind, old_idx, new_idx, raw));
-            true
-        };
+        let mut raw_lines: RawHunk = Vec::new();
+        let mut push =
+            |kind: LineKind, old_idx: Option<u32>, new_idx: Option<u32>, raw: &'a [u8]| {
+                if emitted >= max_lines {
+                    truncated = true;
+                    return false;
+                }
+                emitted += 1;
+                lines.push(make_line(kind, old_idx, new_idx, raw));
+                raw_lines.push((kind, raw));
+                true
+            };
 
         let mut stop = false;
         for (before, after) in group {
@@ -159,6 +178,7 @@ pub fn text_diff(old: &[u8], new: &[u8], max_lines: usize) -> TextDiff {
         let old_count = lines.iter().filter(|l| l.old_no.is_some()).count() as u32;
         let new_count = lines.iter().filter(|l| l.new_no.is_some()).count() as u32;
         hunks.push(Hunk {
+            id: String::new(),
             old_start: if old_count == 0 {
                 old_start
             } else {
@@ -179,17 +199,117 @@ pub fn text_diff(old: &[u8], new: &[u8], max_lines: usize) -> TextDiff {
             "@@ -{},{} +{},{} @@",
             hunk.old_start, hunk.old_lines, hunk.new_start, hunk.new_lines
         );
+        hunk.id = hunk_id(hunk, &raw_lines);
+        raws.push(raw_lines);
         if stop {
             break 'groups;
         }
     }
 
-    TextDiff {
+    let result = TextDiff {
         hunks,
         additions: diff.count_additions(),
         deletions: diff.count_removals(),
         truncated,
+    };
+    (result, raws)
+}
+
+/// FNV-1a over the position and the exact bytes of a hunk.
+fn hunk_id(hunk: &Hunk, raw: &RawHunk) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for number in [
+        hunk.old_start,
+        hunk.old_lines,
+        hunk.new_start,
+        hunk.new_lines,
+    ] {
+        feed(&number.to_le_bytes());
     }
+    for (kind, bytes) in raw {
+        feed(&[match kind {
+            LineKind::Context => b' ',
+            LineKind::Add => b'+',
+            LineKind::Delete => b'-',
+        }]);
+        feed(&(bytes.len() as u64).to_le_bytes());
+        feed(bytes);
+    }
+    format!("{hash:016x}")
+}
+
+/// A path as it must be written in the header of a patch: plain when it can be, otherwise
+/// C-quoted the way git does (spaces, quotes, backslashes, control and non-ASCII bytes).
+fn patch_path(prefix: &str, path: &str) -> Vec<u8> {
+    let full = format!("{prefix}/{path}");
+    if full
+        .bytes()
+        .all(|b| b > b' ' && b < 127 && b != b'"' && b != b'\\')
+    {
+        return full.into_bytes();
+    }
+    let mut out = vec![b'"'];
+    for byte in full.bytes() {
+        match byte {
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            0..=31 | 127..=255 => out.extend_from_slice(format!("\\{byte:03o}").as_bytes()),
+            _ => out.push(byte),
+        }
+    }
+    out.push(b'"');
+    out
+}
+
+/// The patch of one hunk of the change from `old` to `new`, ready for `git apply`.
+///
+/// `None` when no hunk has that id, which means the files are not what was displayed.
+pub fn hunk_patch(path: &str, old: &[u8], new: &[u8], hunk_id_wanted: &str) -> Option<Vec<u8>> {
+    let (diff, raws) = diff_with_raw(old, new, usize::MAX);
+    let at = diff.hunks.iter().position(|h| h.id == hunk_id_wanted)?;
+    let hunk = &diff.hunks[at];
+
+    let mut patch = Vec::new();
+    let a = patch_path("a", path);
+    let b = patch_path("b", path);
+    for (prefix, name) in [
+        (&b"diff --git "[..], None),
+        (&b"--- "[..], Some(&a)),
+        (&b"+++ "[..], Some(&b)),
+    ] {
+        patch.extend_from_slice(prefix);
+        match name {
+            Some(name) => patch.extend_from_slice(name),
+            None => {
+                patch.extend_from_slice(&a);
+                patch.push(b' ');
+                patch.extend_from_slice(&b);
+            }
+        }
+        patch.push(b'\n');
+    }
+    patch.extend_from_slice(hunk.header.as_bytes());
+    patch.push(b'\n');
+    for (kind, bytes) in &raws[at] {
+        patch.push(match kind {
+            LineKind::Context => b' ',
+            LineKind::Add => b'+',
+            LineKind::Delete => b'-',
+        });
+        patch.extend_from_slice(bytes);
+        if !bytes.ends_with(b"\n") {
+            patch.extend_from_slice(b"\n\\ No newline at end of file\n");
+        }
+    }
+    Some(patch)
 }
 
 fn make_line(kind: LineKind, old_no: Option<u32>, new_no: Option<u32>, raw: &[u8]) -> DiffLine {

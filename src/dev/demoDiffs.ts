@@ -10,7 +10,9 @@ import type {
 /** Invented commit contents so every state of the diff view can be seen without a backend. */
 
 /** Parses a snippet of unified diff (lines starting with ` `, `+` or `-`) into one hunk. */
-function hunk(oldStart: number, newStart: number, snippet: string): DiffHunk {
+let hunkCount = 0;
+
+export function hunk(oldStart: number, newStart: number, snippet: string): DiffHunk {
   const lines: DiffLine[] = [];
   let oldNo = oldStart;
   let newNo = newStart;
@@ -27,6 +29,7 @@ function hunk(oldStart: number, newStart: number, snippet: string): DiffHunk {
   const oldLines = lines.filter((l) => l.oldNo !== null).length;
   const newLines = lines.filter((l) => l.newNo !== null).length;
   return {
+    id: `demo-hunk-${++hunkCount}`,
     oldStart,
     oldLines,
     newStart,

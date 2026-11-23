@@ -13,6 +13,12 @@ const props = defineProps<{
   commitId: string;
   mode: DiffMode;
   load: (force: boolean) => Promise<FileDiff>;
+  /** Changes when the content may have changed: the diff is read again without being cleared. */
+  version?: number;
+  /** A button in the header of each hunk (stage or unstage it). */
+  hunkAction?: { label: string; run: (hunkId: string) => void; disabled?: boolean } | null;
+  /** Small label next to the path (e.g. "Staged changes"). */
+  heading?: string;
 }>();
 const emit = defineEmits<{ close: []; "update:mode": [mode: DiffMode] }>();
 
@@ -25,11 +31,11 @@ const error = ref("");
 const highlighter = shallowRef<LineHighlighter | null>(null);
 let request = 0;
 
-async function fetchDiff(force = false) {
+async function fetchDiff(force = false, silent = false) {
   const current = ++request;
   loading.value = true;
   error.value = "";
-  if (!force) diff.value = null;
+  if (!force && !silent) diff.value = null;
   try {
     const result = await props.load(force);
     if (current !== request) return;
@@ -51,6 +57,11 @@ watch(
   {
     immediate: true,
   },
+);
+
+watch(
+  () => props.version,
+  () => fetchDiff(false, true),
 );
 
 const html = (text: string): string =>
@@ -121,6 +132,7 @@ const marker = { add: "+", delete: "-", context: " " } as const;
           {{ file.path }}
         </p>
         <p class="text-muted-foreground text-xs">
+          <span v-if="heading" class="text-foreground font-medium">{{ heading }} · </span>
           {{ STATUS_LABEL[file.status] }}
           <template v-if="diff && !diff.binary && !diff.tooLarge">
             ·
@@ -180,7 +192,21 @@ const marker = { add: "+", delete: "-", context: " " } as const;
           <template v-for="hunk in diff.hunks" :key="hunk.header + hunk.oldStart + hunk.newStart">
             <tbody>
               <tr class="bg-muted/60 text-muted-foreground">
-                <td colspan="4" class="px-3 py-1">{{ hunk.header }}</td>
+                <td colspan="4" class="px-3 py-1">
+                  <div class="flex items-center gap-2">
+                    <span>{{ hunk.header }}</span>
+                    <Button
+                      v-if="hunkAction"
+                      size="sm"
+                      variant="outline"
+                      class="ml-auto h-5 px-2 text-[11px]"
+                      :disabled="hunkAction.disabled"
+                      @click="hunkAction.run(hunk.id)"
+                    >
+                      {{ hunkAction.label }}
+                    </Button>
+                  </div>
+                </td>
               </tr>
               <tr v-for="(line, index) in hunk.lines" :key="index" :class="lineClass[line.kind]">
                 <td
@@ -214,7 +240,21 @@ const marker = { add: "+", delete: "-", context: " " } as const;
           <template v-for="{ hunk, rows } in splitHunks" :key="hunk.header + hunk.oldStart">
             <tbody>
               <tr class="bg-muted/60 text-muted-foreground">
-                <td colspan="4" class="px-3 py-1">{{ hunk.header }}</td>
+                <td colspan="4" class="px-3 py-1">
+                  <div class="flex items-center gap-2">
+                    <span>{{ hunk.header }}</span>
+                    <Button
+                      v-if="hunkAction"
+                      size="sm"
+                      variant="outline"
+                      class="ml-auto h-5 px-2 text-[11px]"
+                      :disabled="hunkAction.disabled"
+                      @click="hunkAction.run(hunk.id)"
+                    >
+                      {{ hunkAction.label }}
+                    </Button>
+                  </div>
+                </td>
               </tr>
               <tr v-for="(row, index) in rows" :key="index">
                 <template v-for="side in ['left', 'right'] as const" :key="side">

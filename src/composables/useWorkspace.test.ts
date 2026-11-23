@@ -8,8 +8,12 @@ import type {
   RefInfo,
   RepoInfo,
   SearchResult,
+  StatusEntry,
+  WorkingStatus,
 } from "@/lib/api";
+import { GitCommandError } from "@/lib/api";
 import type { GraphSource, RepoBackend } from "@/lib/backend";
+import { createReadOnlyStore } from "@/lib/readOnly";
 import { createRecentStore } from "@/lib/recents";
 import { createWorkspace, describeOpenError } from "./useWorkspace";
 
@@ -103,6 +107,25 @@ const searchFor = (query: string): SearchResult => {
   return { rows, total: rows.length };
 };
 
+const cleanStatus = (): WorkingStatus => ({
+  branch: "main",
+  detached: false,
+  head: "c0",
+  upstream: null,
+  ahead: 0,
+  behind: 0,
+  staged: [],
+  unstaged: [],
+  conflicted: [],
+});
+
+const entry = (path: string, state: StatusEntry["state"] = "modified"): StatusEntry => ({
+  path,
+  oldPath: null,
+  state,
+  submodule: false,
+});
+
 const lastOf = <T>(items: T[]): T | undefined => items[items.length - 1];
 
 function fakeBackend(overrides: Partial<RepoBackend> = {}) {
@@ -111,6 +134,24 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
     pickFolder: async () => null,
     open: async (path) => ({ info: infoFor(path), refs: REFS }),
     close: vi.fn(async () => {}),
+    status: async () => cleanStatus(),
+    workingDiff: async () => diffFor("wip", FILE, false),
+    stage: async () => cleanStatus(),
+    unstage: async () => cleanStatus(),
+    stageHunk: async () => cleanStatus(),
+    unstageHunk: async () => cleanStatus(),
+    discard: async () => ({ snapshot: null, status: cleanStatus() }),
+    snapshots: async () => [],
+    restoreSnapshot: async () => ({ snapshot: null, status: cleanStatus() }),
+    commit: async () => ({ id: "f".repeat(40), before: "c0", status: cleanStatus() }),
+    undoCommit: async () => cleanStatus(),
+    identity: async () => ({ name: null, email: null }),
+    setIdentity: async (_repoId, name, email) => ({ name, email }),
+    setReadOnly: async () => {},
+    activity: async () => [],
+    clearActivity: async () => {},
+    onWorktreeChanged: async () => () => {},
+    onActivityChanged: async () => () => {},
     commitDetail: async (_repoId, id) => detailFor(id),
     refs: async () => REFS,
     locate: async (_repoId, ids) => ids.map(() => null),
@@ -897,5 +938,434 @@ describe("error and empty states", () => {
     await workspace.retry(tab);
     expect(tab.error).toBe("");
     expect(tab.source?.meta.total).toBe(10);
+  });
+});
+
+// ---------- working tree: status, staging, commits ----------
+
+/** A backend whose working tree is a status the test controls. */
+function worktreeRepo(initial: WorkingStatus = cleanStatus()) {
+  const state = { status: initial };
+  const calls: string[] = [];
+  let worktreeHandler: ((repoId: string) => void) | undefined;
+  let activityHandler: ((repoId: string) => void) | undefined;
+  const backend: Partial<RepoBackend> = {
+    status: async () => structuredClone(state.status),
+    stage: async (_id, paths) => {
+      calls.push(`stage ${paths.join(",")}`);
+      state.status = {
+        ...state.status,
+        staged: paths.map((p) => entry(p)),
+        unstaged: state.status.unstaged.filter((e) => !paths.includes(e.path)),
+      };
+      return structuredClone(state.status);
+    },
+    onWorktreeChanged: async (handler) => {
+      worktreeHandler = handler;
+      return () => {};
+    },
+    onActivityChanged: async (handler) => {
+      activityHandler = handler;
+      return () => {};
+    },
+  };
+  return {
+    state,
+    calls,
+    backend,
+    touch: () => worktreeHandler?.("/fake/a"),
+    activityChanged: () => activityHandler?.("/fake/a"),
+  };
+}
+
+async function openWorktree(
+  initial: WorkingStatus = cleanStatus(),
+  overrides: Partial<RepoBackend> = {},
+  readOnlyStore = createReadOnlyStore(null),
+) {
+  const repo = worktreeRepo(initial);
+  const fake = fakeBackend({ ...repo.backend, ...overrides });
+  const workspace = createWorkspace(
+    fake.backend,
+    createRecentStore(memoryStorage()),
+    readOnlyStore,
+  );
+  await workspace.watchRepos();
+  await workspace.openPath("/fake/a");
+  const tab = workspace.tabs.value[0];
+  await vi.waitFor(() => expect(tab.status).not.toBeNull());
+  return { ...repo, ...fake, workspace, tab };
+}
+
+const dirty = (): WorkingStatus => ({
+  ...cleanStatus(),
+  unstaged: [entry("src/a.ts"), entry("src/b.ts"), entry("notes.md", "untracked")],
+});
+
+describe("working tree status", () => {
+  it("is read when the repository opens and when files change", async () => {
+    const { tab, state, touch } = await openWorktree(dirty());
+    expect(tab.status?.unstaged).toHaveLength(3);
+
+    state.status = { ...dirty(), unstaged: [entry("src/a.ts")] };
+    touch();
+    await vi.waitFor(() => expect(tab.status?.unstaged).toHaveLength(1));
+  });
+
+  it("keeps the same status object when nothing changed", async () => {
+    const { tab, touch } = await openWorktree(dirty());
+    const before = tab.status;
+    touch();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(tab.status).toBe(before);
+  });
+
+  it("groups changes that arrive while it is being read", async () => {
+    const releases: Array<() => void> = [];
+    let reads = 0;
+    const { tab, touch } = await openWorktree(dirty(), {
+      status: () =>
+        new Promise((resolve) => {
+          reads++;
+          if (reads === 1) return resolve(dirty()); // opening the tab
+          releases.push(() => resolve(dirty()));
+        }),
+    });
+    const baseline = reads;
+    touch();
+    touch();
+    touch();
+    expect(reads - baseline).toBe(1);
+    releases.shift()?.();
+    await vi.waitFor(() => expect(reads - baseline).toBe(2));
+    releases.shift()?.();
+    await vi.waitFor(() => expect(tab.statusRefreshing).toBe(false));
+    expect(reads - baseline).toBe(2);
+  });
+
+  it("keeps the previous status when reading fails", async () => {
+    let failing = false;
+    const { tab, touch } = await openWorktree(dirty(), {
+      status: async () => {
+        if (failing) throw new Error("no working tree");
+        return dirty();
+      },
+    });
+    failing = true;
+    touch();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(tab.status?.unstaged).toHaveLength(3);
+    expect(tab.statusRefreshing).toBe(false);
+  });
+
+  it("selecting the working tree row and a commit exclude each other", async () => {
+    const { workspace, tab } = await openWorktree(dirty());
+    workspace.select(tab, 3, commitRow(3));
+    await vi.waitFor(() => expect(tab.detail).not.toBeNull());
+
+    workspace.selectWip(tab);
+    expect(tab.wip).toBe(true);
+    expect(tab.selected).toBeNull();
+    expect(tab.detail).toBeNull();
+
+    workspace.select(tab, 4, commitRow(4));
+    expect(tab.wip).toBe(false);
+  });
+});
+
+describe("staging", () => {
+  it("applies the status the backend returns", async () => {
+    const { workspace, tab, calls } = await openWorktree(dirty());
+    await workspace.stage(tab, ["src/a.ts"]);
+    expect(calls).toEqual(["stage src/a.ts"]);
+    expect(tab.status?.staged.map((e) => e.path)).toEqual(["src/a.ts"]);
+    expect(tab.busy).toBe(false);
+    expect(tab.writeError).toBeNull();
+  });
+
+  it("refuses to write in read-only mode, without calling the backend", async () => {
+    const { workspace, tab, calls } = await openWorktree(dirty());
+    await workspace.setReadOnly(tab, true);
+    await workspace.stage(tab, ["src/a.ts"]);
+    expect(calls).toEqual([]);
+    expect(tab.writeError?.kind).toBe("readOnly");
+    expect(lastOf(workspace.notices.value)?.kind).toBe("error");
+
+    await workspace.setReadOnly(tab, false);
+    await workspace.stage(tab, ["src/a.ts"]);
+    expect(calls).toEqual(["stage src/a.ts"]);
+  });
+
+  it("remembers read-only mode per repository and applies it when the repository opens again", async () => {
+    const store = createReadOnlyStore(memoryStorage());
+    const setReadOnly = vi.fn(async () => {});
+    const first = await openWorktree(dirty(), { setReadOnly }, store);
+    await first.workspace.setReadOnly(first.tab, true);
+    expect(store.has("/fake/a")).toBe(true);
+    setReadOnly.mockClear();
+
+    const second = await openWorktree(dirty(), { setReadOnly }, store);
+    expect(second.tab.readOnly).toBe(true);
+    expect(setReadOnly).toHaveBeenCalledWith("/fake/a", true);
+  });
+
+  it("a backend that refuses (read-only) switches the tab to read-only", async () => {
+    const { workspace, tab } = await openWorktree(dirty(), {
+      stage: async () => {
+        throw new GitCommandError("readOnly", "This repository is in read-only mode.");
+      },
+    });
+    await workspace.stage(tab, ["src/a.ts"]);
+    expect(tab.readOnly).toBe(true);
+  });
+
+  it("a stale hunk refreshes the status and tells the user", async () => {
+    const { workspace, tab, state } = await openWorktree(dirty(), {
+      stageHunk: async () => {
+        throw new GitCommandError("staleHunk", "The file changed since this hunk was shown.");
+      },
+    });
+    state.status = { ...dirty(), unstaged: [entry("src/a.ts")] };
+    await workspace.stageHunk(tab, "src/a.ts", "h1");
+    expect(tab.writeError?.kind).toBe("staleHunk");
+    await vi.waitFor(() => expect(tab.status?.unstaged).toHaveLength(1));
+    expect(lastOf(workspace.notices.value)?.text).toContain("changed");
+  });
+
+  it("reloads an open diff when its file changes and closes it when the file leaves the list", async () => {
+    const { workspace, tab, state, touch } = await openWorktree(dirty());
+    workspace.openWorkDiff(tab, entry("src/a.ts"), "unstaged");
+    const version = tab.workDiffVersion;
+
+    touch(); // same status, but the file may have been edited
+    await vi.waitFor(() => expect(tab.workDiffVersion).toBeGreaterThan(version));
+    expect(tab.workDiff).not.toBeNull();
+
+    state.status = { ...dirty(), unstaged: [entry("src/b.ts")] };
+    touch();
+    await vi.waitFor(() => expect(tab.workDiff).toBeNull());
+  });
+
+  it("asks the backend for the diff of the open file, and only when there is one", async () => {
+    const workingDiff = vi.fn(async () => diffFor("wip", FILE, false));
+    const { workspace, tab } = await openWorktree(dirty(), { workingDiff });
+    await expect(workspace.workingDiff(tab)).rejects.toThrow("no file selected");
+    workspace.openWorkDiff(tab, entry("src/a.ts"), "staged");
+    await workspace.workingDiff(tab, true);
+    expect(workingDiff).toHaveBeenCalledWith("/fake/a", entry("src/a.ts"), "staged", true);
+    workspace.closeWorkDiff(tab);
+    expect(tab.workDiff).toBeNull();
+  });
+});
+
+describe("committing", () => {
+  const staged = (): WorkingStatus => ({ ...cleanStatus(), staged: [entry("src/a.ts")] });
+
+  it("commits with the draft message, clears it, and offers to undo", async () => {
+    const commit = vi.fn(async () => ({ id: "a".repeat(40), before: "c0", status: cleanStatus() }));
+    const undoCommit = vi.fn(async () => staged());
+    const { workspace, tab } = await openWorktree(staged(), { commit, undoCommit });
+    tab.draft = { summary: "Fix the lexer", body: "Details.", amend: false, beforeAmend: null };
+
+    await workspace.commit(tab);
+    expect(commit).toHaveBeenCalledWith("/fake/a", "Fix the lexer", "Details.", false);
+    expect(tab.draft.summary).toBe("");
+    expect(tab.status?.staged).toEqual([]);
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toBe("Committed aaaaaaa.");
+
+    await notice?.action?.run();
+    expect(undoCommit).toHaveBeenCalledWith("/fake/a", "c0", "a".repeat(40));
+    expect(tab.status?.staged).toHaveLength(1);
+  });
+
+  it("shows hook output in the commit box instead of a notice, and keeps the draft", async () => {
+    const { workspace, tab } = await openWorktree(staged(), {
+      commit: async () => {
+        throw new GitCommandError("hookFailed", "lint failed: trailing whitespace");
+      },
+    });
+    tab.draft = { summary: "Rejected", body: "", amend: false, beforeAmend: null };
+    const noticesBefore = workspace.notices.value.length;
+
+    await workspace.commit(tab);
+    expect(tab.writeError).toEqual({
+      kind: "hookFailed",
+      message: "lint failed: trailing whitespace",
+    });
+    expect(tab.draft.summary).toBe("Rejected");
+    expect(workspace.notices.value).toHaveLength(noticesBefore);
+  });
+
+  it("asks for the identity, saves it, then commits again", async () => {
+    let needIdentity = true;
+    const commit = vi.fn(async () => {
+      if (needIdentity) throw new GitCommandError("needsIdentity", "Author identity unknown");
+      return { id: "b".repeat(40), before: "c0", status: cleanStatus() };
+    });
+    const setIdentity = vi.fn(async (_id: string, name: string, email: string) => {
+      needIdentity = false;
+      return { name, email };
+    });
+    const { workspace, tab } = await openWorktree(staged(), { commit, setIdentity });
+    tab.draft = { summary: "Needs an author", body: "", amend: false, beforeAmend: null };
+
+    await workspace.commit(tab);
+    expect(tab.identityRequired).toBe(true);
+    expect(tab.draft.summary).toBe("Needs an author");
+
+    await workspace.submitIdentity(tab, "Alice Fakename", "alice@example.invalid", false);
+    expect(setIdentity).toHaveBeenCalledWith(
+      "/fake/a",
+      "Alice Fakename",
+      "alice@example.invalid",
+      false,
+    );
+    expect(tab.identityRequired).toBe(false);
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(tab.draft.summary).toBe("");
+  });
+
+  it("cancelling the identity dialog drops the error", async () => {
+    const { workspace, tab } = await openWorktree(staged(), {
+      commit: async () => {
+        throw new GitCommandError("needsIdentity", "Author identity unknown");
+      },
+    });
+    tab.draft = { summary: "x", body: "", amend: false, beforeAmend: null };
+    await workspace.commit(tab);
+    workspace.cancelIdentity(tab);
+    expect(tab.identityRequired).toBe(false);
+    expect(tab.writeError).toBeNull();
+  });
+
+  it("amend fills the box with the last message and puts the draft back when unchecked", async () => {
+    const commit = vi.fn(async () => ({ id: "c".repeat(40), before: "c0", status: cleanStatus() }));
+    const { workspace, tab } = await openWorktree(staged(), { commit });
+    tab.draft = { summary: "My draft", body: "draft body", amend: false, beforeAmend: null };
+
+    await workspace.setAmend(tab, true);
+    expect(tab.draft.amend).toBe(true);
+    expect(tab.draft.summary).toBe("message of c0");
+    expect(tab.draft.body).toBe("");
+
+    await workspace.setAmend(tab, false);
+    expect(tab.draft).toEqual({
+      summary: "My draft",
+      body: "draft body",
+      amend: false,
+      beforeAmend: null,
+    });
+
+    await workspace.setAmend(tab, true);
+    await workspace.commit(tab);
+    expect(commit).toHaveBeenCalledWith("/fake/a", "message of c0", "", true);
+    expect(lastOf(workspace.notices.value)?.text).toBe("Amended ccccccc.");
+  });
+
+  it("splits the last message into summary and body when amending", async () => {
+    const { workspace, tab } = await openWorktree(staged(), {
+      commitDetail: async (_id, id) => ({
+        ...detailFor(id),
+        message: "Summary line\n\nBody line one\nBody line two",
+      }),
+    });
+    await workspace.setAmend(tab, true);
+    expect(tab.draft.summary).toBe("Summary line");
+    expect(tab.draft.body).toBe("Body line one\nBody line two");
+  });
+});
+
+describe("discarding", () => {
+  it("offers to restore what was discarded", async () => {
+    const snapshot = {
+      reference: "refs/git-hydra/undo/1",
+      id: "d".repeat(40),
+      time: 1,
+      description: "before discarding changes",
+      paths: ["src/a.ts", "notes.md"],
+    };
+    const restoreSnapshot = vi.fn(async () => ({ snapshot: null, status: dirty() }));
+    const discard = vi.fn(async () => ({ snapshot, status: cleanStatus() }));
+    const { workspace, tab } = await openWorktree(dirty(), { discard, restoreSnapshot });
+
+    await workspace.discard(tab, ["src/a.ts", "notes.md"]);
+    expect(tab.status?.unstaged).toEqual([]);
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toBe("Discarded 2 files.");
+
+    await notice?.action?.run();
+    expect(restoreSnapshot).toHaveBeenCalledWith("/fake/a", "refs/git-hydra/undo/1");
+    expect(tab.status?.unstaged).toHaveLength(3);
+  });
+
+  it("says nothing when there was nothing to discard", async () => {
+    const { workspace, tab } = await openWorktree(dirty());
+    const before = workspace.notices.value.length;
+    await workspace.discard(tab, ["ghost.txt"]);
+    expect(workspace.notices.value).toHaveLength(before);
+  });
+
+  it("lists the snapshots", async () => {
+    const { workspace, tab } = await openWorktree(dirty(), {
+      snapshots: async () => [
+        {
+          reference: "refs/git-hydra/undo/2",
+          id: "e".repeat(40),
+          time: 2,
+          description: "d",
+          paths: ["a"],
+        },
+      ],
+    });
+    await workspace.loadSnapshots(tab);
+    expect(tab.snapshots).toHaveLength(1);
+  });
+});
+
+describe("activity log and notices", () => {
+  it("loads the log, and reloads it when a command is added while the panel is open", async () => {
+    const entries = [
+      {
+        id: 1,
+        startedAt: 1,
+        command: "git add -A -- a",
+        durationMs: 5,
+        exitCode: 0,
+        ok: true,
+        stdout: "",
+        stderr: "",
+        truncated: false,
+      },
+    ];
+    const activity = vi.fn(async () => [...entries]);
+    const { workspace, tab, activityChanged } = await openWorktree(dirty(), { activity });
+
+    workspace.activityOpen.value = false;
+    activityChanged();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(activity).not.toHaveBeenCalled();
+
+    workspace.activityOpen.value = true;
+    activityChanged();
+    await vi.waitFor(() => expect(tab.activity).toHaveLength(1));
+    await workspace.clearActivity(tab);
+    expect(tab.activity).toEqual([]);
+  });
+
+  it("notices disappear by themselves and can be dismissed", async () => {
+    vi.useFakeTimers();
+    try {
+      const { workspace } = setup();
+      const id = workspace.notify("info", "Hello");
+      const other = workspace.notify("error", "Oops");
+      expect(workspace.notices.value.map((n) => n.text)).toEqual(["Hello", "Oops"]);
+      workspace.dismissNotice(other);
+      expect(workspace.notices.value.map((n) => n.text)).toEqual(["Hello"]);
+      vi.advanceTimersByTime(9100);
+      expect(workspace.notices.value.find((n) => n.id === id)).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

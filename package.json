@@ -23,7 +23,7 @@
     "@tailwindcss/vite": "^4.3.5",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.8.4",
-    "@vueuse/core": "^15.0.0",
+    "@vueuse/core": "^15.1.0",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.5.2",
     "highlight.js": "^11.12.0",

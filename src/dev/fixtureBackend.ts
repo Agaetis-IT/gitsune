@@ -1,6 +1,7 @@
 import type { GraphMeta, GraphRow, RefInfo } from "@/lib/api";
 import type { RepoBackend } from "@/lib/backend";
 import { demoCommitDetail, demoFileDiff } from "./demoDiffs";
+import { createDemoWorktree } from "./demoWorktree";
 
 interface Fixture {
   meta: GraphMeta;
@@ -38,7 +39,7 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
   };
 
   /** A new commit on top of the current branch: every row moves down by one. */
-  function addCommitOnTop(): void {
+  function addCommitOnTop(summary?: string): string {
     simulated += 1;
     const old = data;
     const top = old.rows[0];
@@ -48,7 +49,7 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
       row: 0,
       id,
       parents: [top.id],
-      summary: `Simulated commit ${simulated}`,
+      summary: summary?.split("\n")[0] ?? `Simulated commit ${simulated}`,
       author: "Alice Fakename",
       time: Math.floor(Date.now() / 1000),
       col: top.col,
@@ -87,12 +88,34 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
       ),
     };
     data = { meta, rows: [newTop, ...rows] };
+    return id;
   }
 
+  const worktreeListeners = new Set<(repoId: string) => void>();
+  const activityListeners = new Set<(repoId: string) => void>();
+  const worktree = createDemoWorktree({
+    headId: () => data.rows[0].id,
+    addCommit: (summary) => {
+      const id = addCommitOnTop(summary);
+      // A commit made in the app moves the branch: the graph refreshes like for any change.
+      setTimeout(() => listeners.forEach((listener) => listener(info.id)), 50);
+      return id;
+    },
+    changed: () => activityListeners.forEach((listener) => listener(info.id)),
+  });
+
   if (import.meta.env.DEV) {
-    (window as unknown as { __simulateRepoChange: () => void }).__simulateRepoChange = () => {
+    const win = window as unknown as {
+      __simulateRepoChange: () => void;
+      __simulateWorktreeChange: () => void;
+    };
+    win.__simulateRepoChange = () => {
       addCommitOnTop();
       listeners.forEach((listener) => listener(info.id));
+    };
+    win.__simulateWorktreeChange = () => {
+      worktree.touch();
+      worktreeListeners.forEach((listener) => listener(info.id));
     };
   }
 
@@ -102,6 +125,30 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
     close: async () => {},
     refs: async () => refsOf(data),
     locate: async (_repoId, ids) => ids.map((id) => data.rows.find((r) => r.id === id)?.row ?? null),
+    status: worktree.status,
+    workingDiff: (_repoId, entry, area, force) => worktree.workingDiff(entry, area, force),
+    stage: (_repoId, paths) => worktree.stage(paths),
+    unstage: (_repoId, paths) => worktree.unstage(paths),
+    stageHunk: (_repoId, path, hunkId) => worktree.stageHunk(path, hunkId),
+    unstageHunk: (_repoId, path, hunkId) => worktree.unstageHunk(path, hunkId),
+    discard: (_repoId, paths) => worktree.discard(paths),
+    snapshots: worktree.snapshots,
+    restoreSnapshot: (_repoId, reference) => worktree.restoreSnapshot(reference),
+    commit: (_repoId, summary, body, amend) => worktree.commit(summary, body, amend),
+    undoCommit: (_repoId, before, after) => worktree.undoCommit(before, after),
+    identity: worktree.identity,
+    setIdentity: (_repoId, name, email) => worktree.setIdentity(name, email),
+    setReadOnly: (_repoId, readOnly) => worktree.setReadOnly(readOnly),
+    activity: worktree.activity,
+    clearActivity: worktree.clearActivity,
+    onWorktreeChanged: async (handler) => {
+      worktreeListeners.add(handler);
+      return () => void worktreeListeners.delete(handler);
+    },
+    onActivityChanged: async (handler) => {
+      activityListeners.add(handler);
+      return () => void activityListeners.delete(handler);
+    },
     onRepoChanged: async (handler) => {
       listeners.add(handler);
       return () => void listeners.delete(handler);

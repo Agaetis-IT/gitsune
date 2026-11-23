@@ -32,6 +32,19 @@ export interface DrawInput {
   highlightLane: number | null;
   /** Rows matching the current search, tinted. */
   matchRows: ReadonlySet<number>;
+  /** Height of the pinned working tree row at the top; the graph scrolls below it. */
+  topInset: number;
+  /** The working tree row (pinned at the top), `null` for none. */
+  wip: WipRow | null;
+}
+
+/** The pinned row that stands for the uncommitted changes. */
+export interface WipRow {
+  /** Column of the lane of HEAD, where the dashed station sits. */
+  col: number;
+  /** Number of changed files. */
+  count: number;
+  selected: boolean;
 }
 
 /** Opacity of what is not highlighted. */
@@ -48,18 +61,83 @@ const dateFormat = new Intl.DateTimeFormat(undefined, {
 
 /** Draws the visible part of the graph: lanes, connectors, stations, and the commit text. */
 export function draw(input: DrawInput): void {
-  const { ctx, width, height, dpr, theme, metrics: m } = input;
+  const { ctx, width, height, dpr, theme } = input;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = theme.background;
   ctx.fillRect(0, 0, width, height);
 
-  const range = visibleRows(input.scrollTop, height, input.meta.total, m);
-  if (!range) return;
+  // The graph is drawn below the pinned working tree row.
+  const inner = input.topInset > 0 ? { ...input, height: height - input.topInset } : input;
+  const range = visibleRows(inner.scrollTop, inner.height, input.meta.total, input.metrics);
+  if (range) {
+    ctx.save();
+    if (input.topInset > 0) {
+      ctx.beginPath();
+      ctx.rect(0, input.topInset, width, height - input.topInset);
+      ctx.clip();
+      ctx.translate(0, input.topInset);
+    }
+    drawBands(inner, range);
+    drawLanes(inner, range);
+    drawText(inner, range);
+    ctx.restore();
+  }
+  if (input.wip) drawWipRow(input, input.wip);
+}
 
-  drawBands(input, range);
-  drawLanes(input, range);
-  drawText(input, range);
+/** The working tree row: a dashed station on the lane of HEAD, and a label. */
+function drawWipRow(input: DrawInput, wip: WipRow): void {
+  const { ctx, width, theme, metrics: m } = input;
+  const height = input.topInset;
+
+  // Row background (stronger when selected), with a line under it.
+  ctx.fillStyle = theme.background;
+  ctx.fillRect(0, 0, width, height);
+  if (wip.selected) {
+    ctx.globalAlpha = 0.1;
+    ctx.fillStyle = theme.foreground;
+    ctx.fillRect(0, 0, width, height);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = theme.foreground;
+    ctx.fillRect(0, 0, 3, height);
+  }
+  ctx.globalAlpha = 0.25;
+  ctx.fillStyle = theme.muted;
+  ctx.fillRect(0, height - 1, width, 1);
+  ctx.globalAlpha = 1;
+
+  // Station and the dashed line going down into the graph.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, input.graphViewportW, height);
+  ctx.clip();
+  const x = colX(wip.col, m) - input.graphScrollX;
+  const y = height / 2;
+  ctx.strokeStyle = theme.foreground;
+  ctx.fillStyle = theme.background;
+  ctx.lineWidth = m.lineW * 0.7;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(x, y + m.stationR);
+  ctx.lineTo(x, height);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x, y, m.stationR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+
+  // Label.
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.font = `600 12px ${FONT}`;
+  ctx.fillStyle = theme.foreground;
+  ctx.fillText("Working tree", input.textX, y);
+  const label = wip.count === 0 ? "no changes" : `${wip.count} change${wip.count === 1 ? "" : "s"}`;
+  ctx.font = `11px ${FONT}`;
+  ctx.fillStyle = theme.muted;
+  ctx.fillText(label, input.textX + 92, y);
 }
 
 type Range = { first: number; last: number };
