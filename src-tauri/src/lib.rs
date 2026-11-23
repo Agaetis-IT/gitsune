@@ -49,7 +49,18 @@ pub fn run() {
             commands::delete_remote_branch,
             commands::list_remotes,
             commands::cancel_operation,
-            commands::answer_askpass
+            commands::answer_askpass,
+            commands::list_stashes,
+            commands::stash_push,
+            commands::stash_apply,
+            commands::stash_pop,
+            commands::stash_drop,
+            commands::stash_restore,
+            commands::cherry_pick,
+            commands::revert_commit,
+            commands::undo_replay,
+            commands::reset_to,
+            commands::undo_reset
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

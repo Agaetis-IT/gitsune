@@ -2,6 +2,7 @@ import { GitCommandError, type GraphMeta, type GraphRef, type GraphRow, type Ref
 import type { RepoBackend } from "@/lib/backend";
 import { demoCommitDetail, demoFileDiff } from "./demoDiffs";
 import { createDemoRemote } from "./demoRemote";
+import { createDemoStash } from "./demoStash";
 import { createDemoWorktree } from "./demoWorktree";
 
 interface Fixture {
@@ -154,6 +155,17 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
     changed: () => activityListeners.forEach((listener) => listener(info.id)),
   });
 
+  let readOnlyOn = false;
+  const stash = createDemoStash({
+    status: worktree.status,
+    clearChanges: async () => {
+      const status = await worktree.status();
+      const paths = status.unstaged.map((e) => e.path);
+      if (paths.length > 0) await worktree.discard(paths);
+    },
+    readOnly: () => readOnlyOn,
+  });
+
   const remote = createDemoRemote({
     repoId: info.id,
     status: worktree.status,
@@ -263,6 +275,7 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
     },
     setUpstream: async () => worktree.status(),
     ...remote,
+    ...stash,
     createTag: async (_repoId, name, target) => {
       checkName(name, "tag");
       editRefs((refs) => [...refs, addRef("tag", name, rowOf(target))]);
@@ -283,7 +296,10 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
     undoCommit: (_repoId, before, after) => worktree.undoCommit(before, after),
     identity: worktree.identity,
     setIdentity: (_repoId, name, email) => worktree.setIdentity(name, email),
-    setReadOnly: (_repoId, readOnly) => worktree.setReadOnly(readOnly),
+    setReadOnly: (_repoId, readOnly) => {
+      readOnlyOn = readOnly;
+      return worktree.setReadOnly(readOnly);
+    },
     activity: worktree.activity,
     clearActivity: worktree.clearActivity,
     onWorktreeChanged: async (handler) => {

@@ -41,6 +41,14 @@ export function commitMenu(commit: { id: string }, ctx: MenuContext): MenuItem[]
     }),
     write(ctx, { id: "createBranch", label: "Create a branch here…" }),
     write(ctx, { id: "createTag", label: "Create a tag here…" }),
+    write(ctx, {
+      id: "cherryPick",
+      label: "Cherry-pick onto the current branch",
+      separatorBefore: true,
+      disabled: atHead ? "This commit is already the current one." : undefined,
+    }),
+    write(ctx, { id: "revert", label: "Revert this commit" }),
+    write(ctx, { id: "reset", label: "Reset the current branch to here…", danger: true }),
     { id: "copyId", label: "Copy the commit id", separatorBefore: true },
   ];
 }

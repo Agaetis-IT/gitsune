@@ -190,7 +190,7 @@ Known ceilings: a diff is a plain table, so about 5,000 lines is the practical l
 
 ## 9. Plan
 
-Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 (section 12.8), M11 (section 12.9) and M12 (section 12.10) are done; M13 to M16 are planned (section 12.4).
+Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 (section 12.8), M11 (section 12.9) and M12 (section 12.10) and M13 (section 12.11) are done; M14 to M16 are planned (section 12.4).
 
 Each milestone ends with lint and tests passing and a short demo.
 
@@ -410,4 +410,19 @@ What exists, and where it differs from the plan above.
 **Not done in M12**: ahead/behind counters on branches, tags push (`--tags`), adding or removing remotes, a "pull" that stashes local changes automatically, conflict resolution after a pull (M14: the merge is left in progress and explained), reading the credential helper's result for HTTPS (git does it itself). The askpass flow was tested with `git credential fill`; no test reaches a real SSH or HTTPS server, and the Tauri window itself was not run.
 
 **Tests**: 173 Rust (20 new: classification, fetch with progress and prune, read-only, pull fast-forward/merge/rebase/conflict/overwrite, push with upstream, lease, deletion, option-looking names, cancelling a hung fetch, askpass answers and refusal) and 152 front.
+
+### 12.11 M13 as built (stash, cherry-pick, revert, reset)
+
+**Backend** (`src-tauri/src/git/stash.rs`, `rewrite.rs`).
+- **Stash**: `list_stashes` (position, commit id, message, time), `stash_push` (message, `--include-untracked`, `--keep-index`; "nothing to stash" is an error, not a silent success), `stash_apply`, `stash_pop`, `stash_drop`, `stash_restore` (`git stash store`, which brings a dropped stash back: its commit is still in the repository). Every action takes the position **and the commit id** the interface saw: if the list changed meanwhile (a terminal dropped one) it is refused instead of acting on another stash. A pop or apply that conflicts keeps the stash and is reported as `conflict`.
+- **Cherry-pick and revert** of one commit onto HEAD. A merge commit follows its first parent (`-m 1`). Nothing is left half-way: a conflict, or a commit whose changes are already in the branch (`nothingToCommit`), cancels the operation with `--abort`; the app refuses to start if a merge, cherry-pick or revert is already waiting (it never aborts one it did not start). Local changes in the way are reported with their files. **Undo** puts HEAD back with `git reset --keep`, which refuses if HEAD moved since or if it would lose local changes.
+- **Reset** soft, mixed or hard to a commit. A hard reset first takes a snapshot of the tracked changes (same mechanism as discard); **Undo** moves the branch back (`--keep`, refused if HEAD moved) and restores the snapshot. After a mixed reset Undo restores the branch but not what had been staged (the content is kept, unstaged).
+- Conflict detection now comes before "nothing to commit" in the message classifier, because git prints both for a conflicted stash.
+- Commands: `list_stashes`, `stash_push`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_restore`, `cherry_pick`, `revert_commit`, `undo_replay`, `reset_to`, `undo_reset`.
+
+**Interface.** A Stash button (message, include new files, keep what is staged) and a Stashes section in the sidebar (apply, pop, drop with a confirmation and Undo). The commit context menu gains "Cherry-pick onto the current branch" (greyed on the current commit), "Revert this commit" and "Reset the current branch to here…", whose dialog explains the three modes and warns how many files a hard reset would discard. Every action greys out in read-only mode and ends with an Undo notice.
+
+**Demo backend** (`src/dev/demoStash.ts`): an in-memory stash list, and canned answers for the others (cherry-picking a commit whose id starts with `c0` conflicts).
+
+**Not done in M13**: cherry-picking several commits at once, reverting without committing, stash of a single file, applying a stash with `--index` from the interface (the backend supports it), a diff view of a stash, branch from a stash, resolving the conflicts these operations can raise (M14), an in-app way out of a merge left half-done by a pull (M14). Tests: 196 Rust (23 new) and 164 front. Not run: the Tauri window.
 

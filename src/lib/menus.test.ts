@@ -23,7 +23,15 @@ const find = (items: ReturnType<typeof refMenu>, id: string) => items.find((i) =
 describe("commit menu", () => {
   it("offers to check out, branch, tag and copy", () => {
     const items = commitMenu({ id: "c1" }, ctx());
-    expect(ids(items)).toEqual(["checkoutCommit", "createBranch", "createTag", "copyId"]);
+    expect(ids(items)).toEqual([
+      "checkoutCommit",
+      "createBranch",
+      "createTag",
+      "cherryPick",
+      "revert",
+      "reset",
+      "copyId",
+    ]);
     expect(items.every((i) => !i.disabled)).toBe(true);
   });
 
@@ -40,9 +48,26 @@ describe("commit menu", () => {
       "checkoutCommit",
       "createBranch",
       "createTag",
+      "cherryPick",
+      "revert",
+      "reset",
     ]);
     expect(items.find((i) => i.id === "copyId")?.disabled).toBeUndefined();
     expect(items[0].disabled).toBe("Read-only mode is on.");
+  });
+});
+
+describe("commit menu, history rewriting", () => {
+  it("cherry-picking the current commit onto itself is refused with a reason", () => {
+    const items = commitMenu({ id: "head" }, ctx({ headId: "head" }));
+    expect(find(items, "cherryPick")?.disabled).toContain("already");
+    expect(
+      find(commitMenu({ id: "other" }, ctx({ headId: "head" })), "cherryPick")?.disabled,
+    ).toBeUndefined();
+  });
+
+  it("a reset is shown as a destructive action", () => {
+    expect(find(commitMenu({ id: "c1" }, ctx()), "reset")?.danger).toBe(true);
   });
 });
 

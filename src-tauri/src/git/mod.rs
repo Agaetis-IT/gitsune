@@ -10,7 +10,9 @@ mod ops;
 mod refs;
 mod remote;
 mod repo;
+mod rewrite;
 mod search;
+mod stash;
 mod status;
 mod store;
 mod text_diff;
@@ -39,7 +41,15 @@ pub use remote::{
     PullStrategy, PushOptions, RemoteResult, delete_remote_branch, fetch, list_remotes, pull, push,
 };
 pub use repo::{RepoInfo, open_repository};
+pub use rewrite::{
+    CommitOpResult, ResetMode, ResetResult, cherry_pick, reset, revert_commit, undo_replay,
+    undo_reset,
+};
 pub use search::SearchResult;
+pub use stash::{
+    DroppedStash, StashEntry, list_stashes, stash_apply, stash_drop, stash_pop, stash_push,
+    stash_restore,
+};
 pub use status::WorkingStatus;
 pub use store::RepoStores;
 pub use watch::{RepoWatcher, watch_refs};
@@ -57,6 +67,8 @@ mod ops_tests;
 mod refresh_tests;
 #[cfg(test)]
 mod remote_tests;
+#[cfg(test)]
+mod rewrite_tests;
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]
