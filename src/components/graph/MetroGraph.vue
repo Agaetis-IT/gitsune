@@ -32,6 +32,8 @@ const props = withDefaults(
     anchor?: { row: number; offset: number } | null;
     /** A working tree row pinned above the graph. */
     wip?: WipRow | null;
+    /** The row of the commit HEAD points at, tinted in the graph. */
+    headRow?: number | null;
   }>(),
   {
     density: "compact",
@@ -41,6 +43,7 @@ const props = withDefaults(
     matches: () => [],
     anchor: null,
     wip: null,
+    headRow: null,
   },
 );
 
@@ -55,6 +58,10 @@ const emit = defineEmits<{
   /** Right click on a ref label, a commit row or a lane line (positions are window coordinates). */
   contextMenu: [target: GraphContextTarget];
   select: [row: GraphRow];
+  /** Double click on a ref label (`ref` set) or on a commit row. */
+  activate: [target: { commit: GraphRow; ref: RefInfo | null }];
+  /** The first and last rows in view, to tell where the rest of the graph is. */
+  range: [first: number, last: number];
   /** A lane line was clicked (position relative to this component); `null` for any other click. */
   laneClick: [target: { lane: Lane; x: number; y: number } | null];
   error: [message: string];
@@ -161,6 +168,18 @@ function reportTop() {
   emit("update:topCommit", reportedTop);
 }
 
+let reportedRange = "";
+/** Tells the parent which rows are in view (so it can say where HEAD is). */
+function reportRange() {
+  const total = props.meta.total;
+  if (total === 0 || viewH.value === 0) return;
+  const { first, last } = visibleRange();
+  const key = `${first}:${last}`;
+  if (key === reportedRange) return;
+  reportedRange = key;
+  emit("range", first, last);
+}
+
 function scheduleDraw() {
   if (frame || reloading) return;
   frame = requestAnimationFrame(() => {
@@ -197,6 +216,7 @@ function render() {
     getRow: (row) => cache.getRow(row),
     selectedRow: props.selected,
     hoverRow: hoverRow.value,
+    headRow: props.headRow,
     highlightLane: props.highlightLane,
     matchRows: matchSet.value,
     topInset: inset.value,
@@ -214,6 +234,7 @@ function onScroll() {
   emit("update:scrollTop", scrollTop);
   tooltip.value = null;
   reportTop();
+  reportRange();
   loadVisible();
   scheduleDraw();
 }
@@ -342,6 +363,22 @@ function onContextMenu(event: MouseEvent) {
   }
 }
 
+function onDoubleClick(event: MouseEvent) {
+  const point = pointerPosition(event);
+  if (!point || point.y < inset.value) return;
+  const pill = lastPills.find(
+    (p) => point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h,
+  );
+  if (pill) {
+    const commit = cache.getRow(pill.row);
+    if (commit) emit("activate", { commit, ref: pill.ref });
+    return;
+  }
+  const row = rowAtY(point.y - inset.value + scrollTop, props.meta.total, metrics.value);
+  const commit = row === null ? undefined : cache.getRow(row);
+  if (commit) emit("activate", { commit, ref: null });
+}
+
 function scrollToRow(row: number) {
   const el = scroller.value;
   if (!el) return;
@@ -403,6 +440,7 @@ onMounted(() => {
   resizeObserver = new ResizeObserver(() => {
     viewW.value = el.clientWidth;
     viewH.value = el.clientHeight;
+    reportRange();
     loadVisible();
     scheduleDraw();
   });
@@ -438,6 +476,7 @@ watch(
     hoverRow.value = null;
     tooltip.value = null;
     reportedTop = null;
+    reportedRange = "";
     if (anchor) {
       // A refresh: stay where we were, and keep the old picture until the new rows arrive.
       reloading = true;
@@ -449,6 +488,7 @@ watch(
         scrollTop = scroller.value.scrollTop;
       }
       loadVisible();
+      reportRange();
       return;
     }
     await nextTick();
@@ -459,6 +499,7 @@ watch(
     scrollTop = 0;
     scrollLeft = 0;
     loadVisible();
+    reportRange();
     scheduleDraw();
   },
 );
@@ -505,6 +546,7 @@ const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", tim
       @pointermove="onPointerMove"
       @pointerleave="onPointerLeave"
       @click="onClick"
+      @dblclick="onDoubleClick"
       @contextmenu.prevent="onContextMenu"
       @keydown="onKeydown"
       @wheel="onWheel"

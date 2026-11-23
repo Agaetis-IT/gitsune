@@ -67,7 +67,12 @@ function split(path: string): { dir: string; name: string } {
 
 <template>
   <aside class="h-full overflow-y-auto p-4 text-sm" aria-label="Commit details">
-    <p v-if="!commit" class="text-muted-foreground">Select a commit to see its details.</p>
+    <div v-if="!commit" class="text-muted-foreground space-y-2">
+      <p>Select a commit to see its details.</p>
+      <p class="text-xs">
+        Double-click the last commit of a branch, or its label, to switch to that branch.
+      </p>
+    </div>
     <template v-else>
       <h2 class="text-base leading-snug font-semibold break-words">{{ commit.summary }}</h2>
       <p v-if="body" class="text-muted-foreground mt-2 text-xs break-words whitespace-pre-wrap">
