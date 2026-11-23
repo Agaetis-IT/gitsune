@@ -57,6 +57,16 @@ Clean transit-map style, inspired by GitKraken but not copying it:
 - Commits not reachable from a named branch go on anonymous lanes (neutral color).
 - Lane assignment is deterministic: same repo state produces the same layout.
 
+### 4.2.1 Layout engine (M2, `src-tauri/src/layout`)
+
+- Commits are ordered topologically (children before parents), newest first among the ready ones; this stays correct with clock skew.
+- Every other parent (merge parents beyond the first) starts a new lane in the **nearest free column** (right side on ties), to minimise crossings. The tip of a new line takes the lowest free column.
+- A lane **keeps its column for its whole life**. When several lanes lead to the same commit (a fork point), they all run down to it and bend into the leftmost lane in the last span; the leftmost lane carries the commit.
+- Output per row: commit column, lane id, and only the **non-vertical connectors** (`Start` bend right after a merge commit, `End` bend right before the fork point). Vertical segments are implied by each lane's `col`, `firstRow` and `lastRow`, which keeps memory proportional to the number of bends rather than to rows x active lanes.
+- Lane name: best ref on the lane (HEAD branch, then local, then remote, then tag; earliest row wins ties), else the branch parsed from the merge commit subject that started the lane (`Merge branch 'x'`, `Merge remote-tracking branch 'origin/x'`, `Merge pull request #n from owner/x`), else anonymous.
+- Lane color: FNV-1a hash of the lane name (remote prefix removed, so `main` and `origin/main` match) modulo the 12-color palette. Anonymous lanes have no color.
+- Measured on the 100,000-commit synthetic repository (1,199 refs): read and order the graph 145 ms, layout 13 ms. The synthetic repo keeps ~1,180 unmerged branches alive, which gives 1,539 columns; real repositories are far narrower, and very wide graphs are handled by branch hiding (M7).
+
 ### 4.3 Interactions (v1)
 - Scroll and select a commit (updates the right panel).
 - Hover a station: tooltip with hash, message, author, date.
