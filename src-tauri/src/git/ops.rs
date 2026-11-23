@@ -65,7 +65,7 @@ impl OpCtx<'_> {
     }
 }
 
-fn check_paths(paths: &[String]) -> Result<(), GitError> {
+pub(super) fn check_paths(paths: &[String]) -> Result<(), GitError> {
     if paths.iter().any(|p| p.is_empty() || p.contains('\0')) {
         return Err(GitError::other("invalid path"));
     }
@@ -73,7 +73,7 @@ fn check_paths(paths: &[String]) -> Result<(), GitError> {
 }
 
 /// Runs a command that takes many paths in chunks, so the command line stays short.
-fn run_with_paths(ctx: &OpCtx, args: &[&str], paths: &[String]) -> Result<(), GitError> {
+pub(super) fn run_with_paths(ctx: &OpCtx, args: &[&str], paths: &[String]) -> Result<(), GitError> {
     for chunk in paths.chunks(400) {
         let mut full: Vec<&str> = args.to_vec();
         full.push("--");
@@ -277,7 +277,7 @@ pub struct CommitResult {
     pub status: WorkingStatus,
 }
 
-fn head_id(ctx: &OpCtx) -> Result<Option<String>, GitError> {
+pub(super) fn head_id(ctx: &OpCtx) -> Result<Option<String>, GitError> {
     let output = ctx.runner().run_raw(
         ctx.workdir,
         &["rev-parse", "--verify", "-q", "HEAD"],
@@ -478,6 +478,11 @@ const SNAPSHOT_IDENTITY: [(&str, &str); 4] = [
     ("GIT_COMMITTER_EMAIL", "git-hydra@localhost"),
 ];
 
+/// The identity used for the commits the app makes for its own bookkeeping.
+pub(super) fn bookkeeping_identity_env() -> Vec<(String, String)> {
+    env_of(&SNAPSHOT_IDENTITY)
+}
+
 fn env_of(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs
         .iter()
@@ -496,7 +501,11 @@ fn is_tracked(ctx: &OpCtx, path: &str) -> Result<bool, GitError> {
 
 /// Saves the current content of `paths` (including untracked files and deletions) as a
 /// commit under [`SNAPSHOT_PREFIX`], using a throwaway index so the real one is not touched.
-fn take_snapshot(ctx: &OpCtx, paths: &[String], what: &str) -> Result<Snapshot, GitError> {
+pub(super) fn take_snapshot(
+    ctx: &OpCtx,
+    paths: &[String],
+    what: &str,
+) -> Result<Snapshot, GitError> {
     let git_dir = ctx
         .runner()
         .run(

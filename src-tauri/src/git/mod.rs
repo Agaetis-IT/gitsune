@@ -1,6 +1,7 @@
 //! Read-only git access (backed by `gix`).
 
 mod activity;
+mod branches;
 mod cli;
 mod commit_detail;
 mod graph;
@@ -16,6 +17,11 @@ mod watch;
 mod worktree_watch;
 
 pub use activity::ActivityEntry;
+pub use branches::{
+    CheckoutResult, CheckoutTarget, DeletedBranch, DeletedTag, DirtyStrategy, checkout,
+    create_branch, create_tag, delete_branch, delete_tag, rename_branch, restore_branch,
+    restore_tag, set_upstream,
+};
 pub use cli::GitError;
 pub use commit_detail::{CommitDetail, FileDiff, commit_detail, file_diff};
 pub use graph_page::{
@@ -35,6 +41,8 @@ pub use store::RepoStores;
 pub use watch::{RepoWatcher, watch_refs};
 pub use worktree_watch::watch_worktree;
 
+#[cfg(test)]
+mod branch_tests;
 #[cfg(test)]
 mod commit_tests;
 #[cfg(test)]

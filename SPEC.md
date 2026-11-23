@@ -190,7 +190,7 @@ Known ceilings: a diff is a plain table, so about 5,000 lines is the practical l
 
 ## 9. Plan
 
-Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 is done (section 12.8); M11 to M16 are planned (section 12.4).
+Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 (section 12.8) and M11 (section 12.9) are done; M12 to M16 are planned (section 12.4).
 
 Each milestone ends with lint and tests passing and a short demo.
 
@@ -375,3 +375,20 @@ What exists, and where it differs from the plan above.
 
 **Tests**: 132 Rust tests (status parsing on sample output and on real repositories; staging by file and by hunk including CRLF, no final newline, latin-1 bytes, spaces, quotes and accents in paths, stale hunks, binary and untracked refusals; commits, amend, undo, hooks that reject or wait for input, missing identity, failing signature, lock, read-only; discard, snapshot, restore, purge, restore of a restore; ordering of writes; the working tree watcher with ignored folders, `.gitignore` changes, staging, commits and git internals) and 114 front tests (status refresh and coalescing, selection exclusion, stage and hunk flows, read-only persistence, commit success and each failure, identity retry, amend, discard Undo, activity reload, notices). A mutation of the patch builder (dropping the "no newline" marker) is caught by the tests.
 
+### 12.9 M11 as built (branches, checkout, tags)
+What exists, and where it differs from the plan above.
+
+**Backend** (`src-tauri/src/git/branches.rs`): every operation goes through the same runner and write lock as M10, and is listed in the activity log.
+- Names are validated with `git check-ref-format` before anything runs (`invalidName`); a name already used is `alreadyExists`.
+- **Create branch** (`git branch`, or `git switch -c` when the new branch is checked out) from a commit or from HEAD. **Rename** (`git branch -m`, local only). **Set upstream** (`git branch --set-upstream-to`, or `--unset-upstream`).
+- **Checkout** takes a target: local branch, remote-tracking branch (creates the local branch, or switches to it if it exists), commit or tag (detached HEAD). Without a strategy git decides: changes that would be overwritten fail as `wouldOverwriteChanges` with the list of files, and nothing has been touched. With `stash`: `git stash push --include-untracked`, switch, `git stash pop --index`; if the pop conflicts, the stash is kept and the result says so. With `discard`: a snapshot (M10) is taken first, then `git switch --discard-changes`; the result carries the snapshot so the notice can offer *Undo*.
+- **Delete branch** uses `git branch -d`; an unmerged branch fails as `notFullyMerged` with git's message, and `force` uses `-D`. A branch checked out here or in another worktree is `branchCheckedOut`. The result holds the tip and upstream, so *Undo* recreates the branch (`restore_branch`).
+- **Tags**: lightweight, or annotated when a message is given (the annotated tag needs an identity; a bookkeeping identity is used when none is set so it never prompts). Deleting returns what the tag pointed at, so *Undo* restores it (`restore_tag`).
+
+**Interface**: right click on a pill in the graph, on a ref in the sidebar, on a commit or on a lane line opens a context menu (`ContextMenu.vue`, items built by `src/lib/menus.ts`; items that cannot apply are greyed with the reason, and every write item says "Read-only mode is on." in that mode). Dialogs (`BranchDialogs.vue`): create branch (with "switch to it"), rename, delete (second step for an unmerged branch, explaining that *Undo* brings it back), create tag (annotated option), delete tag, upstream picker, and the dirty-tree dialog (*Stash and switch*, *Discard and switch*, *Cancel*). Name problems are shown inside the dialog; other failures are notices.
+
+**Demo backend**: the stand-in backend simulates branches, tags and checkout in memory (the demo working tree counts as dirty, so the first switch shows the dirty-tree dialog).
+
+**Not done in M11**: deleting a remote branch (needs M12), a "delete branch and its remote" option, checkout of a branch checked out in another worktree (reported as an error).
+
+**Tests**: 153 Rust tests (21 new: error classification, creation, each checkout target, dirty trees with stash and discard, rename, delete and restore, upstream against a local bare remote, tags with and without identity, read-only mode, lock) and 139 front tests (checkout flows and notices, dialogs' errors, delete with unmerged warning, Undo, menu builders).

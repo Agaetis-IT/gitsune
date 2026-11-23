@@ -2,6 +2,20 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   type ActivityEntry,
+  type CheckoutResult,
+  type CheckoutTarget,
+  type DeletedBranch,
+  type DeletedTag,
+  type DirtyStrategy,
+  checkoutTarget,
+  createBranch,
+  createTag,
+  deleteBranch,
+  deleteTag,
+  renameBranch,
+  restoreBranch,
+  restoreTag,
+  setUpstream,
   type Area,
   type CommitResult,
   type DiscardResult,
@@ -89,6 +103,37 @@ export interface RepoBackend {
   /** The git commands the app ran for a repository, oldest first. */
   activity(repoId: string): Promise<ActivityEntry[]>;
   clearActivity(repoId: string): Promise<void>;
+  createBranch(
+    repoId: string,
+    name: string,
+    start: string | null,
+    checkout: boolean,
+  ): Promise<WorkingStatus>;
+  /** Switches branch (or detaches HEAD). Local changes in the way make it fail with their files. */
+  checkout(
+    repoId: string,
+    target: CheckoutTarget,
+    strategy: DirtyStrategy | null,
+  ): Promise<CheckoutResult>;
+  renameBranch(repoId: string, oldName: string, newName: string): Promise<WorkingStatus>;
+  /** A branch with unmerged commits needs `force`. */
+  deleteBranch(repoId: string, name: string, force: boolean): Promise<DeletedBranch>;
+  restoreBranch(
+    repoId: string,
+    name: string,
+    tip: string,
+    upstream: string | null,
+  ): Promise<WorkingStatus>;
+  setUpstream(repoId: string, branch: string, upstream: string | null): Promise<WorkingStatus>;
+  /** Annotated when a message is given. */
+  createTag(
+    repoId: string,
+    name: string,
+    target: string | null,
+    message: string | null,
+  ): Promise<WorkingStatus>;
+  deleteTag(repoId: string, name: string): Promise<DeletedTag>;
+  restoreTag(repoId: string, name: string, target: string): Promise<WorkingStatus>;
   /** Calls `handler` when a file of the working tree (or the index) changed. */
   onWorktreeChanged(handler: (repoId: string) => void): Promise<() => void>;
   /** Calls `handler` when a git command was added to the activity log. */
@@ -136,6 +181,15 @@ export const tauriBackend: RepoBackend = {
     listen<{ repoId: string }>("worktree-changed", (event) => handler(event.payload.repoId)),
   onActivityChanged: (handler) =>
     listen<{ repoId: string }>("activity-changed", (event) => handler(event.payload.repoId)),
+  createBranch,
+  checkout: checkoutTarget,
+  renameBranch,
+  deleteBranch,
+  restoreBranch,
+  setUpstream,
+  createTag,
+  deleteTag,
+  restoreTag,
   commitDetail: getCommitDetail,
   search: searchCommits,
   refs: listRefs,

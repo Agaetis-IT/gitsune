@@ -2,7 +2,11 @@ import { computed, ref, shallowReactive, shallowRef } from "vue";
 import {
   type ActivityEntry,
   type Area,
+  type CheckoutTarget,
   type CommitDetail,
+  type DeletedBranch,
+  type DeletedTag,
+  type DirtyStrategy,
   type FileChange,
   type FileDiff,
   type GitErrorKind,
@@ -59,7 +63,28 @@ export interface CommitDraft {
 export interface WriteError {
   kind: GitErrorKind;
   message: string;
+  /** Files the error is about (those a checkout would overwrite). */
+  files: string[];
 }
+
+/** A commit, as the target of a new branch or tag. */
+export interface CommitTarget {
+  id: string;
+  /** What to call it to the user (a short id, or a branch name). */
+  label: string;
+}
+
+/** The question the branch and tag dialogs ask. */
+export type BranchDialog =
+  | { type: "createBranch"; start: CommitTarget | null }
+  | { type: "renameBranch"; name: string }
+  /** `unmerged` holds git's warning once it refused to delete a branch with unmerged commits. */
+  | { type: "deleteBranch"; name: string; unmerged: string | null }
+  | { type: "createTag"; target: CommitTarget | null }
+  | { type: "deleteTag"; name: string }
+  | { type: "upstream"; branch: string }
+  /** A checkout would overwrite local changes: stash them, discard them, or give up. */
+  | { type: "dirtyCheckout"; target: CheckoutTarget; files: string[]; message: string };
 
 /** A short message shown to the user, optionally with an action (Undo...). */
 export interface Notice {
@@ -126,6 +151,8 @@ export interface RepoTab {
   identityRequired: boolean;
   snapshots: Snapshot[];
   activity: ActivityEntry[];
+  /** The branch or tag dialog being shown, if any. */
+  dialog: BranchDialog | null;
 }
 
 export type DiffMode = "unified" | "split";
@@ -365,11 +392,15 @@ export function createWorkspace(
     "signingFailed",
     "nothingToCommit",
     "needsIdentity",
+    "invalidName",
+    "alreadyExists",
+    "wouldOverwriteChanges",
+    "notFullyMerged",
   ];
 
   function handleWriteError(tab: RepoTab, error: unknown): void {
     const failure = toGitError(error);
-    tab.writeError = { kind: failure.kind, message: failure.message };
+    tab.writeError = { kind: failure.kind, message: failure.message, files: failure.files };
     if (failure.kind === "needsIdentity") tab.identityRequired = true;
     if (failure.kind === "staleHunk") void refreshStatus(tab, true);
     if (failure.kind === "readOnly") tab.readOnly = true;
@@ -509,6 +540,174 @@ export function createWorkspace(
     tab.writeError = null;
   };
 
+  // ---------- branches, checkout and tags ----------
+
+  const openDialog = (tab: RepoTab, dialog: BranchDialog): void => {
+    tab.writeError = null;
+    tab.dialog = dialog;
+  };
+
+  const closeDialog = (tab: RepoTab): void => {
+    tab.dialog = null;
+    tab.writeError = null;
+  };
+
+  const askCreateBranch = (tab: RepoTab, start: CommitTarget | null) =>
+    openDialog(tab, { type: "createBranch", start });
+  const askRenameBranch = (tab: RepoTab, name: string) =>
+    openDialog(tab, { type: "renameBranch", name });
+  const askDeleteBranch = (tab: RepoTab, name: string) =>
+    openDialog(tab, { type: "deleteBranch", name, unmerged: null });
+  const askCreateTag = (tab: RepoTab, target: CommitTarget | null) =>
+    openDialog(tab, { type: "createTag", target });
+  const askDeleteTag = (tab: RepoTab, name: string) => openDialog(tab, { type: "deleteTag", name });
+  const askUpstream = (tab: RepoTab, branch: string) =>
+    openDialog(tab, { type: "upstream", branch });
+
+  const targetLabel = (target: CheckoutTarget): string =>
+    target.kind === "commit" ? target.id.slice(0, 7) : target.name;
+
+  /**
+   * Switches branch (or detaches HEAD). When local changes are in the way a dialog offers to
+   * stash or discard them; `strategy` is the answer to that dialog.
+   */
+  async function checkout(
+    tab: RepoTab,
+    target: CheckoutTarget,
+    strategy: DirtyStrategy | null = null,
+  ): Promise<void> {
+    const result = await write(tab, () => backend.checkout(tab.id, target, strategy));
+    if (!result) {
+      const failure = tab.writeError;
+      if (failure?.kind === "wouldOverwriteChanges") {
+        tab.dialog = {
+          type: "dirtyCheckout",
+          target,
+          files: failure.files,
+          message: failure.message,
+        };
+      }
+      return;
+    }
+    closeDialog(tab);
+    applyStatus(tab, result.status, true);
+    const label = targetLabel(target);
+    const where = result.status.detached ? `Detached HEAD at ${label}` : `Switched to ${label}`;
+    const snapshot = result.snapshot;
+    if (result.stashConflict) {
+      notify(
+        "error",
+        `${where}, but applying your stashed changes conflicted. They are still in the stash (git stash list).`,
+      );
+    } else if (snapshot) {
+      notify("info", `${where}. Your changes were discarded.`, {
+        label: "Undo",
+        run: () => restoreSnapshot(tab, snapshot.reference),
+      });
+    } else if (result.stashed) {
+      notify("info", `${where}. Your changes were stashed and applied again.`);
+    } else {
+      notify("info", `${where}.`);
+    }
+  }
+
+  async function createBranch(
+    tab: RepoTab,
+    name: string,
+    start: string | null,
+    checkout: boolean,
+  ): Promise<boolean> {
+    const status = await write(tab, () => backend.createBranch(tab.id, name, start, checkout));
+    if (!status) return false;
+    closeDialog(tab);
+    applyStatus(tab, status, true);
+    notify("info", checkout ? `Created and switched to ${name}.` : `Created branch ${name}.`);
+    return true;
+  }
+
+  async function renameBranch(tab: RepoTab, oldName: string, newName: string): Promise<boolean> {
+    const status = await write(tab, () => backend.renameBranch(tab.id, oldName, newName));
+    if (!status) return false;
+    closeDialog(tab);
+    applyStatus(tab, status);
+    notify("info", `Renamed ${oldName} to ${newName}.`);
+    return true;
+  }
+
+  /**
+   * Deletes a branch. A branch with commits that are not merged anywhere else is first
+   * refused (the dialog then shows git's warning); `force` is the answer to that warning.
+   */
+  async function deleteBranch(tab: RepoTab, name: string, force = false): Promise<void> {
+    const deleted = await write(tab, () => backend.deleteBranch(tab.id, name, force));
+    if (!deleted) {
+      const failure = tab.writeError;
+      if (failure?.kind === "notFullyMerged") {
+        tab.dialog = { type: "deleteBranch", name, unmerged: failure.message };
+      }
+      return;
+    }
+    closeDialog(tab);
+    applyStatus(tab, deleted.status);
+    notify("info", `Deleted branch ${name}.`, {
+      label: "Undo",
+      run: () => restoreDeletedBranch(tab, deleted),
+    });
+  }
+
+  async function restoreDeletedBranch(tab: RepoTab, deleted: DeletedBranch): Promise<void> {
+    await writeStatus(tab, () =>
+      backend.restoreBranch(tab.id, deleted.name, deleted.tip, deleted.upstream),
+    );
+    if (!tab.writeError) notify("info", `Branch ${deleted.name} is back.`);
+  }
+
+  async function setUpstream(
+    tab: RepoTab,
+    branch: string,
+    upstream: string | null,
+  ): Promise<boolean> {
+    const status = await write(tab, () => backend.setUpstream(tab.id, branch, upstream));
+    if (!status) return false;
+    closeDialog(tab);
+    applyStatus(tab, status);
+    notify(
+      "info",
+      upstream ? `${branch} now tracks ${upstream}.` : `${branch} no longer tracks a branch.`,
+    );
+    return true;
+  }
+
+  async function createTag(
+    tab: RepoTab,
+    name: string,
+    target: string | null,
+    message: string | null,
+  ): Promise<boolean> {
+    const status = await write(tab, () => backend.createTag(tab.id, name, target, message));
+    if (!status) return false;
+    closeDialog(tab);
+    applyStatus(tab, status);
+    notify("info", `Created tag ${name}.`);
+    return true;
+  }
+
+  async function deleteTag(tab: RepoTab, name: string): Promise<void> {
+    const deleted = await write(tab, () => backend.deleteTag(tab.id, name));
+    if (!deleted) return;
+    closeDialog(tab);
+    applyStatus(tab, deleted.status);
+    notify("info", `Deleted tag ${name}.`, {
+      label: "Undo",
+      run: () => restoreDeletedTag(tab, deleted),
+    });
+  }
+
+  async function restoreDeletedTag(tab: RepoTab, deleted: DeletedTag): Promise<void> {
+    await writeStatus(tab, () => backend.restoreTag(tab.id, deleted.name, deleted.target));
+    if (!tab.writeError) notify("info", `Tag ${deleted.name} is back.`);
+  }
+
   async function setReadOnly(tab: RepoTab, readOnly: boolean): Promise<void> {
     try {
       await backend.setReadOnly(tab.id, readOnly);
@@ -582,6 +781,7 @@ export function createWorkspace(
         identityRequired: false,
         snapshots: [],
         activity: [],
+        dialog: null,
       });
       tabs.value = [...tabs.value, tab];
       activeId.value = tab.id;
@@ -759,6 +959,20 @@ export function createWorkspace(
   }
 
   return {
+    askCreateBranch,
+    askRenameBranch,
+    askDeleteBranch,
+    askCreateTag,
+    askDeleteTag,
+    askUpstream,
+    closeDialog,
+    checkout,
+    createBranch,
+    renameBranch,
+    deleteBranch,
+    setUpstream,
+    createTag,
+    deleteTag,
     notices,
     activityOpen,
     notify,

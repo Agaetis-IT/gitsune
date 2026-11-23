@@ -259,6 +259,11 @@ export type GitErrorKind =
   | "signingFailed"
   | "nothingToCommit"
   | "staleHunk"
+  | "invalidName"
+  | "alreadyExists"
+  | "wouldOverwriteChanges"
+  | "notFullyMerged"
+  | "branchCheckedOut"
   | "other";
 
 /** A git operation that failed, with what the interface needs to react to it. */
@@ -266,6 +271,8 @@ export class GitCommandError extends Error {
   constructor(
     readonly kind: GitErrorKind,
     message: string,
+    /** Files the error is about (those a checkout would overwrite). */
+    readonly files: string[] = [],
   ) {
     super(message);
     this.name = "GitCommandError";
@@ -276,8 +283,12 @@ export class GitCommandError extends Error {
 export function toGitError(error: unknown): GitCommandError {
   if (error instanceof GitCommandError) return error;
   if (typeof error === "object" && error !== null && "message" in error) {
-    const { kind, message } = error as { kind?: GitErrorKind; message: string };
-    return new GitCommandError(kind ?? "other", String(message));
+    const { kind, message, files } = error as {
+      kind?: GitErrorKind;
+      message: string;
+      files?: string[];
+    };
+    return new GitCommandError(kind ?? "other", String(message), Array.isArray(files) ? files : []);
   }
   return new GitCommandError("other", String(error));
 }
@@ -371,3 +382,82 @@ export const setReadOnly = (repoId: string, readOnly: boolean) =>
 export const getActivity = (repoId: string) =>
   gitInvoke<ActivityEntry[]>("get_activity", { repoId });
 export const clearActivity = (repoId: string) => gitInvoke<void>("clear_activity", { repoId });
+
+// ---------- branches, checkout and tags ----------
+
+/** Where a checkout goes. */
+export type CheckoutTarget =
+  | { kind: "branch"; name: string }
+  /** A remote-tracking branch (`origin/x`): the local branch is created if needed. */
+  | { kind: "remote"; name: string }
+  /** A commit, as a detached HEAD. */
+  | { kind: "commit"; id: string }
+  | { kind: "tag"; name: string };
+
+/** What to do with local changes that a checkout would overwrite. */
+export type DirtyStrategy = "stash" | "discard";
+
+export interface CheckoutResult {
+  status: WorkingStatus;
+  /** Made before discarding changes; restoring it brings them back. */
+  snapshot: Snapshot | null;
+  /** The changes were stashed and applied again after the switch. */
+  stashed: boolean;
+  /** Applying the stash again conflicted: the changes are still in the stash. */
+  stashConflict: boolean;
+}
+
+export interface DeletedBranch {
+  name: string;
+  /** The commit the branch pointed at. */
+  tip: string;
+  upstream: string | null;
+  status: WorkingStatus;
+}
+
+export interface DeletedTag {
+  name: string;
+  /** What the tag pointed at: the commit, or the tag object of an annotated tag. */
+  target: string;
+  status: WorkingStatus;
+}
+
+export const createBranch = (
+  repoId: string,
+  name: string,
+  start: string | null,
+  checkout: boolean,
+) => gitInvoke<WorkingStatus>("create_branch", { repoId, name, start, checkout });
+
+export const checkoutTarget = (
+  repoId: string,
+  target: CheckoutTarget,
+  strategy: DirtyStrategy | null,
+) => gitInvoke<CheckoutResult>("checkout_target", { repoId, target, strategy });
+
+export const renameBranch = (repoId: string, oldName: string, newName: string) =>
+  gitInvoke<WorkingStatus>("rename_branch", { repoId, oldName, newName });
+
+/** A branch with unmerged commits needs `force` (the error is `notFullyMerged` without it). */
+export const deleteBranch = (repoId: string, name: string, force: boolean) =>
+  gitInvoke<DeletedBranch>("delete_branch", { repoId, name, force });
+
+export const restoreBranch = (repoId: string, name: string, tip: string, upstream: string | null) =>
+  gitInvoke<WorkingStatus>("restore_branch", { repoId, name, tip, upstream });
+
+export const setUpstream = (repoId: string, branch: string, upstream: string | null) =>
+  gitInvoke<WorkingStatus>("set_upstream", { repoId, branch, upstream });
+
+/** Creates a tag at `target` (HEAD by default); annotated when a message is given. */
+export const createTag = (
+  repoId: string,
+  name: string,
+  target: string | null,
+  message: string | null,
+) => gitInvoke<WorkingStatus>("create_tag", { repoId, name, target, message });
+
+export const deleteTag = (repoId: string, name: string) =>
+  gitInvoke<DeletedTag>("delete_tag", { repoId, name });
+
+export const restoreTag = (repoId: string, name: string, target: string) =>
+  gitInvoke<WorkingStatus>("restore_tag", { repoId, name, target });

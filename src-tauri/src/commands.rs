@@ -8,9 +8,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::git::{
-    self, ActivityEntry, Area, CommitDetail, CommitResult, DiscardResult, FileDiff, GitError,
-    GraphCache, GraphMeta, GraphPage, RefInfo, RepoInfo, RepoStores, RepoWatcher, SearchResult,
-    Snapshot, WorkingStatus,
+    self, ActivityEntry, Area, CheckoutResult, CheckoutTarget, CommitDetail, CommitResult,
+    DeletedBranch, DeletedTag, DirtyStrategy, DiscardResult, FileDiff, GitError, GraphCache,
+    GraphMeta, GraphPage, RefInfo, RepoInfo, RepoStores, RepoWatcher, SearchResult, Snapshot,
+    WorkingStatus,
 };
 
 struct OpenRepo {
@@ -468,4 +469,119 @@ pub fn get_activity(
 pub fn clear_activity(repo_id: String, registry: State<RepoRegistry>) -> Result<(), GitError> {
     registry.stores(&repo_id)?.activity.clear();
     Ok(())
+}
+
+// ---------- branches, checkout and tags ----------
+
+/// Creates a branch at `start` (HEAD by default), optionally switching to it.
+#[tauri::command]
+pub async fn create_branch(
+    repo_id: String,
+    name: String,
+    start: Option<String>,
+    checkout: bool,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::create_branch(ctx, &name, start.as_deref(), checkout)
+    })
+}
+
+/// Switches to a branch, a remote branch, a commit or a tag. When local changes are in the
+/// way the error lists the files; ask again with `strategy` ("stash" or "discard").
+#[tauri::command]
+pub async fn checkout_target(
+    repo_id: String,
+    target: CheckoutTarget,
+    strategy: Option<DirtyStrategy>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<CheckoutResult, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::checkout(ctx, &target, strategy)
+    })
+}
+
+#[tauri::command]
+pub async fn rename_branch(
+    repo_id: String,
+    old_name: String,
+    new_name: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::rename_branch(ctx, &old_name, &new_name)
+    })
+}
+
+/// Deletes a local branch; a branch with unmerged commits needs `force`.
+#[tauri::command]
+pub async fn delete_branch(
+    repo_id: String,
+    name: String,
+    force: bool,
+    registry: State<'_, RepoRegistry>,
+) -> Result<DeletedBranch, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::delete_branch(ctx, &name, force)
+    })
+}
+
+#[tauri::command]
+pub async fn restore_branch(
+    repo_id: String,
+    name: String,
+    tip: String,
+    upstream: Option<String>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::restore_branch(ctx, &name, &tip, upstream.as_deref())
+    })
+}
+
+#[tauri::command]
+pub async fn set_upstream(
+    repo_id: String,
+    branch: String,
+    upstream: Option<String>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::set_upstream(ctx, &branch, upstream.as_deref())
+    })
+}
+
+/// Creates a tag at `target` (HEAD by default); annotated when a message is given.
+#[tauri::command]
+pub async fn create_tag(
+    repo_id: String,
+    name: String,
+    target: Option<String>,
+    message: Option<String>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::create_tag(ctx, &name, target.as_deref(), message.as_deref())
+    })
+}
+
+#[tauri::command]
+pub async fn delete_tag(
+    repo_id: String,
+    name: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<DeletedTag, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::delete_tag(ctx, &name))
+}
+
+#[tauri::command]
+pub async fn restore_tag(
+    repo_id: String,
+    name: String,
+    target: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::restore_tag(ctx, &name, &target)
+    })
 }

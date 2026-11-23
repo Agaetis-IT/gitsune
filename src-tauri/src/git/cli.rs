@@ -31,6 +31,16 @@ pub enum ErrorKind {
     NothingToCommit,
     /// The file changed since the hunk was shown: reload the diff.
     StaleHunk,
+    /// The name is not a valid branch or tag name.
+    InvalidName,
+    /// A branch or tag with that name exists already.
+    AlreadyExists,
+    /// Switching would overwrite local changes (the files are in `GitError::files`).
+    WouldOverwriteChanges,
+    /// The branch has commits no other branch has: deleting it needs confirmation.
+    NotFullyMerged,
+    /// The branch is checked out (here or in another working tree).
+    BranchCheckedOut,
     Other,
 }
 
@@ -40,6 +50,8 @@ pub struct GitError {
     pub kind: ErrorKind,
     /// What git said, or what the app wants to tell.
     pub message: String,
+    /// Files the error is about (those a checkout would overwrite); empty otherwise.
+    pub files: Vec<String>,
 }
 
 impl GitError {
@@ -47,7 +59,13 @@ impl GitError {
         Self {
             kind,
             message: message.into(),
+            files: Vec::new(),
         }
+    }
+
+    pub fn with_files(mut self, files: Vec<String>) -> Self {
+        self.files = files;
+        self
     }
 
     pub fn other(message: impl Into<String>) -> Self {
@@ -239,10 +257,22 @@ fn display(args: &[&str]) -> String {
 /// The error for a failed command (no knowledge of which command it was beyond its output).
 pub fn error_from(output: &RunOutput) -> GitError {
     let text = output.failure_text();
-    GitError::new(
-        classify(&output.stdout_text(), &output.stderr).unwrap_or(ErrorKind::Other),
-        text,
-    )
+    let kind = classify(&output.stdout_text(), &output.stderr).unwrap_or(ErrorKind::Other);
+    let error = GitError::new(kind, text);
+    if kind == ErrorKind::WouldOverwriteChanges {
+        let files = indented_lines(&output.stderr);
+        return error.with_files(files);
+    }
+    error
+}
+
+/// The lines git indents with a tab: the files it lists after a complaint.
+pub fn indented_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix('\t'))
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
 }
 
 /// Recognises the failures the interface treats specially, from the messages git prints
@@ -272,6 +302,24 @@ pub fn classify(stdout: &str, stderr: &str) -> Option<ErrorKind> {
         || has("nothing added to commit")
     {
         return Some(ErrorKind::NothingToCommit);
+    }
+    let lower = both.to_lowercase();
+    let mentions = |needle: &str| lower.contains(needle);
+    if mentions("would be overwritten by checkout") || mentions("would be overwritten by switch") {
+        return Some(ErrorKind::WouldOverwriteChanges);
+    }
+    if mentions("is not fully merged") {
+        return Some(ErrorKind::NotFullyMerged);
+    }
+    if mentions("cannot delete branch") && (mentions("checked out") || mentions("used by worktree"))
+    {
+        return Some(ErrorKind::BranchCheckedOut);
+    }
+    if mentions("already exists") && (mentions("a branch named") || mentions("tag '")) {
+        return Some(ErrorKind::AlreadyExists);
+    }
+    if mentions("is not a valid branch name") || mentions("is not a valid tag name") {
+        return Some(ErrorKind::InvalidName);
     }
     None
 }

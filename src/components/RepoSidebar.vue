@@ -9,6 +9,8 @@ const emit = defineEmits<{
   toggleRef: [fullName: string];
   toggleKind: [kind: RefKind];
   toggleHighlight: [lane: number];
+  /** Right click on a ref (window coordinates). */
+  refMenu: [ref: RefInfo, x: number, y: number];
   jump: [row: number];
 }>();
 
@@ -77,6 +79,7 @@ function onRefClick(ref: RefInfo) {
           :key="reference.fullName"
           class="hover:bg-accent group flex items-center rounded pr-1 pl-7"
           :class="{ 'opacity-50': tab.hidden.has(reference.fullName) }"
+          @contextmenu.prevent="emit('refMenu', reference, $event.clientX, $event.clientY)"
         >
           <button
             class="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left"
