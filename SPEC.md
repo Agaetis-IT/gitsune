@@ -93,6 +93,15 @@ Local branches, remote branches and tags. Remotes and tags can be hidden through
 
 Lane state (active lanes at the cursor) is kept in Rust per repository so that paging stays consistent without recomputing the whole history.
 
+### 5.2.1 Paged graph API (M3)
+
+- `get_graph_meta(repoId)` reads and lays out the whole graph (replacing any previous layout) and returns `{ total, maxCols, lanes, refs, loadMs, layoutMs }`. Lanes are sent once; the frontend derives vertical segments from each lane's `col`, `firstRow` and `lastRow`.
+- `get_graph_page(repoId, cursor, limit)` returns `{ start, rows, nextCursor, total }`. `cursor` is a row index, `limit` is clamped to 1..1000 and `nextCursor` is `null` at the end.
+- A row carries: `row`, `id`, `parents` (ids), `summary`, `author`, `time`, `col`, `lane`, `edges` (non-vertical connectors to the next row) and `refs`. Commit details are read from git per page; only ids, layout and refs stay in memory.
+- Every page is a slice of the same cached layout, so lanes and columns never change between pages. The cache is replaced by the next `get_graph_meta` call; incremental updates come with M8.
+- Types for the frontend live in `src/lib/api.ts`.
+- Measured on the 100,000-commit synthetic repository: full build 412 ms, meta 599 KiB (3,989 lanes, 1,199 refs), a 200-row page about 0.7 ms and 48 KiB, all 100 pages of 1,000 rows walked in 305 ms.
+
 ### 5.3 Live refresh
 A `notify` watcher on `.git` (HEAD, `refs/`, `packed-refs`) triggers an incremental update: only new commits and changed refs are recomputed, and the frontend receives a `repo-changed` event with the affected range. Events are debounced.
 

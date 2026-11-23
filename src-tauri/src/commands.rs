@@ -1,45 +1,73 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
-
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
 
 use gix::ThreadSafeRepository;
-use serde::Serialize;
 use tauri::State;
 
-use crate::git::{self, RefInfo, RepoInfo};
+use crate::git::{self, GraphCache, GraphMeta, GraphPage, RefInfo, RepoInfo};
+
+struct OpenRepo {
+    repo: ThreadSafeRepository,
+    /// Layout of the whole graph, built on first use.
+    graph: Option<Arc<GraphCache>>,
+}
 
 /// Opened repositories, keyed by repository id (its root path).
 #[derive(Default)]
 pub struct RepoRegistry {
-    repos: Mutex<HashMap<String, ThreadSafeRepository>>,
+    repos: Mutex<HashMap<String, OpenRepo>>,
 }
+
+const POISONED: &str = "repository registry poisoned";
 
 impl RepoRegistry {
     fn insert(&self, id: String, repo: ThreadSafeRepository) -> Result<(), String> {
-        self.repos
-            .lock()
-            .map_err(|_| "repository registry poisoned".to_string())?
-            .insert(id, repo);
+        let mut repos = self.repos.lock().map_err(|_| POISONED.to_string())?;
+        repos.insert(id, OpenRepo { repo, graph: None });
         Ok(())
     }
 
     fn get(&self, id: &str) -> Result<ThreadSafeRepository, String> {
-        self.repos
-            .lock()
-            .map_err(|_| "repository registry poisoned".to_string())?
+        let repos = self.repos.lock().map_err(|_| POISONED.to_string())?;
+        repos
             .get(id)
-            .cloned()
+            .map(|open| open.repo.clone())
             .ok_or_else(|| format!("repository not open: {id}"))
     }
 
     fn remove(&self, id: &str) -> Result<(), String> {
         self.repos
             .lock()
-            .map_err(|_| "repository registry poisoned".to_string())?
+            .map_err(|_| POISONED.to_string())?
             .remove(id);
         Ok(())
+    }
+
+    /// Returns the repository and its graph, building (or rebuilding) the graph if needed.
+    ///
+    /// The graph is built outside the lock so other repositories stay usable meanwhile.
+    fn graph(
+        &self,
+        id: &str,
+        rebuild: bool,
+    ) -> Result<(ThreadSafeRepository, Arc<GraphCache>), String> {
+        let (repo, cached) = {
+            let repos = self.repos.lock().map_err(|_| POISONED.to_string())?;
+            let open = repos
+                .get(id)
+                .ok_or_else(|| format!("repository not open: {id}"))?;
+            (open.repo.clone(), open.graph.clone())
+        };
+        if let (false, Some(graph)) = (rebuild, cached) {
+            return Ok((repo, graph));
+        }
+        let graph = Arc::new(git::build_graph_cache(&repo)?);
+        let mut repos = self.repos.lock().map_err(|_| POISONED.to_string())?;
+        if let Some(open) = repos.get_mut(id) {
+            open.graph = Some(graph.clone());
+        }
+        Ok((repo, graph))
     }
 }
 
@@ -60,40 +88,25 @@ pub fn list_refs(repo_id: String, registry: State<RepoRegistry>) -> Result<Vec<R
     git::list_refs(&registry.get(&repo_id)?)
 }
 
-/// Size and timing of the layout of a whole repository (smoke test for the layout engine).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LayoutSummary {
-    pub commits: usize,
-    pub lanes: usize,
-    pub named_lanes: usize,
-    pub max_cols: u32,
-    pub load_ms: u128,
-    pub layout_ms: u128,
+/// Reads and lays out the whole graph (replacing any previous layout) and returns
+/// what the frontend needs before requesting pages: totals, lanes and refs.
+#[tauri::command]
+pub async fn get_graph_meta(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<GraphMeta, String> {
+    let (_, graph) = registry.graph(&repo_id, true)?;
+    Ok(git::graph_meta(&graph))
 }
 
+/// Returns `limit` rows (at most 1000) starting at row `cursor`.
 #[tauri::command]
-pub fn layout_summary(
+pub async fn get_graph_page(
     repo_id: String,
-    registry: State<RepoRegistry>,
-) -> Result<LayoutSummary, String> {
-    let repo = registry.get(&repo_id)?;
-    let refs = git::list_refs(&repo)?;
-
-    let started = Instant::now();
-    let graph = git::load_graph(&repo, &refs)?;
-    let load_ms = started.elapsed().as_millis();
-
-    let started = Instant::now();
-    let layout = crate::layout::layout(&graph.commits, &graph.refs);
-    let layout_ms = started.elapsed().as_millis();
-
-    Ok(LayoutSummary {
-        commits: graph.commits.len(),
-        lanes: layout.lanes.len(),
-        named_lanes: layout.lanes.iter().filter(|l| l.name.is_some()).count(),
-        max_cols: layout.max_cols,
-        load_ms,
-        layout_ms,
-    })
+    cursor: usize,
+    limit: usize,
+    registry: State<'_, RepoRegistry>,
+) -> Result<GraphPage, String> {
+    let (repo, graph) = registry.graph(&repo_id, false)?;
+    git::graph_page(&repo, &graph, cursor, limit)
 }

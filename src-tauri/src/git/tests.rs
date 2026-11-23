@@ -5,8 +5,9 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
+use super::graph::load_graph;
 use super::refs::RefKind;
-use super::{list_refs, load_graph, open_repository};
+use super::{list_refs, open_repository};
 use crate::layout::{self, LaneKind};
 
 fn git(dir: &Path, args: &[&str]) {
@@ -186,4 +187,193 @@ fn layout_of_a_synthetic_repository() {
         computed.max_cols
     );
     println!("load {load:?}, layout {layout_time:?}, validation {validation:?}");
+}
+
+// ---------- paged graph ----------
+
+use super::{build_graph_cache, graph_meta, graph_page};
+
+fn linear_repo(commits: usize) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    git(tmp.path(), &["init", "-q", "-b", "main"]);
+    for i in 0..commits {
+        commit(tmp.path(), &format!("commit {i}"));
+    }
+    tmp
+}
+
+#[test]
+fn pages_are_slices_of_one_consistent_layout() {
+    let tmp = merged_repo();
+    let (repo, _) = open_repository(tmp.path()).unwrap();
+    let cache = build_graph_cache(&repo).unwrap();
+
+    let meta = graph_meta(&cache);
+    assert_eq!(meta.total, 4);
+    assert_eq!(meta.max_cols, 2);
+    assert_eq!(meta.refs.len(), 1);
+    assert!(
+        meta.lanes
+            .iter()
+            .any(|l| l.name.as_deref() == Some("feature/demo"))
+    );
+
+    let first = graph_page(&repo, &cache, 0, 3).unwrap();
+    assert_eq!(
+        (first.start, first.rows.len(), first.next_cursor),
+        (0, 3, Some(3))
+    );
+    let second = graph_page(&repo, &cache, 3, 3).unwrap();
+    assert_eq!(
+        (second.start, second.rows.len(), second.next_cursor),
+        (3, 1, None)
+    );
+
+    let whole = graph_page(&repo, &cache, 0, 100).unwrap();
+    let stitched: Vec<_> = first
+        .rows
+        .iter()
+        .chain(&second.rows)
+        .map(|r| r.id.clone())
+        .collect();
+    let all: Vec<_> = whole.rows.iter().map(|r| r.id.clone()).collect();
+    assert_eq!(stitched, all);
+    assert_eq!(whole.next_cursor, None);
+
+    // Row 0 is the merge commit: details, parents and refs come with it.
+    let merge = &whole.rows[0];
+    assert_eq!(merge.summary, "Merge branch 'feature/demo'");
+    assert_eq!(merge.author, "Alice Fakename");
+    assert_eq!(merge.parents.len(), 2);
+    assert!(merge.parents.iter().all(|p| all[1..].contains(p)));
+    assert_eq!(merge.refs.len(), 1);
+    assert!(merge.refs[0].is_head);
+    assert_eq!(merge.refs[0].name, "main");
+    assert_eq!(
+        merge.edges.len(),
+        1,
+        "the merge forks one lane to the right"
+    );
+    assert!(whole.rows[1..].iter().all(|r| r.refs.is_empty()));
+}
+
+#[test]
+fn cursor_walks_the_whole_graph_without_gaps_or_repeats() {
+    let tmp = linear_repo(25);
+    let (repo, _) = open_repository(tmp.path()).unwrap();
+    let cache = build_graph_cache(&repo).unwrap();
+
+    let mut cursor = Some(0);
+    let mut rows = Vec::new();
+    while let Some(start) = cursor {
+        let page = graph_page(&repo, &cache, start, 7).unwrap();
+        assert!(page.rows.len() <= 7);
+        cursor = page.next_cursor;
+        rows.extend(page.rows);
+    }
+    assert_eq!(rows.len(), 25);
+    assert!(rows.iter().enumerate().all(|(i, r)| r.row == i));
+    // Newest first: the summary of row 0 is the last commit made.
+    assert_eq!(rows[0].summary, "commit 24");
+    assert_eq!(rows[24].summary, "commit 0");
+    assert!(rows.iter().all(|r| r.col == 0 && r.edges.is_empty()));
+}
+
+#[test]
+fn page_bounds_are_clamped() {
+    let tmp = linear_repo(3);
+    let (repo, _) = open_repository(tmp.path()).unwrap();
+    let cache = build_graph_cache(&repo).unwrap();
+
+    // A zero limit still makes progress.
+    assert_eq!(graph_page(&repo, &cache, 0, 0).unwrap().rows.len(), 1);
+    // Past the end: empty page, no further cursor.
+    let beyond = graph_page(&repo, &cache, 99, 10).unwrap();
+    assert!(beyond.rows.is_empty() && beyond.next_cursor.is_none());
+    assert_eq!((beyond.start, beyond.total), (3, 3));
+}
+
+#[test]
+fn page_serializes_with_camel_case_keys() {
+    let tmp = merged_repo();
+    let (repo, _) = open_repository(tmp.path()).unwrap();
+    let cache = build_graph_cache(&repo).unwrap();
+    let page = graph_page(&repo, &cache, 0, 1).unwrap();
+
+    let json = serde_json::to_value(&page).unwrap();
+    assert_eq!(json["nextCursor"], 1);
+    let row = &json["rows"][0];
+    for key in [
+        "row", "id", "parents", "summary", "author", "time", "col", "lane", "edges", "refs",
+    ] {
+        assert!(row.get(key).is_some(), "missing {key}");
+    }
+    assert_eq!(row["edges"][0]["bend"], "start");
+    assert_eq!(row["refs"][0]["isHead"], true);
+
+    let meta = serde_json::to_value(graph_meta(&cache)).unwrap();
+    assert_eq!(meta["maxCols"], 2);
+    assert!(meta["lanes"][0].get("firstRow").is_some());
+}
+
+/// Paging speed on a big repository:
+/// `SYNTH_REPO=/path cargo test --release paging_a_synthetic -- --ignored --nocapture`
+#[test]
+#[ignore = "needs SYNTH_REPO=<path to a synthetic repository>"]
+fn paging_a_synthetic_repository() {
+    use std::time::Instant;
+
+    let path = std::env::var("SYNTH_REPO").expect("set SYNTH_REPO");
+    let (repo, _) = open_repository(Path::new(&path)).unwrap();
+
+    let started = Instant::now();
+    let cache = build_graph_cache(&repo).unwrap();
+    let build = started.elapsed();
+    let meta = graph_meta(&cache);
+    println!(
+        "build {build:?} (load {} ms, layout {} ms), {} rows, {} lanes, {} columns",
+        meta.load_ms,
+        meta.layout_ms,
+        meta.total,
+        meta.lanes.len(),
+        meta.max_cols
+    );
+    let started = Instant::now();
+    let json = serde_json::to_string(&meta).unwrap();
+    println!(
+        "meta serialized: {} KiB in {:?}",
+        json.len() / 1024,
+        started.elapsed()
+    );
+
+    for (label, start) in [
+        ("top", 0),
+        ("middle", meta.total / 2),
+        ("bottom", meta.total - 200),
+    ] {
+        let started = Instant::now();
+        let page = graph_page(&repo, &cache, start, 200).unwrap();
+        let fetch = started.elapsed();
+        let started = Instant::now();
+        let json = serde_json::to_string(&page).unwrap();
+        println!(
+            "page {label:<6} 200 rows: {fetch:?} + serialize {:?}, {} KiB",
+            started.elapsed(),
+            json.len() / 1024
+        );
+    }
+
+    let started = Instant::now();
+    let mut cursor = Some(0);
+    let mut seen = 0;
+    while let Some(start) = cursor {
+        let page = graph_page(&repo, &cache, start, 1000).unwrap();
+        seen += page.rows.len();
+        cursor = page.next_cursor;
+    }
+    println!(
+        "walked all {seen} rows in pages of 1000: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(seen, meta.total);
 }
