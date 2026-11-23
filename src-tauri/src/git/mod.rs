@@ -8,6 +8,7 @@ mod graph;
 mod graph_page;
 mod merge;
 mod ops;
+mod rebase;
 mod refs;
 mod remote;
 mod repo;
@@ -34,13 +35,14 @@ pub use graph_page::{
 };
 pub use merge::{
     ConflictFile, MergeInfo, MergeMode, MergeResult, Side, abort_operation, conflict_file,
-    continue_operation, merge, merge_info, resolve_file, resolve_side,
+    continue_operation, merge, merge_info, resolve_file, resolve_side, skip_operation,
 };
 pub use ops::{
     Area, CommitResult, DiscardResult, Identity, OpCtx, Snapshot, commit, discard_paths, identity,
     list_snapshots, restore_snapshot, set_identity, stage_hunk, stage_paths, undo_commit,
     unstage_hunk, unstage_paths, working_diff,
 };
+pub use rebase::{RebasePlan, RebaseResult, TodoItem, rebase, rebase_plan};
 pub use refs::{RefInfo, list_refs};
 pub use remote::{
     PullStrategy, PushOptions, RemoteResult, delete_remote_branch, fetch, list_remotes, pull, push,
@@ -70,6 +72,8 @@ mod diff_tests;
 mod merge_tests;
 #[cfg(test)]
 mod ops_tests;
+#[cfg(test)]
+mod rebase_tests;
 #[cfg(test)]
 mod refresh_tests;
 #[cfg(test)]

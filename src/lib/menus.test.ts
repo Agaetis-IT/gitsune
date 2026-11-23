@@ -30,6 +30,8 @@ describe("commit menu", () => {
       "cherryPick",
       "revert",
       "reset",
+      "rebase",
+      "rebaseInteractive",
       "copyId",
     ]);
     expect(items.every((i) => !i.disabled)).toBe(true);
@@ -51,6 +53,8 @@ describe("commit menu", () => {
       "cherryPick",
       "revert",
       "reset",
+      "rebase",
+      "rebaseInteractive",
     ]);
     expect(items.find((i) => i.id === "copyId")?.disabled).toBeUndefined();
     expect(items[0].disabled).toBe("Read-only mode is on.");
@@ -80,6 +84,7 @@ describe("ref menu", () => {
       "upstream",
       "push",
       "merge",
+      "rebase",
       "delete",
       "highlight",
       "hide",
@@ -91,6 +96,7 @@ describe("ref menu", () => {
   it("the checked-out branch cannot be merged into itself", () => {
     const items = refMenu(ref("main", "local", true), ctx());
     expect(find(items, "merge")?.disabled).toContain("current branch");
+    expect(find(items, "rebase")?.disabled).toContain("current branch");
     expect(find(refMenu(ref("topic", "local"), ctx()), "merge")?.label).toContain("topic");
   });
 
@@ -103,7 +109,7 @@ describe("ref menu", () => {
 
   it("a remote branch is checked out as a local one and can be hidden", () => {
     const items = refMenu(ref("origin/topic", "remote"), ctx());
-    expect(ids(items)).toEqual(["checkout", "merge", "deleteRemote", "hide", "copyName"]);
+    expect(ids(items)).toEqual(["checkout", "merge", "rebase", "deleteRemote", "hide", "copyName"]);
     expect(find(items, "checkout")?.label).toContain("local branch");
     expect(find(items, "deleteRemote")?.danger).toBe(true);
     expect(
@@ -131,7 +137,15 @@ describe("ref menu", () => {
   it("read-only mode greys out every write of a branch menu but not the view actions", () => {
     const items = refMenu(ref("topic", "local"), ctx({ readOnly: true, canHighlight: true }));
     const disabled = items.filter((i) => i.disabled).map((i) => i.id);
-    expect(disabled).toEqual(["checkout", "rename", "upstream", "push", "merge", "delete"]);
+    expect(disabled).toEqual([
+      "checkout",
+      "rename",
+      "upstream",
+      "push",
+      "merge",
+      "rebase",
+      "delete",
+    ]);
     expect(find(items, "hide")?.disabled).toBeUndefined();
   });
 });

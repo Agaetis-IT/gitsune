@@ -12,6 +12,7 @@ import ConflictResolver from "@/components/ConflictResolver.vue";
 import HistoryDialogs from "@/components/HistoryDialogs.vue";
 import MergeDialogs from "@/components/MergeDialogs.vue";
 import NoticeHost from "@/components/NoticeHost.vue";
+import RebaseDialog from "@/components/RebaseDialog.vue";
 import OperationBanner from "@/components/OperationBanner.vue";
 import RemoteDialogs from "@/components/RemoteDialogs.vue";
 import RemoteStatus from "@/components/RemoteStatus.vue";
@@ -176,6 +177,8 @@ function onMenuSelect(id: string) {
     else if (id === "cherryPick") void workspace.cherryPick(tab, { id: t.id, label: short });
     else if (id === "revert") void workspace.revert(tab, { id: t.id, label: short });
     else if (id === "reset") workspace.askReset(tab, { id: t.id, label: short });
+    else if (id === "rebase") void workspace.askRebase(tab, t.id);
+    else if (id === "rebaseInteractive") void workspace.askRebase(tab, t.id, true);
     else if (id === "copyId") copy(t.id);
   } else if (t.kind === "lane") {
     if (id === "highlight") workspace.toggleHighlight(tab, t.lane.id);
@@ -189,6 +192,7 @@ function onMenuSelect(id: string) {
     else if (id === "delete") workspace.askDeleteBranch(tab, ref.name);
     else if (id === "push") void workspace.askPush(tab, ref.name);
     else if (id === "merge") void workspace.askMerge(tab, ref.name);
+    else if (id === "rebase") void workspace.askRebase(tab, ref.name);
     else if (id === "deleteRemote") {
       const slash = ref.name.indexOf("/");
       workspace.askDeleteRemoteBranch(tab, ref.name.slice(0, slash), ref.name.slice(slash + 1));
@@ -532,6 +536,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       <RemoteDialogs :tab="active" />
       <HistoryDialogs :tab="active" />
       <MergeDialogs :tab="active" />
+      <RebaseDialog :tab="active" />
       <RemoteStatus :tab="active" />
       <ContextMenu
         v-if="menu"

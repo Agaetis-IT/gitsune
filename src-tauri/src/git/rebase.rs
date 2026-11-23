@@ -1,0 +1,331 @@
+//! Rebase: replay the commits of the current branch on top of another one, optionally after
+//! editing the list of commits (reorder, reword, edit, squash, fixup, drop).
+//!
+//! Plain rebases are `git rebase <onto>`. For the interactive one git is started with
+//! `GIT_SEQUENCE_EDITOR` pointing to a tiny script that puts the list built in the app in
+//! place of the one git proposes, so what runs is exactly what was shown. New messages
+//! (reword, squash) are applied with an `exec git commit --amend -F` line after the commit, so
+//! no editor is ever started. The files these lines refer to live in the git directory: a
+//! rebase that stops on a conflict and is continued later still finds them.
+
+use std::collections::HashSet;
+use std::fs;
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+use super::branches::{fallback_identity, resolve};
+use super::cli::{GitError, RunOptions, error_from};
+use super::ops::{OpCtx, head_id};
+use super::status::{OperationKind, WorkingStatus};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebaseCommit {
+    pub id: String,
+    pub summary: String,
+}
+
+/// What rebasing onto a target would replay, to show it before asking.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebasePlan {
+    /// The commits of the current branch that are not in the target, oldest first. Merge commits
+    /// are not listed: a plain rebase leaves them out and replays what they brought.
+    pub commits: Vec<RebaseCommit>,
+    pub merges: u32,
+    /// How many of those commits are already on the upstream: rewriting them means the branch
+    /// will have to be force-pushed.
+    pub pushed: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TodoAction {
+    Pick,
+    Reword,
+    Edit,
+    Squash,
+    Fixup,
+    Drop,
+}
+
+impl TodoAction {
+    fn word(self) -> &'static str {
+        match self {
+            Self::Pick | Self::Reword => "pick",
+            Self::Edit => "edit",
+            Self::Squash => "squash",
+            Self::Fixup => "fixup",
+            Self::Drop => "drop",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoItem {
+    pub action: TodoAction,
+    pub id: String,
+    /// The message of the commit once done (for `reword`, and for a `squash` whose combined
+    /// message was edited); `None` keeps git's own.
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RebaseOutcome {
+    UpToDate,
+    Done,
+    /// Stopped for the user to edit a commit (`edit`): amend, then continue.
+    Stopped,
+    /// Stopped on conflicts: resolve them, then continue (or skip, or abort).
+    Conflicts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebaseResult {
+    pub status: WorkingStatus,
+    pub outcome: RebaseOutcome,
+    /// The branch tip before and after: what Undo needs.
+    pub before: String,
+    pub after: String,
+}
+
+fn check_target(onto: &str) -> Result<(), GitError> {
+    if onto.trim().is_empty() || onto.starts_with('-') || onto.contains('\0') {
+        return Err(GitError::other(format!("Cannot rebase onto '{onto}'.")));
+    }
+    Ok(())
+}
+
+fn count(ctx: &OpCtx, args: &[&str]) -> Result<u32, GitError> {
+    let mut full = vec!["rev-list", "--count"];
+    full.extend(args);
+    let output = ctx
+        .runner()
+        .run(ctx.workdir, &full, RunOptions::background())?;
+    Ok(output.stdout_text().trim().parse().unwrap_or(0))
+}
+
+pub fn rebase_plan(ctx: &OpCtx, onto: &str) -> Result<RebasePlan, GitError> {
+    check_target(onto)?;
+    let target = resolve(ctx, onto)?;
+    let range = format!("{target}..HEAD");
+    let log = ctx.runner().run(
+        ctx.workdir,
+        &[
+            "log",
+            "--reverse",
+            "--topo-order",
+            "--no-merges",
+            "--format=%H%x1f%s%x1e",
+            &range,
+        ],
+        RunOptions::background(),
+    )?;
+    let commits: Vec<RebaseCommit> = log
+        .stdout_text()
+        .split('\x1e')
+        .map(str::trim)
+        .filter(|record| !record.is_empty())
+        .filter_map(|record| {
+            let (id, summary) = record.split_once('\x1f')?;
+            Some(RebaseCommit {
+                id: id.to_string(),
+                summary: summary.to_string(),
+            })
+        })
+        .collect();
+    let merges = count(ctx, &["--merges", &range])?;
+    let upstream = ctx.status()?.upstream;
+    let pushed = match upstream {
+        Some(upstream) if !commits.is_empty() => {
+            let total = count(ctx, &["--no-merges", &range])?;
+            let unpushed = count(ctx, &["--no-merges", &range, "--not", &upstream])?;
+            total.saturating_sub(unpushed)
+        }
+        _ => 0,
+    };
+    Ok(RebasePlan {
+        commits,
+        merges,
+        pushed,
+    })
+}
+
+/// The directory in the git directory where the files of an interactive rebase live.
+fn helper_dir(ctx: &OpCtx) -> Result<PathBuf, GitError> {
+    let output = ctx.runner().run(
+        ctx.workdir,
+        &["rev-parse", "--absolute-git-dir"],
+        RunOptions::background(),
+    )?;
+    Ok(PathBuf::from(output.stdout_text().trim()).join("git-hydra-rebase"))
+}
+
+fn shell_quote(path: &std::path::Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+/// Validates the list against the commits git would replay and writes the files git needs.
+/// Returns the environment of the run.
+fn prepare_todo(
+    ctx: &OpCtx,
+    plan: &RebasePlan,
+    items: &[TodoItem],
+) -> Result<Vec<(String, String)>, GitError> {
+    let planned: HashSet<&str> = plan.commits.iter().map(|c| c.id.as_str()).collect();
+    let given: HashSet<&str> = items.iter().map(|i| i.id.as_str()).collect();
+    if items.len() != plan.commits.len() || planned != given {
+        return Err(GitError::other(
+            "The commits changed since the list was made: open the rebase again.",
+        ));
+    }
+    let first = items.iter().find(|i| i.action != TodoAction::Drop);
+    if let Some(first) = first
+        && matches!(first.action, TodoAction::Squash | TodoAction::Fixup)
+    {
+        return Err(GitError::other(
+            "The first commit cannot be squashed or fixed up: there is nothing before it.",
+        ));
+    }
+
+    let dir = helper_dir(ctx)?;
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir)
+        .map_err(|e| GitError::other(format!("cannot prepare the rebase: {e}")))?;
+    let summary = |id: &str| {
+        plan.commits
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.summary.replace(['\n', '\r'], " "))
+            .unwrap_or_default()
+    };
+
+    let mut todo = String::new();
+    for (index, item) in items.iter().enumerate() {
+        todo.push_str(&format!(
+            "{} {} {}\n",
+            item.action.word(),
+            item.id,
+            summary(&item.id)
+        ));
+        let message = item
+            .message
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty());
+        let rewords = matches!(item.action, TodoAction::Reword | TodoAction::Squash);
+        if let (Some(message), true) = (message, rewords) {
+            let file = dir.join(format!("message-{index}"));
+            fs::write(&file, format!("{message}\n"))
+                .map_err(|e| GitError::other(format!("cannot prepare the rebase: {e}")))?;
+            todo.push_str(&format!(
+                "exec git commit --amend -q -F {}\n",
+                shell_quote(&file)
+            ));
+        }
+    }
+    let todo_file = dir.join("todo");
+    fs::write(&todo_file, todo)
+        .map_err(|e| GitError::other(format!("cannot prepare the rebase: {e}")))?;
+    let editor = dir.join("sequence-editor.sh");
+    fs::write(&editor, "#!/bin/sh\ncat \"$GIT_HYDRA_TODO\" > \"$1\"\n")
+        .map_err(|e| GitError::other(format!("cannot prepare the rebase: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&editor, fs::Permissions::from_mode(0o700))
+            .map_err(|e| GitError::other(format!("cannot prepare the rebase: {e}")))?;
+    }
+    Ok(vec![
+        (
+            "GIT_SEQUENCE_EDITOR".to_string(),
+            editor.to_string_lossy().into_owned(),
+        ),
+        (
+            "GIT_HYDRA_TODO".to_string(),
+            todo_file.to_string_lossy().into_owned(),
+        ),
+    ])
+}
+
+/// Rebases the current branch onto `onto`. With `items` the list of commits is the one given
+/// (interactive rebase); without, git replays them all as they are.
+///
+/// Conflicts, and a stop for `edit`, are not errors: the rebase stays in progress and the
+/// outcome says so, for the banner and the conflict resolver to take over.
+pub fn rebase(
+    ctx: &OpCtx,
+    onto: &str,
+    items: Option<&[TodoItem]>,
+    autostash: bool,
+) -> Result<RebaseResult, GitError> {
+    check_target(onto)?;
+    let _write = ctx.stores.begin_write()?;
+    let status = ctx.status()?;
+    if status.operation.is_some() || !status.conflicted.is_empty() {
+        return Err(GitError::other(
+            "Another operation is waiting to be finished or cancelled: do that first.",
+        ));
+    }
+    if status.detached {
+        return Err(GitError::other(
+            "HEAD is detached: switch to a branch before rebasing it.",
+        ));
+    }
+    let before = head_id(ctx)?.ok_or_else(|| GitError::other("There is no commit yet."))?;
+    let plan = rebase_plan(ctx, onto)?;
+
+    let mut env = fallback_identity(ctx);
+    let mut args = vec!["rebase"];
+    if let Some(items) = items {
+        env.extend(prepare_todo(ctx, &plan, items)?);
+        args.push("--interactive");
+    }
+    if autostash {
+        args.push("--autostash");
+    }
+    args.push(onto);
+
+    let output = ctx
+        .runner()
+        .run_raw(ctx.workdir, &args, RunOptions::with_env(env))?;
+    let status = ctx.status()?;
+    let in_progress = status
+        .operation
+        .as_ref()
+        .is_some_and(|op| op.kind == OperationKind::Rebase);
+    if output.code != 0 {
+        if in_progress {
+            return Ok(RebaseResult {
+                outcome: RebaseOutcome::Conflicts,
+                status,
+                before: before.clone(),
+                after: before,
+            });
+        }
+        return Err(error_from(&output));
+    }
+    let after = head_id(ctx)?.unwrap_or_else(|| before.clone());
+    let said = format!("{}{}", output.stdout_text(), output.stderr);
+    let outcome = if in_progress {
+        if status.conflicted.is_empty() {
+            RebaseOutcome::Stopped
+        } else {
+            RebaseOutcome::Conflicts
+        }
+    } else if said.contains("is up to date") && before == after {
+        RebaseOutcome::UpToDate
+    } else {
+        RebaseOutcome::Done
+    };
+    Ok(RebaseResult {
+        status,
+        outcome,
+        before,
+        after,
+    })
+}

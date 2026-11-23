@@ -191,12 +191,47 @@ pub fn continue_operation(ctx: &OpCtx) -> Result<WorkingStatus, GitError> {
         Some(OperationKind::Revert) => vec!["revert", "--continue"],
         Some(OperationKind::Rebase) => vec!["rebase", "--continue"],
     };
-    ctx.runner().run(
+    let output = ctx.runner().run_raw(
         ctx.workdir,
         &args,
         RunOptions::with_env(fallback_identity(ctx)),
     )?;
-    ctx.status()
+    let after = ctx.status()?;
+    if output.code != 0 {
+        // A rebase or a cherry-pick of several commits stops again at the next conflict: that
+        // is the operation going on, not a failure.
+        if !after.conflicted.is_empty() && after.operation.is_some() {
+            return Ok(after);
+        }
+        return Err(error_from(&output));
+    }
+    Ok(after)
+}
+
+/// Skips the commit the operation is stuck on (a rebase or a cherry-pick): its changes are
+/// left out.
+pub fn skip_operation(ctx: &OpCtx) -> Result<WorkingStatus, GitError> {
+    let _write = ctx.stores.begin_write()?;
+    let status = ctx.status()?;
+    let args: Vec<&str> = match status.operation.as_ref().map(|op| op.kind) {
+        Some(OperationKind::Rebase) => vec!["rebase", "--skip"],
+        Some(OperationKind::CherryPick) => vec!["cherry-pick", "--skip"],
+        _ => {
+            return Err(GitError::other(
+                "Only a rebase or a cherry-pick can be skipped.",
+            ));
+        }
+    };
+    let output = ctx.runner().run_raw(
+        ctx.workdir,
+        &args,
+        RunOptions::with_env(fallback_identity(ctx)),
+    )?;
+    let after = ctx.status()?;
+    if output.code != 0 && (after.operation.is_none() || after.conflicted.is_empty()) {
+        return Err(error_from(&output));
+    }
+    Ok(after)
 }
 
 /// Cancels the operation in progress and puts the repository back where it was before it.

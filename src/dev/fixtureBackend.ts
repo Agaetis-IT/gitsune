@@ -293,6 +293,9 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
     resolveSide: merge.resolveSide,
     continueOperation: merge.continueOperation,
     abortOperation: merge.abortOperation,
+    rebasePlan: merge.rebasePlan,
+    rebase: merge.rebase,
+    skipOperation: merge.skipOperation,
     createTag: async (_repoId, name, target) => {
       checkName(name, "tag");
       editRefs((refs) => [...refs, addRef("tag", name, rowOf(target))]);

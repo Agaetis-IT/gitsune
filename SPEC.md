@@ -190,7 +190,7 @@ Known ceilings: a diff is a plain table, so about 5,000 lines is the practical l
 
 ## 9. Plan
 
-Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 (section 12.8), M11 (section 12.9) and M12 (section 12.10) and M13 (section 12.11) and M14 (section 12.12) are done; M15 and M16 are planned (section 12.4).
+Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 (section 12.8), M11 (section 12.9) and M12 (section 12.10) and M13 (section 12.11) and M14 (section 12.12) and M15 (section 12.13) are done; M16 is planned (section 12.4).
 
 Each milestone ends with lint and tests passing and a short demo.
 
@@ -442,4 +442,19 @@ What exists, and where it differs from the plan above.
 - Demo backend (`src/dev/demoMerge.ts`): merging a `feature/auth-*` branch stops on two conflicts (a text file and a binary one); anything else merges cleanly.
 
 **Not done in M14**: a base column (the common ancestor is read and kept, not shown), jumping from one block to the next, a three-pane view with the whole file on each side (blocks are shown, not whole files), reopening a file marked resolved by mistake (`git checkout -m`), prefilling the commit message after a squash, rerere, merging from the commit menu (branches only), stopping a merge at a hook failure with a nicer message than git's. Not run: the Tauri window. Rebase uses the same banner and resolver; its own flow is M15.
+
+### 12.13 M15 as built (rebase)
+
+**Backend** (`src-tauri/src/git/rebase.rs`, additions to `merge.rs`).
+- `rebase_preview` lists what a rebase onto a target would replay (oldest first, merge commits counted but not listed), and how many of those commits are already on the upstream, which tells that the branch will need a force push afterwards.
+- `rebase_onto`: a plain `git rebase <onto>`, or, with a list of commits, an **interactive** one. git is started with `GIT_SEQUENCE_EDITOR` set to a three-line script that writes the list built in the app in place of the one git proposes, so what runs is exactly what was shown. Actions: pick, reword, edit, squash, fixup, drop, and reordering. A new message (reword, or a combined message for a squash) is applied by an `exec git commit --amend -F <file>` line after the commit, so no editor is ever started; those files live in the git directory (`git-hydra-rebase/`), so a rebase that stops on a conflict and is continued days later still finds them. The list is checked against the commits git would replay (same set, nothing missing or foreign, no squash or fixup first) **before** git runs.
+- Optional `--autostash`. A dirty tree is otherwise refused with git's message, classified as `wouldOverwriteChanges`. A detached HEAD, another operation waiting, and read-only mode are refused.
+- **Conflicts and a stop for `edit` are not errors**: the rebase stays in progress and the outcome says `conflicts` or `stopped`. The operation message of the status is now "Commit 2 of 5" for a rebase.
+- `continue_operation` no longer fails when a rebase or cherry-pick stops again at the next conflict (that is the operation going on); `skip_operation` leaves out the commit a rebase or cherry-pick is stuck on. Abort already covered `rebase --abort`.
+- Undo of a finished rebase: the branch goes back to its previous tip (`reset --keep`, refused if HEAD moved). It is offered right away, and also when the rebase ends after conflicts (the app remembers the tip from before while the rebase lasts; this memory is lost if the app is restarted meanwhile).
+- Tests: 234 Rust (18 new: plan with pushed and merge counts, rebase and undo, already up to date, dirty tree with and without autostash, detached HEAD, busy repository, read-only, conflict then continue, skip, abort, reorder/drop/reword, squash/fixup, squash with git's own message, edit then continue, a reword that survives a conflict, a list that does not match is refused before git runs).
+
+**Interface.** "Rebase the current branch onto…" in the menus of local and remote branches and of commits, and "Rebase interactively from this commit…" on commits (greyed on the current commit or branch). One dialog: how many commits are replayed, a red warning when some are already on the remote, a note when merge commits would be flattened, "Edit the list of commits first" (one row per commit with its action, up and down buttons, a message field for reword and squash, and a warning when the list is invalid or drops commits), and "Stash my changes while rebasing". A list that changes nothing is sent as a plain rebase. A rebase that stops goes to the banner of M14, which gains **Skip** (rebase and cherry-pick); conflicts open the resolver; continuing can stop again on the next conflict, and finishing offers Undo. The list logic (moves, validation, conversion) is plain functions with tests (`src/lib/rebaseTodo.ts`). Demo backend: rebasing onto a `feature/auth-*` branch conflicts, an `edit` stops, anything else finishes.
+
+**Not done in M15**: `--rebase-merges` (merge commits are flattened, as git does by default; the dialog says so), `--onto` with a separate upstream, autosquash and `fixup!` detection, a view of the diff of each commit in the list, reordering by dragging (up and down buttons only), editing the todo list while the rebase is under way (`rebase --edit-todo`), `exec` lines. Not run: the Tauri window.
 

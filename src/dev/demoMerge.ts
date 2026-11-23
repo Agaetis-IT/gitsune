@@ -4,6 +4,10 @@ import {
   type MergeInfo,
   type MergeMode,
   type MergeResult,
+  type OperationKind,
+  type RebasePlan,
+  type RebaseResult,
+  type TodoItem,
   type WorkingStatus,
 } from "@/lib/api";
 
@@ -67,6 +71,7 @@ const initialConflicts = (): DemoConflict[] => [
 export function createDemoMerge(hooks: Hooks) {
   let conflicts: DemoConflict[] | null = null;
   let message = "";
+  let kind: OperationKind = "merge";
   let counter = 0;
   const id = (prefix: string) => `${prefix}${String(++counter).padStart(2, "0")}`.padEnd(40, "0");
 
@@ -82,7 +87,7 @@ export function createDemoMerge(hooks: Hooks) {
       ? status
       : {
           ...status,
-          operation: { kind: "merge", message },
+          operation: { kind, message },
           conflicted: conflicts.map(({ path, code }) => ({ path, code })),
         };
   const status = async () => decorate(await hooks.plain());
@@ -106,6 +111,7 @@ export function createDemoMerge(hooks: Hooks) {
       const before = hooks.headId();
       if (target.includes("auth")) {
         conflicts = initialConflicts();
+        kind = "merge";
         message = `Merge branch '${target}'`;
         return { status: await status(), outcome: "conflicts", before, after: before };
       }
@@ -144,6 +150,43 @@ export function createDemoMerge(hooks: Hooks) {
       return status();
     },
     abortOperation: async () => {
+      guard();
+      conflicts = null;
+      return status();
+    },
+    rebasePlan: async (): Promise<RebasePlan> => ({
+      commits: [
+        { id: "1a".repeat(20), summary: "Add the token parser" },
+        { id: "2b".repeat(20), summary: "Fix the parser on empty input" },
+        { id: "3c".repeat(20), summary: "Wip" },
+        { id: "4d".repeat(20), summary: "Document the parser" },
+      ],
+      merges: 0,
+      pushed: 2,
+    }),
+    rebase: async (
+      _repoId: string,
+      onto: string,
+      items: TodoItem[] | null,
+    ): Promise<RebaseResult> => {
+      guard();
+      if (conflicts) throw new GitCommandError("other", "Another operation is waiting to be finished.");
+      const before = hooks.headId();
+      if (onto.includes("auth")) {
+        conflicts = initialConflicts();
+        kind = "rebase";
+        message = "Commit 1 of 3";
+        return { status: await status(), outcome: "conflicts", before, after: before };
+      }
+      if (items?.some((item) => item.action === "edit")) {
+        conflicts = [];
+        kind = "rebase";
+        message = "Commit 2 of 4";
+        return { status: await status(), outcome: "stopped", before, after: before };
+      }
+      return { status: await status(), outcome: "done", before, after: id("cd") };
+    },
+    skipOperation: async () => {
       guard();
       conflicts = null;
       return status();
