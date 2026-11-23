@@ -1,6 +1,6 @@
 # git-hydra
 
-A desktop git client built around a **metro-style branch graph**: one colored line per branch, commits as stations, merges as interchanges. Browsing history, searching and reading diffs are complete. Writing is being added step by step (version 2): **staging by file and hunk, committing and amending, discarding with undo, branches, checkout and tags** are in; remotes, merge and rebase are planned (see [SPEC.md](SPEC.md), section 12). Every change the app makes goes through the `git` binary and is listed in an activity log; a read-only switch per repository refuses all writes.
+A desktop git client built around a **metro-style branch graph**: one colored line per branch, commits as stations, merges as interchanges. Browsing history, searching and reading diffs are complete. Writing is being added step by step (version 2): **staging by file and hunk, committing and amending, discarding with undo, branches, checkout, tags, fetch, pull and push** are in; merge and rebase are planned (see [SPEC.md](SPEC.md), section 12). Every change the app makes goes through the `git` binary and is listed in an activity log; a read-only switch per repository refuses all writes.
 
 Tauri 2 (Rust) + Vue 3 + TypeScript + Tailwind + shadcn-vue. macOS first.
 
@@ -15,6 +15,7 @@ Tauri 2 (Rust) + Vue 3 + TypeScript + Tailwind + shadcn-vue. macOS first.
 - Live refresh: commits, fetches and checkouts made in a terminal appear without losing your place; changes to the working tree show up in the status as you save files.
 - Stage files or single hunks, commit with a summary and description (hooks and signing behave as in the terminal), amend, discard changes with an undo, and an activity log of every git command the app ran.
 - Create, rename and delete branches, set upstreams, switch branches (with a stash-or-discard choice when local changes are in the way), create and delete tags, all from context menus on the graph and the sidebar; deletions can be undone.
+- Fetch, pull (merge or rebase) and push (with an optional `--force-with-lease`), with progress, cancel and password prompts through your usual credential helpers and ssh-agent.
 
 ## Requirements
 
@@ -64,4 +65,4 @@ All design decisions, measurements and the milestone plan are in [SPEC.md](SPEC.
 
 ## Not included
 
-Push and pull, merge and rebase (planned, see the spec), GitHub/GitLab integrations, conflict resolution, submodules and worktrees, file editing.
+Merge and rebase (planned, see the spec), GitHub/GitLab integrations, conflict resolution, submodules and worktrees, file editing.

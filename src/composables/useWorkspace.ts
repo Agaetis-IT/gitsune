@@ -12,7 +12,10 @@ import {
   type GitErrorKind,
   type GraphRow,
   MAX_SEARCH_RESULTS,
+  type PullStrategy,
+  type PushOptions,
   type RefInfo,
+  type RemoteResult,
   type RefKind,
   type Snapshot,
   type StatusEntry,
@@ -84,7 +87,36 @@ export type BranchDialog =
   | { type: "deleteTag"; name: string }
   | { type: "upstream"; branch: string }
   /** A checkout would overwrite local changes: stash them, discard them, or give up. */
-  | { type: "dirtyCheckout"; target: CheckoutTarget; files: string[]; message: string };
+  | { type: "dirtyCheckout"; target: CheckoutTarget; files: string[]; message: string }
+  /** Where to push; `reason` is why this question is asked (no upstream yet, push refused). */
+  | {
+      type: "push";
+      remotes: string[];
+      remote: string;
+      branch: string;
+      setUpstream: boolean;
+      reason: string | null;
+      /** The remote has commits we do not: pulling first, or forcing with a lease, are options. */
+      canForce: boolean;
+    }
+  /** The branches diverged and git was not told how to reconcile them. */
+  | { type: "pullStrategy"; message: string }
+  | { type: "deleteRemoteBranch"; remote: string; branch: string };
+
+/** A fetch, pull or push that is running. */
+export interface RemoteOp {
+  id: string;
+  kind: "fetch" | "pull" | "push" | "deleteRemote";
+  /** What is happening, for the progress panel ("Pushing main…"). */
+  label: string;
+  /** The last line git printed. */
+  line: string;
+  /** 0 to 100 when git reports a percentage, otherwise `null`. */
+  percent: number | null;
+  /** A question git or ssh is waiting for an answer to. */
+  prompt: { promptId: string; text: string } | null;
+  cancelling: boolean;
+}
 
 /** A short message shown to the user, optionally with an action (Undo...). */
 export interface Notice {
@@ -153,6 +185,8 @@ export interface RepoTab {
   activity: ActivityEntry[];
   /** The branch or tag dialog being shown, if any. */
   dialog: BranchDialog | null;
+  /** The fetch, pull or push in progress, if any. */
+  remote: RemoteOp | null;
 }
 
 export type DiffMode = "unified" | "split";
@@ -307,6 +341,21 @@ export function createWorkspace(
         const tab = tabOf(repoId);
         if (tab && activityOpen.value && tab.id === activeId.value) void loadActivity(tab);
       }),
+      backend.onRemoteProgress((event) => {
+        const tab = tabOf(event.repoId);
+        if (tab?.remote?.id !== event.opId) return;
+        const percent = /(\d{1,3})%/.exec(event.line);
+        tab.remote = {
+          ...tab.remote,
+          line: event.line,
+          percent: percent ? Math.min(100, Number(percent[1])) : tab.remote.percent,
+        };
+      }),
+      backend.onAskpass((event) => {
+        const tab = tabOf(event.repoId);
+        if (tab?.remote?.id !== event.opId) return;
+        tab.remote = { ...tab.remote, prompt: { promptId: event.promptId, text: event.prompt } };
+      }),
     ]);
     return () => stops.forEach((stop) => stop());
   }
@@ -396,6 +445,11 @@ export function createWorkspace(
     "alreadyExists",
     "wouldOverwriteChanges",
     "notFullyMerged",
+    // The remote flows explain these themselves, with a dialog or a notice of their own.
+    "noUpstream",
+    "divergedBranches",
+    "pushRejected",
+    "conflict",
   ];
 
   function handleWriteError(tab: RepoTab, error: unknown): void {
@@ -708,6 +762,207 @@ export function createWorkspace(
     if (!tab.writeError) notify("info", `Tag ${deleted.name} is back.`);
   }
 
+  // ---------- fetch, pull and push ----------
+
+  let opCount = 0;
+
+  /** The same git message, whatever the phrase, tells a push that needs a pull first. */
+  const BEHIND = /non-fast-forward|fetch first|stale info|behind/i;
+
+  /**
+   * Runs a fetch, pull or push: one at a time per repository, with progress and a cancel
+   * button in the panel. Pull and push are writes (refused in read-only mode); a fetch only
+   * moves remote-tracking refs, so it is allowed. `null` on failure, the cause in `writeError`.
+   */
+  async function runRemote(
+    tab: RepoTab,
+    kind: RemoteOp["kind"],
+    label: string,
+    action: (opId: string) => Promise<RemoteResult>,
+  ): Promise<RemoteResult | null> {
+    if (tab.remote) return null;
+    if (tab.readOnly && kind !== "fetch") {
+      handleWriteError(tab, { kind: "readOnly", message: "This repository is in read-only mode." });
+      return null;
+    }
+    const id = `op-${Date.now().toString(36)}-${++opCount}`;
+    tab.remote = { id, kind, label, line: "", percent: null, prompt: null, cancelling: false };
+    tab.writeError = null;
+    if (kind !== "fetch") tab.busy = true;
+    try {
+      const result = await action(id);
+      applyStatus(tab, result.status);
+      return result;
+    } catch (error) {
+      const failure = toGitError(error);
+      if (failure.kind === "cancelled") {
+        tab.writeError = null;
+        notify("info", `${label.replace(/…$/, "")} cancelled.`);
+      } else {
+        handleWriteError(tab, failure);
+      }
+      return null;
+    } finally {
+      tab.remote = null;
+      if (kind !== "fetch") tab.busy = false;
+    }
+  }
+
+  /** Errors the remote flows explain with a notice or a dialog of their own. */
+  function remoteFailure(tab: RepoTab): WriteError | null {
+    const failure = tab.writeError;
+    if (failure?.kind === "wouldOverwriteChanges") notify("error", failure.message);
+    return failure;
+  }
+
+  async function fetchRemote(tab: RepoTab, remote: string | null = null, prune = false) {
+    const result = await runRemote(tab, "fetch", "Fetching…", (opId) =>
+      backend.fetch(tab.id, opId, remote, prune),
+    );
+    if (result) {
+      notify(
+        "info",
+        result.summary.trim() ? "Fetched the remotes." : "Nothing new on the remotes.",
+      );
+    }
+  }
+
+  async function pull(tab: RepoTab, strategy: PullStrategy | null = null): Promise<void> {
+    const result = await runRemote(tab, "pull", "Pulling…", (opId) =>
+      backend.pull(tab.id, opId, strategy),
+    );
+    if (result) {
+      closeDialog(tab);
+      notify(
+        "info",
+        /already up to date/i.test(result.summary)
+          ? "Already up to date."
+          : "Pulled the latest changes.",
+      );
+      return;
+    }
+    const failure = remoteFailure(tab);
+    if (failure?.kind === "divergedBranches") {
+      tab.dialog = { type: "pullStrategy", message: failure.message };
+    } else if (failure?.kind === "noUpstream") {
+      notify(
+        "error",
+        "This branch has no upstream to pull from. Push it first, or set its upstream.",
+      );
+    } else if (failure?.kind === "conflict") {
+      notify(
+        "error",
+        "The merge stopped on conflicts. Resolve them in a terminal for now: conflict resolution comes in a later version.",
+      );
+    }
+  }
+
+  async function openPushDialog(
+    tab: RepoTab,
+    branch: string | null,
+    reason: string | null,
+    canForce: boolean,
+    remote: string | null = null,
+  ): Promise<void> {
+    const remotes = await backend.remotes(tab.id).catch(() => [] as string[]);
+    const name = branch ?? tab.headBranch ?? "";
+    const own = tab.refs.find((ref) => ref.kind === "remote" && ref.name.endsWith(`/${name}`));
+    const chosen =
+      remote ??
+      (own ? own.name.slice(0, own.name.length - name.length - 1) : null) ??
+      remotes[0] ??
+      "";
+    tab.writeError = null;
+    tab.dialog = {
+      type: "push",
+      remotes,
+      remote: remotes.includes(chosen) ? chosen : (remotes[0] ?? ""),
+      branch: name,
+      setUpstream: reason !== null && !canForce,
+      reason,
+      canForce,
+    };
+  }
+
+  /** Asks where to push the branch (the "Push…" menu entry). */
+  const askPush = (tab: RepoTab, branch: string | null = null) =>
+    openPushDialog(tab, branch, null, false);
+
+  async function push(tab: RepoTab, options: Partial<PushOptions> = {}): Promise<void> {
+    const full: PushOptions = {
+      remote: options.remote ?? null,
+      branch: options.branch ?? null,
+      setUpstream: options.setUpstream ?? false,
+      forceWithLease: options.forceWithLease ?? false,
+    };
+    const what = full.branch ?? tab.headBranch ?? "the branch";
+    const result = await runRemote(tab, "push", `Pushing ${what}…`, (opId) =>
+      backend.push(tab.id, opId, full),
+    );
+    if (result) {
+      closeDialog(tab);
+      notify(
+        "info",
+        /up-to-date/i.test(result.summary) ? "Everything is up to date." : `Pushed ${what}.`,
+      );
+      return;
+    }
+    const failure = remoteFailure(tab);
+    if (failure?.kind === "noUpstream") {
+      await openPushDialog(
+        tab,
+        full.branch,
+        "This branch has no upstream yet: choose the remote to push it to.",
+        false,
+        full.remote,
+      );
+    } else if (failure?.kind === "pushRejected") {
+      if (BEHIND.test(failure.message)) {
+        await openPushDialog(
+          tab,
+          full.branch,
+          "The remote has commits you do not have. Pull them first, or overwrite the remote branch only if nobody else pushed since your last fetch.",
+          true,
+          full.remote,
+        );
+      } else {
+        notify("error", failure.message);
+      }
+    }
+  }
+
+  async function deleteRemoteBranch(tab: RepoTab, remote: string, branch: string): Promise<void> {
+    const result = await runRemote(tab, "deleteRemote", `Deleting ${remote}/${branch}…`, (opId) =>
+      backend.deleteRemoteBranch(tab.id, opId, remote, branch),
+    );
+    if (result) {
+      closeDialog(tab);
+      notify("info", `Deleted ${branch} on ${remote}.`);
+    } else if (remoteFailure(tab)?.kind === "pushRejected") {
+      notify("error", tab.writeError?.message ?? "The remote refused the deletion.");
+    }
+  }
+
+  /** Splits `origin/feature/x` into its remote and its branch (remote names have no slash). */
+  const askDeleteRemoteBranch = (tab: RepoTab, remote: string, branch: string) =>
+    openDialog(tab, { type: "deleteRemoteBranch", remote, branch });
+
+  async function cancelRemote(tab: RepoTab): Promise<void> {
+    const op = tab.remote;
+    if (!op || op.cancelling) return;
+    tab.remote = { ...op, cancelling: true, prompt: null };
+    await backend.cancelOperation(op.id).catch(() => {});
+  }
+
+  /** Answers the question git is waiting for; `null` refuses, which ends the operation. */
+  async function answerPrompt(tab: RepoTab, answer: string | null): Promise<void> {
+    const op = tab.remote;
+    if (!op?.prompt) return;
+    const { promptId } = op.prompt;
+    tab.remote = { ...op, prompt: null };
+    await backend.answerAskpass(op.id, promptId, answer).catch(() => {});
+  }
+
   async function setReadOnly(tab: RepoTab, readOnly: boolean): Promise<void> {
     try {
       await backend.setReadOnly(tab.id, readOnly);
@@ -782,6 +1037,7 @@ export function createWorkspace(
         snapshots: [],
         activity: [],
         dialog: null,
+        remote: null,
       });
       tabs.value = [...tabs.value, tab];
       activeId.value = tab.id;
@@ -965,6 +1221,14 @@ export function createWorkspace(
     askCreateTag,
     askDeleteTag,
     askUpstream,
+    askPush,
+    askDeleteRemoteBranch,
+    fetchRemote,
+    pull,
+    push,
+    deleteRemoteBranch,
+    cancelRemote,
+    answerPrompt,
     closeDialog,
     checkout,
     createBranch,

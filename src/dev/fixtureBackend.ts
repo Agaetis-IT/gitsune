@@ -1,6 +1,7 @@
 import { GitCommandError, type GraphMeta, type GraphRef, type GraphRow, type RefInfo } from "@/lib/api";
 import type { RepoBackend } from "@/lib/backend";
 import { demoCommitDetail, demoFileDiff } from "./demoDiffs";
+import { createDemoRemote } from "./demoRemote";
 import { createDemoWorktree } from "./demoWorktree";
 
 interface Fixture {
@@ -153,6 +154,14 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
     changed: () => activityListeners.forEach((listener) => listener(info.id)),
   });
 
+  const remote = createDemoRemote({
+    repoId: info.id,
+    status: worktree.status,
+    headBranch: () => info.headBranch,
+    deleteRemoteRef: (name, branch) =>
+      editRefs((refs) => refs.filter((r) => !(r.kind === "remote" && r.name === `${name}/${branch}`))),
+  });
+
   if (import.meta.env.DEV) {
     const win = window as unknown as {
       __simulateRepoChange: () => void;
@@ -253,6 +262,7 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
       return await worktree.status();
     },
     setUpstream: async () => worktree.status(),
+    ...remote,
     createTag: async (_repoId, name, target) => {
       checkName(name, "tag");
       editRefs((refs) => [...refs, addRef("tag", name, rowOf(target))]);

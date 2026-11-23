@@ -264,6 +264,13 @@ export type GitErrorKind =
   | "wouldOverwriteChanges"
   | "notFullyMerged"
   | "branchCheckedOut"
+  | "authFailed"
+  | "unreachable"
+  | "pushRejected"
+  | "noUpstream"
+  | "divergedBranches"
+  | "conflict"
+  | "cancelled"
   | "other";
 
 /** A git operation that failed, with what the interface needs to react to it. */
@@ -461,3 +468,62 @@ export const deleteTag = (repoId: string, name: string) =>
 
 export const restoreTag = (repoId: string, name: string, target: string) =>
   gitInvoke<WorkingStatus>("restore_tag", { repoId, name, target });
+
+// ---------- fetch, pull and push ----------
+
+/** How a pull reconciles the remote branch with the local one. */
+export type PullStrategy = "fastForwardOnly" | "merge" | "rebase";
+
+/** What to push and how. */
+export interface PushOptions {
+  /** The remote to push to; the upstream of the current branch when `null`. */
+  remote: string | null;
+  /** The local branch to push; the current one when `null`. */
+  branch: string | null;
+  /** Make the remote branch the upstream of the local one. */
+  setUpstream: boolean;
+  /** Overwrite the remote branch unless someone pushed since the last fetch. */
+  forceWithLease: boolean;
+}
+
+export interface RemoteResult {
+  status: WorkingStatus;
+  /** What git said once done (the refs updated, `Already up to date.`...). */
+  summary: string;
+}
+
+/** A line of progress of a running fetch, pull or push. */
+export interface RemoteProgressEvent {
+  repoId: string;
+  opId: string;
+  line: string;
+}
+
+/** git or ssh needs a secret or a confirmation to go on. */
+export interface AskpassEvent {
+  repoId: string;
+  opId: string;
+  promptId: string;
+  prompt: string;
+}
+
+/** `opId` names the operation so it can be cancelled and its progress followed. */
+export const fetchRemote = (repoId: string, opId: string, remote: string | null, prune: boolean) =>
+  gitInvoke<RemoteResult>("fetch_remote", { repoId, opId, remote, prune });
+
+export const pullBranch = (repoId: string, opId: string, strategy: PullStrategy | null) =>
+  gitInvoke<RemoteResult>("pull_branch", { repoId, opId, strategy });
+
+export const pushBranch = (repoId: string, opId: string, options: PushOptions) =>
+  gitInvoke<RemoteResult>("push_branch", { repoId, opId, options });
+
+export const deleteRemoteBranch = (repoId: string, opId: string, remote: string, branch: string) =>
+  gitInvoke<RemoteResult>("delete_remote_branch", { repoId, opId, remote, branch });
+
+export const listRemotes = (repoId: string) => gitInvoke<string[]>("list_remotes", { repoId });
+
+export const cancelOperation = (opId: string) => gitInvoke<void>("cancel_operation", { opId });
+
+/** Answers a question git asked; `null` refuses (the operation then fails). */
+export const answerAskpass = (opId: string, promptId: string, answer: string | null) =>
+  gitInvoke<void>("answer_askpass", { opId, promptId, answer });

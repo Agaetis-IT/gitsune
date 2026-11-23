@@ -77,6 +77,7 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
       }),
       write(ctx, { id: "rename", label: "Rename…", separatorBefore: true }),
       write(ctx, { id: "upstream", label: "Set the upstream…" }),
+      write(ctx, { id: "push", label: "Push…" }),
       write(ctx, {
         id: "delete",
         label: "Delete…",
@@ -88,7 +89,17 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
     ];
   }
   if (ref.kind === "remote") {
-    return [write(ctx, { id: "checkout", label: "Checkout as a local branch" }), ...view, copy];
+    return [
+      write(ctx, { id: "checkout", label: "Checkout as a local branch" }),
+      write(ctx, {
+        id: "deleteRemote",
+        label: "Delete on the remote…",
+        danger: true,
+        separatorBefore: true,
+      }),
+      ...view,
+      copy,
+    ];
   }
   return [
     write(ctx, { id: "checkout", label: "Checkout (detached HEAD)" }),

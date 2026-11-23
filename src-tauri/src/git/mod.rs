@@ -8,6 +8,7 @@ mod graph;
 mod graph_page;
 mod ops;
 mod refs;
+mod remote;
 mod repo;
 mod search;
 mod status;
@@ -22,7 +23,7 @@ pub use branches::{
     create_branch, create_tag, delete_branch, delete_tag, rename_branch, restore_branch,
     restore_tag, set_upstream,
 };
-pub use cli::GitError;
+pub use cli::{GitError, LongIo, answer_prompt};
 pub use commit_detail::{CommitDetail, FileDiff, commit_detail, file_diff};
 pub use graph_page::{
     GraphCache, GraphMeta, GraphPage, build_graph_cache_with, graph_meta, graph_page, graph_search,
@@ -34,6 +35,9 @@ pub use ops::{
     unstage_hunk, unstage_paths, working_diff,
 };
 pub use refs::{RefInfo, list_refs};
+pub use remote::{
+    PullStrategy, PushOptions, RemoteResult, delete_remote_branch, fetch, list_remotes, pull, push,
+};
 pub use repo::{RepoInfo, open_repository};
 pub use search::SearchResult;
 pub use status::WorkingStatus;
@@ -51,6 +55,8 @@ mod diff_tests;
 mod ops_tests;
 #[cfg(test)]
 mod refresh_tests;
+#[cfg(test)]
+mod remote_tests;
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]

@@ -46,7 +46,9 @@ const problem = computed(() => {
 });
 
 const busy = computed(() => props.tab.busy);
-const open = computed(() => dialog.value !== null);
+// The push, pull and remote deletion dialogs belong to RemoteDialogs.
+const REMOTE_TYPES = ["push", "pullStrategy", "deleteRemoteBranch"];
+const open = computed(() => dialog.value !== null && !REMOTE_TYPES.includes(dialog.value.type));
 
 function close() {
   workspace.closeDialog(props.tab);
@@ -97,7 +99,7 @@ const SELECT_CLASS =
 
 <template>
   <Dialog :open="open" @update:open="(value) => !value && close()">
-    <DialogContent v-if="dialog">
+    <DialogContent v-if="dialog && open">
       <!-- Create a branch -->
       <form v-if="dialog.type === 'createBranch'" class="space-y-4" @submit.prevent="submit">
         <DialogHeader>

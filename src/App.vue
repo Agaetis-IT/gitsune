@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Lock, LockOpen, ScrollText } from "@lucide/vue";
+import { ArrowDown, ArrowUp, Lock, LockOpen, RefreshCw, ScrollText } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import BranchDialogs from "@/components/BranchDialogs.vue";
 import ContextMenu from "@/components/ContextMenu.vue";
@@ -9,6 +9,8 @@ import DiffView from "@/components/DiffView.vue";
 import IdentityDialog from "@/components/IdentityDialog.vue";
 import LanePopover from "@/components/LanePopover.vue";
 import NoticeHost from "@/components/NoticeHost.vue";
+import RemoteDialogs from "@/components/RemoteDialogs.vue";
+import RemoteStatus from "@/components/RemoteStatus.vue";
 import MetroGraph, { type GraphContextTarget } from "@/components/graph/MetroGraph.vue";
 import RepoSidebar from "@/components/RepoSidebar.vue";
 import SearchBar from "@/components/SearchBar.vue";
@@ -171,7 +173,11 @@ function onMenuSelect(id: string) {
     else if (id === "rename") workspace.askRenameBranch(tab, ref.name);
     else if (id === "upstream") workspace.askUpstream(tab, ref.name);
     else if (id === "delete") workspace.askDeleteBranch(tab, ref.name);
-    else if (id === "deleteTag") workspace.askDeleteTag(tab, ref.name);
+    else if (id === "push") void workspace.askPush(tab, ref.name);
+    else if (id === "deleteRemote") {
+      const slash = ref.name.indexOf("/");
+      workspace.askDeleteRemoteBranch(tab, ref.name.slice(0, slash), ref.name.slice(slash + 1));
+    } else if (id === "deleteTag") workspace.askDeleteTag(tab, ref.name);
     else if (id === "highlight") {
       const lane = laneOfRef(ref);
       if (lane !== null) workspace.toggleHighlight(tab, lane);
@@ -298,6 +304,44 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
               @step="stepMatch"
               @clear="workspace.clearSearch(active)"
             />
+            <div class="flex gap-1" role="group" aria-label="Remotes">
+              <Button
+                size="sm"
+                variant="outline"
+                title="Download new commits from the remotes"
+                :disabled="active.remote !== null"
+                @click="workspace.fetchRemote(active)"
+              >
+                <RefreshCw class="size-3.5" />
+                Fetch
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                :title="
+                  active.readOnly
+                    ? 'Read-only mode is on.'
+                    : 'Fetch and bring the upstream commits into this branch'
+                "
+                :disabled="active.remote !== null || active.busy || active.readOnly"
+                @click="workspace.pull(active)"
+              >
+                <ArrowDown class="size-3.5" />
+                Pull
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                :title="
+                  active.readOnly ? 'Read-only mode is on.' : 'Send this branch to its upstream'
+                "
+                :disabled="active.remote !== null || active.busy || active.readOnly"
+                @click="workspace.push(active)"
+              >
+                <ArrowUp class="size-3.5" />
+                Push
+              </Button>
+            </div>
             <Button
               size="sm"
               :variant="active.readOnly ? 'default' : 'outline'"
@@ -451,6 +495,8 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       />
       <IdentityDialog :tab="active" />
       <BranchDialogs :tab="active" />
+      <RemoteDialogs :tab="active" />
+      <RemoteStatus :tab="active" />
       <ContextMenu
         v-if="menu"
         :items="menu.items"
