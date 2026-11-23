@@ -8,6 +8,8 @@ import CommitPanel from "@/components/CommitPanel.vue";
 import DiffView from "@/components/DiffView.vue";
 import IdentityDialog from "@/components/IdentityDialog.vue";
 import LanePopover from "@/components/LanePopover.vue";
+import SettingsButton from "@/components/SettingsButton.vue";
+import SettingsDialog from "@/components/SettingsDialog.vue";
 import ConflictResolver from "@/components/ConflictResolver.vue";
 import HistoryDialogs from "@/components/HistoryDialogs.vue";
 import MergeDialogs from "@/components/MergeDialogs.vue";
@@ -23,6 +25,7 @@ import TabBar from "@/components/TabBar.vue";
 import { Button } from "@/components/ui/button";
 import WelcomeScreen from "@/components/WelcomeScreen.vue";
 import WorkingPanel from "@/components/WorkingPanel.vue";
+import { useSettings } from "@/composables/useSettings";
 import { useWorkspace } from "@/composables/useWorkspace";
 import type { FileChange, Lane, RefInfo, StashEntry, StatusEntry } from "@/lib/api";
 import { commitMenu, laneMenu, type MenuItem, refMenu } from "@/lib/menus";
@@ -262,8 +265,16 @@ watch(
   },
 );
 
+const settings = useSettings();
+
 // Ctrl/Cmd+F goes to the search box.
 function onKeydown(event: KeyboardEvent) {
+  // Cmd+, (Ctrl+, elsewhere) opens the settings, as in most desktop apps.
+  if ((event.ctrlKey || event.metaKey) && event.key === ",") {
+    event.preventDefault();
+    settings.openSettings();
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && active.value) {
     event.preventDefault();
     searchBar.value?.focus();
@@ -284,16 +295,21 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
     />
 
     <div v-if="active" class="relative flex min-h-0 flex-1">
-      <div class="w-64 shrink-0 border-r">
-        <RepoSidebar
-          :tab="active"
-          @toggle-ref="workspace.toggleRef(active, $event)"
-          @toggle-kind="workspace.toggleKind(active, $event)"
-          @toggle-highlight="workspace.toggleHighlight(active, $event)"
-          @jump="graph?.focusRow($event)"
-          @ref-menu="(ref, x, y) => openRefMenu(ref, x, y, null)"
-          @stash="onStash"
-        />
+      <div class="flex w-64 shrink-0 flex-col border-r">
+        <div class="min-h-0 flex-1">
+          <RepoSidebar
+            :tab="active"
+            @toggle-ref="workspace.toggleRef(active, $event)"
+            @toggle-kind="workspace.toggleKind(active, $event)"
+            @toggle-highlight="workspace.toggleHighlight(active, $event)"
+            @jump="graph?.focusRow($event)"
+            @ref-menu="(ref, x, y) => openRefMenu(ref, x, y, null)"
+            @stash="onStash"
+          />
+        </div>
+        <div class="border-t p-1.5">
+          <SettingsButton />
+        </div>
       </div>
 
       <main class="flex min-w-0 flex-1 flex-col">
@@ -576,6 +592,10 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
     <p v-if="active && openError" class="text-destructive border-t px-3 py-1 text-xs" role="alert">
       {{ openError }}
     </p>
+    <div v-if="!active" class="border-t p-1.5">
+      <SettingsButton />
+    </div>
+    <SettingsDialog />
     <NoticeHost />
   </div>
 </template>

@@ -1,15 +1,9 @@
 <script setup lang="ts">
-import { Monitor, Moon, Plus, Sun, X } from "@lucide/vue";
-import { computed } from "vue";
-import { useTheme } from "@/composables/useTheme";
+import { Plus, X } from "@lucide/vue";
 import type { RepoTab } from "@/composables/useWorkspace";
 
 defineProps<{ tabs: readonly RepoTab[]; activeId: string | null }>();
 const emit = defineEmits<{ activate: [id: string]; close: [id: string]; open: [] }>();
-
-const { mode, setMode } = useTheme();
-const nextMode = { system: "light", light: "dark", dark: "system" } as const;
-const themeIcon = computed(() => ({ system: Monitor, light: Sun, dark: Moon })[mode.value]);
 </script>
 
 <template>
@@ -49,13 +43,5 @@ const themeIcon = computed(() => ({ system: Monitor, light: Sun, dark: Moon })[m
         <Plus class="size-4" />
       </button>
     </div>
-    <button
-      class="text-muted-foreground hover:bg-background/60 hover:text-foreground flex items-center gap-1.5 border-l px-3 text-xs"
-      :title="`Theme: ${mode} (click to change)`"
-      @click="setMode(nextMode[mode])"
-    >
-      <component :is="themeIcon" class="size-4" />
-      {{ mode }}
-    </button>
   </div>
 </template>

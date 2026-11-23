@@ -485,3 +485,17 @@ Where the time goes: with `--untracked-files=no` the status takes 140 ms; the re
 
 **What was never verified, for version 2 as a whole**: the Tauri window itself was not run at any milestone (the interface was exercised in a browser on the demo backend, the backend through 235 Rust tests on throwaway repositories); no test reaches a real SSH or HTTPS server (askpass was tested through `git credential fill`); Windows and Linux are untouched (the askpass and editor scripts assume `sh`). Ideas left for later are listed at the end of each milestone section above.
 
+## 13. Settings and themes
+
+**Decisions** (question-and-answer): a theme controls the interface colors **and** the colors of the graph lines, plus the corner radius; six built-in themes and user-made ones (colour pickers, import and export as JSON); every theme has a light and a dark variant and the *Appearance* setting (system, light, dark) picks which one is shown; settings open in a modal window (gear at the bottom of the sidebar, Cmd+,), and the theme button that sat in the tab bar is gone.
+
+**Engine** (`src/lib/theme/`, `src/composables/useTheme.ts`). A theme is plain data (`types.ts`): 18 interface tokens (the shadcn ones: background, foreground, card, primary, border...), twelve lane colors and one for unnamed branches, a radius, for a light and a dark variant. Colors are `#rrggbb` or `#rrggbbaa` (the dark borders keep their transparency; the editor's picker keeps the alpha). The sidebar tokens follow the others (`sidebar` is the panel color, and so on), so a theme does not repeat them. `parseTheme` validates anything read from JSON: a theme with one variant only looks the same in both modes, any incomplete theme is refused with an explanation, an out-of-range radius falls back to the default. `applyVariant` sets the CSS variables on the page, toggles the `dark` class, and the graph reads its palette from the same source (it redraws when the page's style changes). The CSS in `main.css` stays as the fallback before the code runs. Syntax colors in diffs still follow the `dark` class only.
+
+**Built-in themes** (`builtin.ts`): Default (the previous look), GitHub, Nord, Solarized, Gruvbox, Dracula. A test checks, for every theme and variant: all tokens and twelve distinct lane colors are valid, text on its background reaches a contrast of 4.5 (muted text and button text 3), and lanes stand out from the background (1.8). The editor shows the same contrast warnings while editing.
+
+**Persistence**: `localStorage`, keys `git-hydra:theme` (mode, as before), `git-hydra:theme-id` and `git-hydra:themes` (the custom ones). Broken stored data is ignored, a deleted selected theme falls back to Default.
+
+**Interface**: *Settings* has an Appearance section (mode, a grid of theme cards with a swatch, *Customize a copy* / *Duplicate*, *Edit*, *Delete* with a confirmation, *Export (JSON)* to the clipboard, *Import…* from pasted text). The editor edits one variant at a time (choosing it also switches the mode so the change is visible), previews live on the real interface, and only *Save* keeps it; *Cancel* restores the page. Built-in themes cannot be changed, only copied.
+
+**Not done**: following the system for the light and the dark theme separately, theming the syntax colors of diffs, fonts and density as part of a theme, a theme per repository, import from a file or a URL (text only), sharing themes between machines, other settings sections (the window is laid out for them). The settings window was exercised in a browser; the Tauri window was not run.
+
