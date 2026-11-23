@@ -143,8 +143,18 @@ Lane state (active lanes at the cursor) is kept in Rust per repository so that p
 - **Highlight**: a lane is drawn in full while the other lanes, their stations and the text of their commits fade. Clicking a lane line (not a station) opens a small menu with *Highlight this branch* and *Hide this branch*; the sidebar has a highlight button on each ref (refs now carry the `lane` of their commit), and a chip above the graph removes the highlight. Only lanes are highlighted, not the history below their fork point.
 - **Hide**: hiding the branch of a lane hides its local branch **and** its remote-tracking branches (`main`, `origin/main`, ...) through the same hidden-refs mechanism as the sidebar. Lanes that are not named after a ref (merged branches whose ref is gone) can only be highlighted.
 
-### 5.3 Live refresh
-A `notify` watcher on `.git` (HEAD, `refs/`, `packed-refs`) triggers an incremental update: only new commits and changed refs are recomputed, and the frontend receives a `repo-changed` event with the affected range. Events are debounced.
+### 5.3 Live refresh (M8)
+
+- **Watching.** When a repository is opened, the backend watches its `HEAD`, `packed-refs` and `refs/` (not `objects/`, the index or logs) with the `notify` crate. Changes are grouped over 300 ms, then the refs and HEAD are read and compared with the previous state: only a real change sends the `repo-changed` event `{ repoId }`. A `git add`, a `git gc` that packs refs, or a fetch with nothing new send nothing. The watcher lives as long as the repository is open; if it cannot start, the repository still works without refreshing by itself.
+- **Rebuild, not patch.** The graph is rebuilt in full, but only the commits that appeared since the last build are read: the repository keeps what it already read (parents, time, merge subject; and the search entries). The result is exactly what a fresh open gives, because commits are put in a canonical order (by id) before the topological sort, so equal timestamps always tie the same way. Patching the layout of the old rows was rejected: a commit on top shifts every row and can change lanes, and a patch would have to reproduce the full algorithm to stay consistent. Measured on the 100,000-commit synthetic repository after one new commit: **64 to 75 ms with 22 refs**, 113 ms with the 1,199 refs of the stress repository (against 500 to 620 ms for the first build); the search index follows in about 6 ms.
+- **Keeping the place.** `get_graph_meta` returns the new graph; `locate_commits(repoId, ids)` returns the rows of the selected commit and of the commit at the top of the view. The frontend then:
+  - keeps that top commit at the same place on screen (unless the view was at the very top, which then shows the newest commits);
+  - keeps the selection, the commit details, the open diff and the search (the same words are searched again, without jumping), and the highlighted branch (found again by name);
+  - refreshes the sidebar refs and keeps the hidden refs hidden;
+  - lets go of the selection if its commit is no longer in the graph.
+- **No flicker.** While the new rows load, the previous picture stays on screen; it is replaced when the visible rows have arrived (or after 1.5 s at most).
+- Changes arriving during a refresh are grouped into one more refresh; an answer that is no longer the latest is dropped.
+- In a plain browser during development, `window.__simulateRepoChange()` in the console adds a commit on top of the demo repository and announces it like the watcher does.
 
 ### 5.4 Search
 Search runs in Rust over the commit index (message, author, hash prefix). Results return oids; the frontend asks for the page containing the target and scrolls to it.

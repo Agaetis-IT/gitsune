@@ -5,8 +5,9 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
+use super::graph_page::build_graph_cache;
 use super::tests::{git, merged_repo_with_unmerged_branch};
-use super::{build_graph_cache, graph_meta, graph_page, graph_search, open_repository};
+use super::{graph_meta, graph_page, graph_search, open_repository};
 
 fn commit_as(dir: &Path, author: &str, message: &str) {
     let who = format!(

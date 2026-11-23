@@ -40,6 +40,18 @@ export class RowCache {
     return this.chunks.get(Math.floor(row / this.chunkSize))?.[row % this.chunkSize];
   }
 
+  /** Whether every row from `first` to `last` is loaded. */
+  has(first: number, last: number): boolean {
+    for (
+      let chunk = Math.floor(first / this.chunkSize);
+      chunk <= Math.floor(last / this.chunkSize);
+      chunk++
+    ) {
+      if (!this.chunks.has(chunk)) return false;
+    }
+    return true;
+  }
+
   /** Makes sure rows `first..=last` (and a margin around them) are loaded or loading. */
   ensure(first: number, last: number, total: number): void {
     if (total === 0) return;

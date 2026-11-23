@@ -66,6 +66,24 @@ describe("RowCache", () => {
     expect(source.calls).toHaveLength(3);
   });
 
+  it("tells whether a range of rows is loaded", async () => {
+    const source = fakeSource();
+    const cache = new RowCache({
+      fetchPage: source.fetchPage,
+      onUpdate: () => {},
+      chunkSize: 100,
+      prefetch: 0,
+    });
+    expect(cache.has(10, 20)).toBe(false);
+    cache.ensure(10, 20, TOTAL);
+    await source.settle();
+    expect(cache.has(10, 20)).toBe(true);
+    expect(cache.has(0, 99)).toBe(true);
+    expect(cache.has(90, 110)).toBe(false); // runs into the next chunk
+    cache.reset();
+    expect(cache.has(10, 20)).toBe(false);
+  });
+
   it("does not ask for chunks beyond the graph", () => {
     const source = fakeSource();
     const cache = new RowCache({ fetchPage: source.fetchPage, onUpdate: () => {}, chunkSize: 100 });

@@ -15,7 +15,8 @@ pub fn run() {
             commands::get_graph_page,
             commands::get_commit_detail,
             commands::get_file_diff,
-            commands::search_commits
+            commands::search_commits,
+            commands::locate_commits
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

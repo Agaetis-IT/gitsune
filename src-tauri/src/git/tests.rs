@@ -8,6 +8,7 @@ use tempfile::TempDir;
 
 use super::graph::load_graph;
 use super::refs::RefKind;
+use super::store::CommitStore;
 use super::{list_refs, open_repository};
 use crate::layout::{self, LaneKind};
 
@@ -126,7 +127,7 @@ fn loads_the_graph_in_topological_order_and_names_the_merged_lane() {
     let tmp = merged_repo();
     let (repo, _) = open_repository(tmp.path()).unwrap();
     let refs = list_refs(&repo).unwrap();
-    let graph = load_graph(&repo, &refs).unwrap();
+    let graph = load_graph(&repo, &refs, &mut CommitStore::default()).unwrap();
 
     assert_eq!(graph.ids.len(), 4);
     for (row, commit) in graph.commits.iter().enumerate() {
@@ -165,7 +166,7 @@ fn layout_of_a_synthetic_repository() {
     let refs = list_refs(&repo).unwrap();
 
     let started = Instant::now();
-    let graph = load_graph(&repo, &refs).unwrap();
+    let graph = load_graph(&repo, &refs, &mut CommitStore::default()).unwrap();
     let load = started.elapsed();
     let started = Instant::now();
     let computed = layout::layout(&graph.commits, &graph.refs);
@@ -192,7 +193,8 @@ fn layout_of_a_synthetic_repository() {
 
 // ---------- paged graph ----------
 
-use super::{build_graph_cache, graph_meta, graph_page};
+use super::graph_page::build_graph_cache;
+use super::{graph_meta, graph_page};
 
 fn linear_repo(commits: usize) -> TempDir {
     let tmp = TempDir::new().unwrap();
