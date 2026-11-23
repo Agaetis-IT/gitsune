@@ -297,7 +297,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       </div>
 
       <main class="flex min-w-0 flex-1 flex-col">
-        <div class="flex items-center gap-2 border-b px-3 py-1.5 text-xs">
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b px-3 py-1.5 text-xs">
           <span class="text-muted-foreground min-w-0 truncate" :title="active.path">
             {{ active.path }}
             <template v-if="active.headBranch"> · {{ active.headBranch }}</template>
@@ -311,7 +311,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
           >
             Highlighting {{ highlightName }} ✕
           </button>
-          <div class="ml-auto flex items-center gap-2">
+          <div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
             <SearchBar
               :key="active.id"
               ref="searchBar"
