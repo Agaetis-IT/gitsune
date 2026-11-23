@@ -2,6 +2,18 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   type ActivityEntry,
+  type ConflictFile,
+  type MergeInfo,
+  type MergeMode,
+  type MergeResult,
+  type Side,
+  abortOperation,
+  continueOperation,
+  getConflictFile,
+  mergeIntoCurrent,
+  mergePreview,
+  resolveConflictFile,
+  resolveConflictSide,
   type CommitOpResult,
   type DroppedStash,
   type ResetMode,
@@ -195,6 +207,22 @@ export interface RepoBackend {
     after: string,
     snapshot: string | null,
   ): Promise<DiscardResult>;
+  mergeInfo(repoId: string, target: string): Promise<MergeInfo>;
+  /** Conflicts are not an error: the outcome says so and the merge stays in progress. */
+  merge(
+    repoId: string,
+    target: string,
+    mode: MergeMode,
+    message: string | null,
+  ): Promise<MergeResult>;
+  conflictFile(repoId: string, path: string): Promise<ConflictFile>;
+  /** Writes the resolved content and marks the file resolved. */
+  resolveFile(repoId: string, path: string, content: string): Promise<WorkingStatus>;
+  /** Takes one side as it is (a side that deleted the file deletes it). */
+  resolveSide(repoId: string, path: string, side: Side): Promise<WorkingStatus>;
+  /** Finishes the operation in progress (commits the merge...). */
+  continueOperation(repoId: string): Promise<WorkingStatus>;
+  abortOperation(repoId: string): Promise<WorkingStatus>;
   /** The names of the remotes. */
   remotes(repoId: string): Promise<string[]>;
   /** Downloads new commits and refs (`remote` null: every remote). */
@@ -265,6 +293,13 @@ export const tauriBackend: RepoBackend = {
     listen<{ repoId: string }>("activity-changed", (event) => handler(event.payload.repoId)),
   createBranch,
   remotes: listRemotes,
+  mergeInfo: mergePreview,
+  merge: mergeIntoCurrent,
+  conflictFile: getConflictFile,
+  resolveFile: resolveConflictFile,
+  resolveSide: resolveConflictSide,
+  continueOperation,
+  abortOperation,
   stashes: listStashes,
   stashPush,
   stashApply,

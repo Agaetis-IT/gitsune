@@ -50,7 +50,18 @@ enum Event {
 fn classify(roots: &Roots, path: &Path) -> Event {
     for git_dir in &roots.git_dirs {
         if let Ok(inside) = path.strip_prefix(git_dir) {
-            let relevant = inside == Path::new("index") || inside == Path::new("HEAD");
+            // The state of a merge, cherry-pick, revert or rebase in progress shows in the status.
+            let relevant = [
+                "index",
+                "HEAD",
+                "MERGE_HEAD",
+                "CHERRY_PICK_HEAD",
+                "REVERT_HEAD",
+            ]
+            .iter()
+            .any(|name| inside == Path::new(name))
+                || inside.starts_with("rebase-merge")
+                || inside.starts_with("rebase-apply");
             return if relevant { Event::Git } else { Event::Noise };
         }
     }

@@ -11,7 +11,12 @@ import type {
   StatusEntry,
   WorkingStatus,
 } from "@/lib/api";
-import { type CheckoutResult, GitCommandError } from "@/lib/api";
+import {
+  type CheckoutResult,
+  GitCommandError,
+  type MergeOutcome,
+  type MergeResult,
+} from "@/lib/api";
 import type { GraphSource, RepoBackend } from "@/lib/backend";
 import { createReadOnlyStore } from "@/lib/readOnly";
 import { createRecentStore } from "@/lib/recents";
@@ -108,6 +113,7 @@ const searchFor = (query: string): SearchResult => {
 };
 
 const cleanStatus = (): WorkingStatus => ({
+  operation: null,
   branch: "main",
   detached: false,
   head: "c0",
@@ -191,6 +197,26 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
       snapshot: null,
     }),
     undoReset: async () => ({ snapshot: null, status: cleanStatus() }),
+    mergeInfo: async () => ({ upToDate: false, canFastForward: true, commits: 2 }),
+    merge: async () => ({
+      status: cleanStatus(),
+      outcome: "merged",
+      before: "b".repeat(40),
+      after: "a".repeat(40),
+    }),
+    conflictFile: async (_repoId, path) => ({
+      path,
+      code: "UU",
+      ours: "o\n",
+      theirs: "t\n",
+      base: null,
+      worktree: "<<<<<<< HEAD\no\n=======\nt\n>>>>>>> x\n",
+      chooseSideOnly: false,
+    }),
+    resolveFile: async () => cleanStatus(),
+    resolveSide: async () => cleanStatus(),
+    continueOperation: async () => cleanStatus(),
+    abortOperation: async () => cleanStatus(),
     remotes: async () => ["origin"],
     fetch: async () => ({ status: cleanStatus(), summary: "" }),
     pull: async () => ({ status: cleanStatus(), summary: "Already up to date." }),
@@ -2079,5 +2105,163 @@ describe("stash, cherry-pick, revert and reset", () => {
     expect(cherryPick).not.toHaveBeenCalled();
     expect(stashPush).not.toHaveBeenCalled();
     expect(tab.writeError?.kind).toBe("readOnly");
+  });
+});
+
+describe("merge and conflicts", () => {
+  const conflicted = (...paths: string[]): WorkingStatus => ({
+    ...cleanStatus(),
+    operation: { kind: "merge", message: "Merge branch 'side'" },
+    conflicted: paths.map((path) => ({ path, code: "UU" })),
+  });
+  const merged = (outcome: MergeOutcome, status = cleanStatus()): MergeResult => ({
+    status,
+    outcome,
+    before: "b".repeat(40),
+    after: "a".repeat(40),
+  });
+
+  it("asks how to merge after finding out what the merge would do", async () => {
+    const mergeInfo = vi.fn(async () => ({ upToDate: false, canFastForward: false, commits: 3 }));
+    const { workspace, tab } = await openWorktree(cleanStatus(), { mergeInfo });
+    await workspace.askMerge(tab, "feature/x");
+    expect(mergeInfo).toHaveBeenCalledWith("/fake/a", "feature/x");
+    expect(tab.dialog).toEqual({
+      type: "merge",
+      target: "feature/x",
+      info: { upToDate: false, canFastForward: false, commits: 3 },
+    });
+  });
+
+  it("the dialog still opens when the preview fails", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      mergeInfo: async () => {
+        throw new Error("no preview");
+      },
+    });
+    await workspace.askMerge(tab, "feature/x");
+    expect(tab.dialog).toMatchObject({ type: "merge", info: null });
+  });
+
+  it("says what a clean merge did, and undoes it on request", async () => {
+    const undoReplay = vi.fn(async () => cleanStatus());
+    const merge = vi.fn(async () => merged("merged"));
+    const { workspace, tab } = await openWorktree(cleanStatus(), { merge, undoReplay });
+    await workspace.merge(tab, "feature/x", "noFastForward", "  Bring x  ");
+    expect(merge).toHaveBeenCalledWith("/fake/a", "feature/x", "noFastForward", "Bring x");
+    expect(tab.dialog).toBeNull();
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toBe("Merged feature/x.");
+    await notice?.action?.run();
+    expect(undoReplay).toHaveBeenCalledWith("/fake/a", "b".repeat(40), "a".repeat(40));
+  });
+
+  it("a squash merge tells the user to commit, and an up-to-date merge says there is nothing to do", async () => {
+    let outcome: MergeOutcome = "squashed";
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      merge: async () => merged(outcome),
+    });
+    await workspace.merge(tab, "feature/x", "squash", "");
+    expect(lastOf(workspace.notices.value)?.text).toContain("Commit them");
+    outcome = "upToDate";
+    await workspace.merge(tab, "feature/x", "default", "");
+    expect(lastOf(workspace.notices.value)?.text).toContain("nothing to merge");
+  });
+
+  it("a merge that conflicts opens the resolver on the first file", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      merge: async () => merged("conflicts", conflicted("b.txt", "a.txt")),
+    });
+    await workspace.merge(tab, "feature/x", "default", "");
+    expect(tab.status?.operation?.kind).toBe("merge");
+    expect(tab.resolverPath).toBe("b.txt");
+    expect(lastOf(workspace.notices.value)).toMatchObject({ kind: "error" });
+    expect(lastOf(workspace.notices.value)?.text).toContain("conflicts");
+  });
+
+  it("settling a file moves on to the next one, and the last one closes the resolver", async () => {
+    const resolveFile = vi.fn(async () => conflicted("b.txt"));
+    const resolveSide = vi.fn(async () => conflicted());
+    const { workspace, tab } = await openWorktree(conflicted("a.txt", "b.txt"), {
+      resolveFile,
+      resolveSide,
+    });
+    workspace.openResolver(tab);
+    expect(tab.resolverPath).toBe("a.txt");
+
+    expect(await workspace.resolveFile(tab, "a.txt", "fixed\n")).toBe(true);
+    expect(resolveFile).toHaveBeenCalledWith("/fake/a", "a.txt", "fixed\n");
+    expect(tab.resolverPath).toBe("b.txt");
+
+    await workspace.resolveSide(tab, "b.txt", "theirs");
+    expect(resolveSide).toHaveBeenCalledWith("/fake/a", "b.txt", "theirs");
+    expect(tab.resolverPath).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toContain("Continue the merge");
+  });
+
+  it("a failed resolution keeps the resolver where it is", async () => {
+    const { workspace, tab } = await openWorktree(conflicted("a.txt"), {
+      resolveFile: async () => {
+        throw new GitCommandError("other", "cannot write a.txt");
+      },
+    });
+    workspace.openResolver(tab, "a.txt");
+    expect(await workspace.resolveFile(tab, "a.txt", "x")).toBe(false);
+    expect(tab.resolverPath).toBe("a.txt");
+  });
+
+  it("continuing finishes the operation; if conflicts remain it says so", async () => {
+    const continueOperation = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(conflicted(), { continueOperation });
+    await workspace.continueOperation(tab);
+    expect(lastOf(workspace.notices.value)?.text).toBe("The merge is finished.");
+    expect(tab.status?.operation).toBeNull();
+
+    const refused = await openWorktree(conflicted("a.txt"), {
+      continueOperation: async () => {
+        throw new GitCommandError("conflict", "1 file(s) still have conflicts.", ["a.txt"]);
+      },
+    });
+    await refused.workspace.continueOperation(refused.tab);
+    expect(lastOf(refused.workspace.notices.value)).toMatchObject({
+      kind: "error",
+      text: "1 file(s) still have conflicts.",
+    });
+  });
+
+  it("aborting asks first, then goes back and closes the resolver", async () => {
+    const abortOperation = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(conflicted("a.txt"), { abortOperation });
+    workspace.openResolver(tab);
+    workspace.askAbortOperation(tab);
+    expect(tab.dialog).toEqual({ type: "abortOperation" });
+    expect(abortOperation).not.toHaveBeenCalled();
+
+    await workspace.abortOperation(tab);
+    expect(abortOperation).toHaveBeenCalledWith("/fake/a");
+    expect(tab.dialog).toBeNull();
+    expect(tab.resolverPath).toBeNull();
+    expect(tab.status?.operation).toBeNull();
+  });
+
+  it("read-only mode refuses to merge, resolve, continue and abort", async () => {
+    const merge = vi.fn();
+    const resolveFile = vi.fn();
+    const continueOperation = vi.fn();
+    const abortOperation = vi.fn();
+    const { workspace, tab } = await openWorktree(conflicted("a.txt"), {
+      merge,
+      resolveFile,
+      continueOperation,
+      abortOperation,
+    });
+    await workspace.setReadOnly(tab, true);
+    await workspace.merge(tab, "x", "default", "");
+    await workspace.resolveFile(tab, "a.txt", "x");
+    await workspace.continueOperation(tab);
+    await workspace.abortOperation(tab);
+    for (const fn of [merge, resolveFile, continueOperation, abortOperation]) {
+      expect(fn).not.toHaveBeenCalled();
+    }
   });
 });

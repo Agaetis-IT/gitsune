@@ -233,7 +233,18 @@ export interface ConflictEntry {
   code: string;
 }
 
+export type OperationKind = "merge" | "rebase" | "cherryPick" | "revert";
+
+/** A merge, cherry-pick, revert or rebase that is waiting to be finished or cancelled. */
+export interface Operation {
+  kind: OperationKind;
+  /** The first line of the message git prepared (`Merge branch 'x'`), when there is one. */
+  message: string;
+}
+
 export interface WorkingStatus {
+  /** `null` when nothing is waiting. */
+  operation: Operation | null;
   branch: string | null;
   detached: boolean;
   /** Commit HEAD points at, `null` in a repository without commits. */
@@ -602,3 +613,65 @@ export const resetTo = (repoId: string, target: string, mode: ResetMode) =>
 
 export const undoReset = (repoId: string, before: string, after: string, snapshot: string | null) =>
   gitInvoke<DiscardResult>("undo_reset", { repoId, before, after, snapshot });
+
+// ---------- merge and conflicts ----------
+
+export type MergeMode = "default" | "noFastForward" | "fastForwardOnly" | "squash";
+
+export interface MergeInfo {
+  /** The target is already part of the current branch. */
+  upToDate: boolean;
+  canFastForward: boolean;
+  /** Commits of the target that the current branch does not have. */
+  commits: number;
+}
+
+export type MergeOutcome = "upToDate" | "fastForward" | "merged" | "squashed" | "conflicts";
+
+export interface MergeResult {
+  status: WorkingStatus;
+  outcome: MergeOutcome;
+  before: string;
+  after: string;
+}
+
+/** The three versions of a conflicted file and what the working tree holds now. */
+export interface ConflictFile {
+  path: string;
+  /** The two-letter code of git (`UU` both modified, `UD` deleted by them...). */
+  code: string;
+  ours: string | null;
+  theirs: string | null;
+  base: string | null;
+  /** The file in the working tree: with conflict markers, or already edited. */
+  worktree: string | null;
+  /** Binary or too large to edit here: only a side can be chosen. */
+  chooseSideOnly: boolean;
+}
+
+export type Side = "ours" | "theirs";
+
+export const mergePreview = (repoId: string, target: string) =>
+  gitInvoke<MergeInfo>("merge_preview", { repoId, target });
+
+export const mergeIntoCurrent = (
+  repoId: string,
+  target: string,
+  mode: MergeMode,
+  message: string | null,
+) => gitInvoke<MergeResult>("merge_into_current", { repoId, target, mode, message });
+
+export const getConflictFile = (repoId: string, path: string) =>
+  gitInvoke<ConflictFile>("get_conflict_file", { repoId, path });
+
+export const resolveConflictFile = (repoId: string, path: string, content: string) =>
+  gitInvoke<WorkingStatus>("resolve_conflict_file", { repoId, path, content });
+
+export const resolveConflictSide = (repoId: string, path: string, side: Side) =>
+  gitInvoke<WorkingStatus>("resolve_conflict_side", { repoId, path, side });
+
+export const continueOperation = (repoId: string) =>
+  gitInvoke<WorkingStatus>("continue_operation", { repoId });
+
+export const abortOperation = (repoId: string) =>
+  gitInvoke<WorkingStatus>("abort_operation", { repoId });

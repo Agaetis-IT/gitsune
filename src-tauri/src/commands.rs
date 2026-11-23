@@ -10,10 +10,10 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::git::{
     self, ActivityEntry, Area, CheckoutResult, CheckoutTarget, CommitDetail, CommitOpResult,
-    CommitResult, DeletedBranch, DeletedTag, DirtyStrategy, DiscardResult, DroppedStash, FileDiff,
-    GitError, GraphCache, GraphMeta, GraphPage, PullStrategy, PushOptions, RefInfo, RemoteResult,
-    RepoInfo, RepoStores, RepoWatcher, ResetMode, ResetResult, SearchResult, Snapshot, StashEntry,
-    WorkingStatus,
+    CommitResult, ConflictFile, DeletedBranch, DeletedTag, DirtyStrategy, DiscardResult,
+    DroppedStash, FileDiff, GitError, GraphCache, GraphMeta, GraphPage, MergeInfo, MergeMode,
+    MergeResult, PullStrategy, PushOptions, RefInfo, RemoteResult, RepoInfo, RepoStores,
+    RepoWatcher, ResetMode, ResetResult, SearchResult, Side, Snapshot, StashEntry, WorkingStatus,
 };
 
 struct OpenRepo {
@@ -932,4 +932,85 @@ pub async fn undo_reset(
     with_ctx(&registry, &repo_id, |ctx| {
         git::undo_reset(ctx, &before, &after, snapshot.as_deref())
     })
+}
+
+// ---------- merge and conflicts ----------
+
+/// What merging `target` into the current branch would do.
+#[tauri::command]
+pub async fn merge_preview(
+    repo_id: String,
+    target: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<MergeInfo, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::merge_info(ctx, &target))
+}
+
+/// Merges a branch or a commit into the current branch. Conflicts are not an error: the
+/// outcome says so and the merge is left in progress to be resolved.
+#[tauri::command]
+pub async fn merge_into_current(
+    repo_id: String,
+    target: String,
+    mode: MergeMode,
+    message: Option<String>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<MergeResult, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::merge(ctx, &target, mode, message.as_deref())
+    })
+}
+
+/// The three versions of a conflicted file and its content in the working tree.
+#[tauri::command]
+pub async fn get_conflict_file(
+    repo_id: String,
+    path: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<ConflictFile, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::conflict_file(ctx, &path))
+}
+
+/// Writes the resolved content of a conflicted file and marks it resolved.
+#[tauri::command]
+pub async fn resolve_conflict_file(
+    repo_id: String,
+    path: String,
+    content: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::resolve_file(ctx, &path, &content)
+    })
+}
+
+/// Resolves a conflicted file by taking "ours" or "theirs" as it is.
+#[tauri::command]
+pub async fn resolve_conflict_side(
+    repo_id: String,
+    path: String,
+    side: Side,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::resolve_side(ctx, &path, side)
+    })
+}
+
+/// Finishes the operation in progress (commits the merge...) once the conflicts are resolved.
+#[tauri::command]
+pub async fn continue_operation(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, git::continue_operation)
+}
+
+/// Cancels the operation in progress and puts the repository back as it was.
+#[tauri::command]
+pub async fn abort_operation(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, git::abort_operation)
 }

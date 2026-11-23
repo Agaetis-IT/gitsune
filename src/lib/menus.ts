@@ -87,6 +87,11 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
       write(ctx, { id: "upstream", label: "Set the upstream…" }),
       write(ctx, { id: "push", label: "Push…" }),
       write(ctx, {
+        id: "merge",
+        label: `Merge ${ref.name} into the current branch…`,
+        disabled: ref.isHead ? "This is the current branch." : undefined,
+      }),
+      write(ctx, {
         id: "delete",
         label: "Delete…",
         danger: true,
@@ -99,6 +104,7 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
   if (ref.kind === "remote") {
     return [
       write(ctx, { id: "checkout", label: "Checkout as a local branch" }),
+      write(ctx, { id: "merge", label: `Merge ${ref.name} into the current branch…` }),
       write(ctx, {
         id: "deleteRemote",
         label: "Delete on the remote…",

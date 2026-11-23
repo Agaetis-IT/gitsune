@@ -8,8 +8,11 @@ import CommitPanel from "@/components/CommitPanel.vue";
 import DiffView from "@/components/DiffView.vue";
 import IdentityDialog from "@/components/IdentityDialog.vue";
 import LanePopover from "@/components/LanePopover.vue";
+import ConflictResolver from "@/components/ConflictResolver.vue";
 import HistoryDialogs from "@/components/HistoryDialogs.vue";
+import MergeDialogs from "@/components/MergeDialogs.vue";
 import NoticeHost from "@/components/NoticeHost.vue";
+import OperationBanner from "@/components/OperationBanner.vue";
 import RemoteDialogs from "@/components/RemoteDialogs.vue";
 import RemoteStatus from "@/components/RemoteStatus.vue";
 import MetroGraph, { type GraphContextTarget } from "@/components/graph/MetroGraph.vue";
@@ -185,6 +188,7 @@ function onMenuSelect(id: string) {
     else if (id === "upstream") workspace.askUpstream(tab, ref.name);
     else if (id === "delete") workspace.askDeleteBranch(tab, ref.name);
     else if (id === "push") void workspace.askPush(tab, ref.name);
+    else if (id === "merge") void workspace.askMerge(tab, ref.name);
     else if (id === "deleteRemote") {
       const slash = ref.name.indexOf("/");
       workspace.askDeleteRemoteBranch(tab, ref.name.slice(0, slash), ref.name.slice(slash + 1));
@@ -411,6 +415,8 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
           <Button size="sm" variant="ghost" @click="active.error = ''">Dismiss</Button>
         </div>
 
+        <OperationBanner :tab="active" />
+
         <div class="relative min-h-0 flex-1">
           <MetroGraph
             v-if="active.source && active.source.meta.total > 0"
@@ -494,6 +500,12 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             :load="(force) => workspace.fileDiff(active!, force)"
             @close="workspace.openFile(active, null)"
           />
+          <ConflictResolver
+            v-if="active.resolverPath !== null"
+            :key="`resolve:${active.id}`"
+            :tab="active"
+            class="absolute inset-0 z-30"
+          />
         </div>
       </main>
 
@@ -519,6 +531,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       <BranchDialogs :tab="active" />
       <RemoteDialogs :tab="active" />
       <HistoryDialogs :tab="active" />
+      <MergeDialogs :tab="active" />
       <RemoteStatus :tab="active" />
       <ContextMenu
         v-if="menu"

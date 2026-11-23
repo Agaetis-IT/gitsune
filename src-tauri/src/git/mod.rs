@@ -6,6 +6,7 @@ mod cli;
 mod commit_detail;
 mod graph;
 mod graph_page;
+mod merge;
 mod ops;
 mod refs;
 mod remote;
@@ -30,6 +31,10 @@ pub use commit_detail::{CommitDetail, FileDiff, commit_detail, file_diff};
 pub use graph_page::{
     GraphCache, GraphMeta, GraphPage, build_graph_cache_with, graph_meta, graph_page, graph_search,
     locate_commits,
+};
+pub use merge::{
+    ConflictFile, MergeInfo, MergeMode, MergeResult, Side, abort_operation, conflict_file,
+    continue_operation, merge, merge_info, resolve_file, resolve_side,
 };
 pub use ops::{
     Area, CommitResult, DiscardResult, Identity, OpCtx, Snapshot, commit, discard_paths, identity,
@@ -61,6 +66,8 @@ mod branch_tests;
 mod commit_tests;
 #[cfg(test)]
 mod diff_tests;
+#[cfg(test)]
+mod merge_tests;
 #[cfg(test)]
 mod ops_tests;
 #[cfg(test)]

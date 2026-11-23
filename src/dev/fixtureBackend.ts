@@ -1,6 +1,7 @@
 import { GitCommandError, type GraphMeta, type GraphRef, type GraphRow, type RefInfo } from "@/lib/api";
 import type { RepoBackend } from "@/lib/backend";
 import { demoCommitDetail, demoFileDiff } from "./demoDiffs";
+import { createDemoMerge } from "./demoMerge";
 import { createDemoRemote } from "./demoRemote";
 import { createDemoStash } from "./demoStash";
 import { createDemoWorktree } from "./demoWorktree";
@@ -144,7 +145,10 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
 
   const worktreeListeners = new Set<(repoId: string) => void>();
   const activityListeners = new Set<(repoId: string) => void>();
+  let readOnlyOn = false;
+  let demoMerge: ReturnType<typeof createDemoMerge> | null = null;
   const worktree = createDemoWorktree({
+    decorate: (status) => demoMerge?.decorate(status) ?? status,
     headId: () => data.rows[0].id,
     addCommit: (summary) => {
       const id = addCommitOnTop(summary);
@@ -155,7 +159,13 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
     changed: () => activityListeners.forEach((listener) => listener(info.id)),
   });
 
-  let readOnlyOn = false;
+  demoMerge = createDemoMerge({
+    plain: worktree.status,
+    headId: () => data.rows[0].id,
+    readOnly: () => readOnlyOn,
+  });
+  const merge = demoMerge;
+
   const stash = createDemoStash({
     status: worktree.status,
     clearChanges: async () => {
@@ -276,6 +286,13 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
     setUpstream: async () => worktree.status(),
     ...remote,
     ...stash,
+    mergeInfo: merge.mergeInfo,
+    merge: merge.merge,
+    conflictFile: merge.conflictFile,
+    resolveFile: merge.resolveFile,
+    resolveSide: merge.resolveSide,
+    continueOperation: merge.continueOperation,
+    abortOperation: merge.abortOperation,
     createTag: async (_repoId, name, target) => {
       checkName(name, "tag");
       editRefs((refs) => [...refs, addRef("tag", name, rowOf(target))]);

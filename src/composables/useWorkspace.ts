@@ -12,6 +12,9 @@ import {
   type GitErrorKind,
   type GraphRow,
   MAX_SEARCH_RESULTS,
+  type MergeInfo,
+  type MergeMode,
+  type Side,
   type PullStrategy,
   type PushOptions,
   type RefInfo,
@@ -108,7 +111,11 @@ export type BranchDialog =
   | { type: "stash" }
   | { type: "dropStash"; stash: StashEntry }
   /** Move the current branch to a commit: soft, mixed or hard. */
-  | { type: "reset"; target: CommitTarget };
+  | { type: "reset"; target: CommitTarget }
+  /** Merge a branch into the current one; `info` is what the merge would do (when known). */
+  | { type: "merge"; target: string; info: MergeInfo | null }
+  /** Cancel the merge, cherry-pick, revert or rebase in progress: the work done so far is lost. */
+  | { type: "abortOperation" };
 
 /** A fetch, pull or push that is running. */
 export interface RemoteOp {
@@ -196,6 +203,8 @@ export interface RepoTab {
   remote: RemoteOp | null;
   /** The stash list, most recent first. */
   stashes: StashEntry[];
+  /** The conflict resolver is open on this file (`""` before a file is chosen); `null` if closed. */
+  resolverPath: string | null;
 }
 
 export type DiffMode = "unified" | "split";
@@ -862,8 +871,9 @@ export function createWorkspace(
     } else if (failure?.kind === "conflict") {
       notify(
         "error",
-        "The merge stopped on conflicts. Resolve them in a terminal for now: conflict resolution comes in a later version.",
+        "The pull stopped on conflicts: resolve them from the banner above the graph.",
       );
+      void refreshStatus(tab, true);
     }
   }
 
@@ -1104,6 +1114,141 @@ export function createWorkspace(
     });
   }
 
+  // ---------- merge and conflicts ----------
+
+  const OPERATION_NAMES = {
+    merge: "merge",
+    rebase: "rebase",
+    cherryPick: "cherry-pick",
+    revert: "revert",
+  } as const;
+
+  function openResolver(tab: RepoTab, path?: string): void {
+    const first = tab.status?.conflicted[0]?.path ?? "";
+    tab.resolverPath = path ?? first;
+  }
+
+  const closeResolver = (tab: RepoTab): void => {
+    tab.resolverPath = null;
+  };
+
+  /** After a file was settled: go to the next one, or close the resolver when none is left. */
+  function afterResolved(tab: RepoTab, status: WorkingStatus): void {
+    applyStatus(tab, status, true);
+    if (status.conflicted.length > 0) {
+      tab.resolverPath = status.conflicted[0].path;
+    } else {
+      closeResolver(tab);
+      notify(
+        "info",
+        status.operation
+          ? `Every conflict is resolved. Continue the ${OPERATION_NAMES[status.operation.kind]} when you are ready.`
+          : "Every conflict is resolved.",
+      );
+    }
+  }
+
+  async function askMerge(tab: RepoTab, target: string): Promise<void> {
+    const info = await backend.mergeInfo(tab.id, target).catch(() => null);
+    openDialog(tab, { type: "merge", target, info });
+  }
+
+  async function merge(
+    tab: RepoTab,
+    target: string,
+    mode: MergeMode,
+    message: string,
+  ): Promise<void> {
+    const result = await write(tab, () =>
+      backend.merge(tab.id, target, mode, message.trim() || null),
+    );
+    if (!result) {
+      const failure = tab.writeError;
+      if (failure && INLINE_ERRORS.includes(failure.kind)) notify("error", failure.message);
+      return;
+    }
+    closeDialog(tab);
+    applyStatus(tab, result.status, true);
+    const undo = {
+      label: "Undo",
+      run: async () => {
+        const status = await write(tab, () =>
+          backend.undoReplay(tab.id, result.before, result.after),
+        );
+        if (status) {
+          applyStatus(tab, status, true);
+          notify("info", "Merge undone.");
+        }
+      },
+    };
+    switch (result.outcome) {
+      case "upToDate":
+        notify("info", `${target} is already part of this branch: nothing to merge.`);
+        break;
+      case "fastForward":
+        notify("info", `Fast-forwarded to ${target}.`, undo);
+        break;
+      case "merged":
+        notify("info", `Merged ${target}.`, undo);
+        break;
+      case "squashed":
+        notify("info", `The changes of ${target} are staged. Commit them when you are ready.`);
+        break;
+      case "conflicts":
+        notify(
+          "error",
+          `Merging ${target} stopped on conflicts: resolve them, then continue (or abort the merge).`,
+        );
+        openResolver(tab);
+        break;
+    }
+  }
+
+  async function resolveFile(tab: RepoTab, path: string, content: string): Promise<boolean> {
+    const status = await write(tab, () => backend.resolveFile(tab.id, path, content));
+    if (!status) return false;
+    afterResolved(tab, status);
+    return true;
+  }
+
+  async function resolveSide(tab: RepoTab, path: string, side: Side): Promise<boolean> {
+    const status = await write(tab, () => backend.resolveSide(tab.id, path, side));
+    if (!status) return false;
+    afterResolved(tab, status);
+    return true;
+  }
+
+  async function continueOperation(tab: RepoTab): Promise<void> {
+    const name = tab.status?.operation ? OPERATION_NAMES[tab.status.operation.kind] : "operation";
+    const status = await write(tab, () => backend.continueOperation(tab.id));
+    if (!status) {
+      const failure = tab.writeError;
+      if (failure && INLINE_ERRORS.includes(failure.kind)) notify("error", failure.message);
+      return;
+    }
+    closeResolver(tab);
+    applyStatus(tab, status, true);
+    notify(
+      "info",
+      status.operation ? `Continued the ${name}: it stopped again.` : `The ${name} is finished.`,
+    );
+  }
+
+  const askAbortOperation = (tab: RepoTab) => openDialog(tab, { type: "abortOperation" });
+
+  async function abortOperation(tab: RepoTab): Promise<void> {
+    const status = await write(tab, () => backend.abortOperation(tab.id));
+    if (!status) return;
+    closeDialog(tab);
+    closeResolver(tab);
+    applyStatus(tab, status, true);
+    notify("info", "Cancelled: the repository is back where it was.");
+  }
+
+  async function conflictFile(tab: RepoTab, path: string) {
+    return backend.conflictFile(tab.id, path);
+  }
+
   async function setReadOnly(tab: RepoTab, readOnly: boolean): Promise<void> {
     try {
       await backend.setReadOnly(tab.id, readOnly);
@@ -1180,6 +1325,7 @@ export function createWorkspace(
         dialog: null,
         remote: null,
         stashes: [],
+        resolverPath: null,
       });
       tabs.value = [...tabs.value, tab];
       activeId.value = tab.id;
@@ -1365,6 +1511,16 @@ export function createWorkspace(
     askDeleteTag,
     askUpstream,
     askPush,
+    askMerge,
+    merge,
+    openResolver,
+    closeResolver,
+    resolveFile,
+    resolveSide,
+    conflictFile,
+    continueOperation,
+    askAbortOperation,
+    abortOperation,
     askStash,
     askDropStash,
     askReset,

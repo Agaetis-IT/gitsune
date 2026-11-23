@@ -190,7 +190,7 @@ Known ceilings: a diff is a plain table, so about 5,000 lines is the practical l
 
 ## 9. Plan
 
-Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 (section 12.8), M11 (section 12.9) and M12 (section 12.10) and M13 (section 12.11) are done; M14 to M16 are planned (section 12.4).
+Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 (section 12.8), M11 (section 12.9) and M12 (section 12.10) and M13 (section 12.11) and M14 (section 12.12) are done; M15 and M16 are planned (section 12.4).
 
 Each milestone ends with lint and tests passing and a short demo.
 
@@ -425,4 +425,21 @@ What exists, and where it differs from the plan above.
 **Demo backend** (`src/dev/demoStash.ts`): an in-memory stash list, and canned answers for the others (cherry-picking a commit whose id starts with `c0` conflicts).
 
 **Not done in M13**: cherry-picking several commits at once, reverting without committing, stash of a single file, applying a stash with `--index` from the interface (the backend supports it), a diff view of a stash, branch from a stash, resolving the conflicts these operations can raise (M14), an in-app way out of a merge left half-done by a pull (M14). Tests: 196 Rust (23 new) and 164 front. Not run: the Tauri window.
+
+### 12.12 M14 as built (merge, operation in progress, conflict resolver)
+
+**Backend** (`src-tauri/src/git/merge.rs`, `status.rs`).
+- **Operation in progress** is part of the working tree status (`operation: { kind, message }`), read from the git directory (`MERGE_HEAD`, `rebase-merge/`, `rebase-apply/`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`): it is found when the operation was started in a terminal and after the app restarts. The working tree watcher now reports changes to those files.
+- **Merge** (`merge_preview`, `merge_into_current`): modes fast-forward when possible (default), always a merge commit (`--no-ff`), squash, fast-forward only; optional message. The preview says whether the branch is already merged, whether a fast-forward is possible, and how many commits come in. **A merge that conflicts is not an error**: it is left in progress and the result's outcome says `conflicts`. Nothing can start while an operation or a conflict is waiting. Local changes in the way are reported with their files. Undo (clean merges and fast-forwards) reuses `undo_replay` (`reset --keep`, refused if HEAD moved).
+- **Resolving**: `get_conflict_file` returns our, their and the base version, the file as it is in the working tree (with the markers), and whether only a side can be chosen (binary, over 2 MiB). `resolve_conflict_file` writes the content and runs `git add`; `resolve_conflict_side` takes "ours" or "theirs" as it is, and **a side that deleted the file deletes it**. Both refuse any path that is not in the conflict list, is absolute or contains `..`.
+- **Continue** commits a merge, or runs `--continue` for a cherry-pick, a revert or a rebase; it refuses while conflicts remain, listing the files. **Abort** runs `--abort` for the operation, or `reset --merge` for conflicts that have no operation (a squash that conflicted, a stash applied over changes).
+- Tests: 216 Rust (20 new: merge modes and preview, undo, overwrite refusal, conflicts, the three versions, resolve then continue, sides, delete/modify both ways, binary, abort, squash abort, path safety, a cherry-pick started in a terminal and found again).
+
+**Interface.**
+- A **banner** above the graph while an operation or conflicts are waiting: "Merge in progress · Merge branch 'x' · 2 files with conflicts", with *Resolve conflicts*, *Continue* (once no conflict is left) and *Abort* (confirmation, says the work so far is lost). Conflicts without an operation show the banner with *Resolve* and *Abort* only, so *Continue* can never commit a stash by mistake.
+- The **conflict resolver** replaces the graph: the list of conflicted files, and for a text file one card per block with ours and theirs side by side and a choice (ours, theirs, both, both with theirs first), also for all blocks at once; the **result** below is editable by hand, shows how many blocks remain, and *Mark as resolved* stays disabled while the text holds conflict markers. Binary or very large files, and delete/modify conflicts, offer the two sides. The block parsing and the result building are plain functions (`src/lib/conflicts.ts`, 12 tests): they read two-sided and three-sided (`diff3`) markers, keep line endings, and leave an unclosed marker as text instead of losing lines.
+- *Merge into the current branch…* in the menus of local and remote branches (greyed on the current branch), with a dialog explaining the four modes. A pull that conflicts now leads to the same banner (its notice used to send the user to a terminal).
+- Demo backend (`src/dev/demoMerge.ts`): merging a `feature/auth-*` branch stops on two conflicts (a text file and a binary one); anything else merges cleanly.
+
+**Not done in M14**: a base column (the common ancestor is read and kept, not shown), jumping from one block to the next, a three-pane view with the whole file on each side (blocks are shown, not whole files), reopening a file marked resolved by mistake (`git checkout -m`), prefilling the commit message after a squash, rerere, merging from the commit menu (branches only), stopping a merge at a hook failure with a nicer message than git's. Not run: the Tauri window. Rebase uses the same banner and resolver; its own flow is M15.
 

@@ -60,7 +60,14 @@ pub fn run() {
             commands::revert_commit,
             commands::undo_replay,
             commands::reset_to,
-            commands::undo_reset
+            commands::undo_reset,
+            commands::merge_preview,
+            commands::merge_into_current,
+            commands::get_conflict_file,
+            commands::resolve_conflict_file,
+            commands::resolve_conflict_side,
+            commands::continue_operation,
+            commands::abort_operation
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
