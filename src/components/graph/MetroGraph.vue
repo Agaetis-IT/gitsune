@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import type { GraphMeta, GraphRow, Lane, RefInfo } from "@/lib/api";
 import { draw, type PillRect, type Theme, type WipRow } from "@/lib/metro/draw";
 import { isOnStation, laneAt, rowAtY } from "@/lib/metro/geometry";
-import { type Density, graphContentWidth, METRICS, rowTop } from "@/lib/metro/metrics";
+import { type Density, graphContentWidth, metricsFor, rowTop } from "@/lib/metro/metrics";
 import { useTheme } from "@/composables/useTheme";
 import { type FetchPage, RowCache } from "@/lib/metro/rowCache";
 
@@ -34,6 +34,8 @@ const props = withDefaults(
     wip?: WipRow | null;
     /** The row of the commit HEAD points at, tinted in the graph. */
     headRow?: number | null;
+    /** The initials of the author in the stations (the stations are then bigger). */
+    initials?: boolean;
   }>(),
   {
     density: "compact",
@@ -44,6 +46,7 @@ const props = withDefaults(
     anchor: null,
     wip: null,
     headRow: null,
+    initials: true,
   },
 );
 
@@ -74,7 +77,7 @@ const viewH = ref(0);
 const hoverRow = ref<number | null>(null);
 const tooltip = ref<{ row: GraphRow; x: number; y: number } | null>(null);
 
-const metrics = computed(() => METRICS[props.density]);
+const metrics = computed(() => metricsFor(props.density, props.initials));
 const matchSet = computed(() => new Set(props.matches));
 /** Height taken by the pinned working tree row. */
 const inset = computed(() => (props.wip ? metrics.value.rowH : 0));
@@ -217,6 +220,7 @@ function render() {
     selectedRow: props.selected,
     hoverRow: hoverRow.value,
     headRow: props.headRow,
+    initials: props.initials,
     highlightLane: props.highlightLane,
     matchRows: matchSet.value,
     topInset: inset.value,
@@ -504,11 +508,11 @@ watch(
   },
 );
 
-// Density change: keep the same commit at the top of the view.
+// Density (or size of the stations) change: keep the same commit at the top of the view.
 watch(
-  () => props.density,
-  async (_, previous) => {
-    const topRow = scrollTop / METRICS[previous].rowH;
+  () => [props.density, props.initials] as const,
+  async (_, [previousDensity, previousInitials]) => {
+    const topRow = scrollTop / metricsFor(previousDensity, previousInitials).rowH;
     await nextTick();
     if (scroller.value) scroller.value.scrollTop = topRow * metrics.value.rowH;
     scrollTop = scroller.value?.scrollTop ?? 0;

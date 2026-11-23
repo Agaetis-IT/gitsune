@@ -2512,3 +2512,28 @@ describe("polish: slow status, locks, network errors, empty remotes", () => {
     expect(lastOf(workspace.notices.value)?.text).toContain("no remote");
   });
 });
+
+describe("hiding a folder of the sidebar", () => {
+  it("hides all its refs at once, then shows them again when all are hidden", async () => {
+    const { workspace, tab } = await openWorktree();
+    const names = ["refs/heads/feature/x", "refs/heads/feature/y"];
+
+    await workspace.toggleRefs(tab, names);
+    expect(names.every((name) => tab.hidden.has(name))).toBe(true);
+
+    // One of them visible again by hand: the folder is not "all hidden", so it hides the rest.
+    await workspace.toggleRef(tab, names[0]);
+    await workspace.toggleRefs(tab, names);
+    expect(names.every((name) => tab.hidden.has(name))).toBe(true);
+
+    await workspace.toggleRefs(tab, names);
+    expect(names.some((name) => tab.hidden.has(name))).toBe(false);
+  });
+
+  it("does nothing for an empty folder", async () => {
+    const { workspace, tab } = await openWorktree();
+    const before = tab.hidden;
+    await workspace.toggleRefs(tab, []);
+    expect(tab.hidden).toBe(before);
+  });
+});

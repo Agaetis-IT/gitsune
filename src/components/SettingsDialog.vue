@@ -6,10 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useSettings } from "@/composables/useSettings";
+import { useGraphSettings } from "@/composables/useGraphSettings";
 import { type ThemeMode, useTheme } from "@/composables/useTheme";
 import { exportTheme, type Theme } from "@/lib/theme/types";
 
 const { open, closeSettings } = useSettings();
+const { showInitials, setShowInitials } = useGraphSettings();
 const { mode, setMode, themes, themeId, setTheme, createFrom, removeCustom, importTheme, dark } =
   useTheme();
 
@@ -138,6 +140,25 @@ function onOpenChange(value: boolean) {
                     {{ m.label }}
                   </Button>
                 </div>
+              </fieldset>
+
+              <fieldset class="mt-6">
+                <legend class="text-sm font-medium">Graph</legend>
+                <label class="mt-2 flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    class="mt-1"
+                    :checked="showInitials"
+                    @change="setShowInitials(($event.target as HTMLInputElement).checked)"
+                  />
+                  <span>
+                    Show the initials of the author in the stations
+                    <span class="text-muted-foreground block text-xs">
+                      Each person has a color of their own; the ring keeps the color of the branch.
+                      The stations are a little bigger.
+                    </span>
+                  </span>
+                </label>
               </fieldset>
 
               <section class="mt-6">

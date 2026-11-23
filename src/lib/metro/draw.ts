@@ -2,6 +2,7 @@ import type { GraphMeta, GraphRow, RefInfo } from "@/lib/api";
 import { connectorPath, laneVerticalRange, visibleRows } from "./geometry";
 import { colX, type Density, type Metrics, rowCenterY, rowTop } from "./metrics";
 import { contrastText, laneColor, type Palette } from "./palette";
+import { initialsOf, isDarkBackground, personColor } from "./people";
 
 export interface Theme {
   background: string;
@@ -39,6 +40,8 @@ export interface DrawInput {
   topInset: number;
   /** The working tree row (pinned at the top), `null` for none. */
   wip: WipRow | null;
+  /** Draw the initials of the author in the stations, in a color per person. */
+  initials: boolean;
   /** Receives the position of every ref label drawn (for right-click hit testing). */
   pills?: PillRect[];
 }
@@ -277,6 +280,7 @@ function drawLanes(input: DrawInput, range: Range): void {
       laneColor(theme.palette, lane?.color ?? null),
       data.parents.length > 1,
       input,
+      data.author,
     );
   }
   ctx.globalAlpha = 1;
@@ -290,8 +294,13 @@ function drawStation(
   color: string,
   isMerge: boolean,
   input: DrawInput,
+  author: string,
 ): void {
   const { theme, metrics: m } = input;
+  if (input.initials) {
+    drawInitialsStation(ctx, x, y, color, isMerge, input, author);
+    return;
+  }
   ctx.lineWidth = m.lineW * 0.7;
   ctx.fillStyle = theme.background;
   ctx.strokeStyle = color;
@@ -311,6 +320,50 @@ function drawStation(
     ctx.fill();
     ctx.stroke();
   }
+  ctx.lineWidth = m.lineW;
+}
+
+/**
+ * A station with the initials of its author on a color of their own; the ring keeps the color
+ * of the branch. An interchange (a merge) has a second ring around it.
+ */
+function drawInitialsStation(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  lane: string,
+  isMerge: boolean,
+  input: DrawInput,
+  author: string,
+): void {
+  const { theme, metrics: m } = input;
+  const person = personColor(author, isDarkBackground(theme.background));
+  const radius = m.stationR;
+  const ring = Math.max(2, m.lineW * 0.6);
+
+  if (isMerge) {
+    ctx.lineWidth = ring * 0.7;
+    ctx.strokeStyle = lane;
+    ctx.fillStyle = theme.background;
+    ctx.beginPath();
+    ctx.arc(x, y, radius + ring + 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.fillStyle = person.fill;
+  ctx.strokeStyle = lane;
+  ctx.lineWidth = ring;
+  ctx.beginPath();
+  ctx.arc(x, y, radius - ring / 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.font = `700 ${Math.round(radius * 0.8)}px ${FONT}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = person.text;
+  ctx.fillText(initialsOf(author), x, y + 0.5);
+  ctx.textAlign = "left";
   ctx.lineWidth = m.lineW;
 }
 

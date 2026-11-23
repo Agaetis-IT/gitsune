@@ -6,9 +6,9 @@ Tauri 2 (Rust) + Vue 3 + TypeScript + Tailwind + shadcn-vue. macOS first.
 
 ## Features
 
-- Metro graph on a virtualized canvas, comfortable up to ~100,000 commits.
+- Metro graph on a virtualized canvas, comfortable up to ~100,000 commits. Each station shows the initials of the author on a color of their own (the ring keeps the color of the branch; it can be switched off in Settings).
 - Tabs per repository, recent repositories, system light/dark theme.
-- Sidebar with local branches, remotes and tags: hide a branch or a group, highlight a branch, jump to its commit.
+- Sidebar with local branches, remotes and tags, in folders by the `/` of their names (`feature/auth-18` is in `feature`; a remote's name is its first folder): close and open folders (remembered per repository), hide a branch, a folder or a group, highlight a branch, jump to its commit.
 - Click a lane in the graph to highlight or hide its branch.
 - Search commits by message, author or id (Ctrl/Cmd+F).
 - Commit details, changed files, unified and side-by-side diffs with syntax highlighting; large and binary files are handled.
