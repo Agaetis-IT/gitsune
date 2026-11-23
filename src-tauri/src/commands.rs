@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use gix::ThreadSafeRepository;
 use tauri::State;
 
-use crate::git::{self, GraphCache, GraphMeta, GraphPage, RefInfo, RepoInfo};
+use crate::git::{
+    self, CommitDetail, FileDiff, GraphCache, GraphMeta, GraphPage, RefInfo, RepoInfo,
+};
 
 struct OpenRepo {
     repo: ThreadSafeRepository,
@@ -120,4 +122,33 @@ pub async fn get_graph_page(
 ) -> Result<GraphPage, String> {
     let (repo, graph) = registry.graph(&repo_id, None)?;
     git::graph_page(&repo, &graph, cursor, limit)
+}
+
+/// Message and changed files of a commit (against its first parent).
+#[tauri::command]
+pub async fn get_commit_detail(
+    repo_id: String,
+    id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<CommitDetail, String> {
+    git::commit_detail(&registry.get(&repo_id)?, &id)
+}
+
+/// Diff of one file of a commit. Large files are only diffed when `force` is set.
+#[tauri::command]
+pub async fn get_file_diff(
+    repo_id: String,
+    id: String,
+    path: String,
+    old_path: Option<String>,
+    force: bool,
+    registry: State<'_, RepoRegistry>,
+) -> Result<FileDiff, String> {
+    git::file_diff(
+        &registry.get(&repo_id)?,
+        &id,
+        &path,
+        old_path.as_deref(),
+        force,
+    )
 }

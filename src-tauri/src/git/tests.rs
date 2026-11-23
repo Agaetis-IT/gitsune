@@ -11,7 +11,7 @@ use super::refs::RefKind;
 use super::{list_refs, open_repository};
 use crate::layout::{self, LaneKind};
 
-fn git(dir: &Path, args: &[&str]) {
+pub(super) fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
         .current_dir(dir)
         .args([
@@ -27,7 +27,7 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed");
 }
 
-fn commit(dir: &Path, message: &str) {
+pub(super) fn commit(dir: &Path, message: &str) {
     git(dir, &["commit", "-q", "--allow-empty", "-m", message]);
 }
 
@@ -97,7 +97,7 @@ fn marks_the_head_branch_and_peels_annotated_tags_to_commits() {
 }
 
 /// main: first -> second -> merge(feature/demo); feature/demo (deleted after the merge): side.
-fn merged_repo() -> TempDir {
+pub(super) fn merged_repo() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     git(dir, &["init", "-q", "-b", "main"]);

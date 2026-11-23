@@ -128,6 +128,14 @@ Lane state (active lanes at the cursor) is kept in Rust per repository so that p
 - Opening an already open repository keeps its cached graph.
 - Per-ref and per-kind toggles in the sidebar both go through this call. Hiding by clicking a lane and highlighting stay in M7.
 
+### 5.5.1 Commit details and file diffs (M6)
+
+- `get_commit_detail(repoId, id)` returns `{ id, parents, authorName, authorEmail, authorTime, message, files, filesTruncated }`. `files` are the changes against the **first parent** (against nothing for a root commit), sorted by path, with a status (`added`, `modified`, `deleted`, `renamed`, `copied`, `typeChanged`), the previous path for renames, and added/removed line counts. Renames are detected by `gix` with the repository's diff settings. Counts are skipped (`null`) for binary files, for blobs over 1 MiB, and when a commit lists more than 300 files; at most 5,000 files are listed.
+- `get_file_diff(repoId, id, path, oldPath, force)` returns hunks of lines (`context`, `add`, `delete`, with old and new line numbers, `noEol` when the file has no final newline, 3 lines of context, `@@ -a,b +c,d @@` headers), computed by Rust with the histogram algorithm. Only the two blobs of that file are read, so it stays fast on huge commits.
+- Limits: a blob over 1 MiB is not diffed unless `force` is set (`tooLarge`, `canForce`); over 8 MiB it is never diffed; a diff is cut at 5,000 lines (`truncated`, totals still exact); binary files (a NUL byte in the first 8,000 bytes, like git) and submodules have no hunks.
+- The frontend shows the diff **in place of the graph** (the graph stays underneath with its scroll and selection; Escape or the Graph button comes back), in unified or side-by-side layout (long lines wrap in the latter). Lines are highlighted one by one with highlight.js, loading each language the first time it is needed; diffs over 3,000 lines are shown without highlighting. Unified and side-by-side rows are plain DOM tables, not virtualised: 5,000 lines is the practical ceiling.
+- Selecting another commit clears the details and closes the open diff.
+
 ### 5.3 Live refresh
 A `notify` watcher on `.git` (HEAD, `refs/`, `packed-refs`) triggers an incremental update: only new commits and changed refs are recomputed, and the frontend receives a `repo-changed` event with the affected range. Events are debounced.
 

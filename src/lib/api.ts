@@ -89,6 +89,75 @@ export interface GraphPage {
   total: number;
 }
 
+export type ChangeStatus = "added" | "modified" | "deleted" | "renamed" | "copied" | "typeChanged";
+
+/** A file changed by a commit (against its first parent). */
+export interface FileChange {
+  path: string;
+  /** Previous path of a renamed or copied file. */
+  oldPath: string | null;
+  status: ChangeStatus;
+  /** Added and removed lines; `null` when not counted (binary, large, or too many files). */
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+export interface CommitDetail {
+  id: string;
+  parents: string[];
+  authorName: string;
+  authorEmail: string;
+  /** Seconds since the Unix epoch. */
+  authorTime: number;
+  /** Full message. */
+  message: string;
+  files: FileChange[];
+  /** The commit changes more files than `files` lists. */
+  filesTruncated: boolean;
+}
+
+export type DiffLineKind = "context" | "add" | "delete";
+
+export interface DiffLine {
+  kind: DiffLineKind;
+  oldNo: number | null;
+  newNo: number | null;
+  /** The line without its terminator. */
+  text: string;
+  /** The file ends here without a final newline. */
+  noEol: boolean;
+}
+
+export interface DiffHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  /** `@@ -a,b +c,d @@` */
+  header: string;
+  lines: DiffLine[];
+}
+
+export interface FileDiff {
+  path: string;
+  oldPath: string | null;
+  status: ChangeStatus;
+  binary: boolean;
+  /** Only the commit id of a submodule changed. */
+  submodule: boolean;
+  /** A side is bigger than the limit: no diff was computed (see `canForce`). */
+  tooLarge: boolean;
+  canForce: boolean;
+  /** The diff was cut at the line limit. */
+  truncated: boolean;
+  oldSize: number | null;
+  newSize: number | null;
+  additions: number;
+  deletions: number;
+  hunks: DiffHunk[];
+}
+
 /** Largest page the backend returns. */
 export const MAX_PAGE_SIZE = 1000;
 
@@ -105,3 +174,15 @@ export const getGraphMeta = (repoId: string, hiddenRefs: string[] = []) =>
 
 export const getGraphPage = (repoId: string, cursor: number, limit: number) =>
   invoke<GraphPage>("get_graph_page", { repoId, cursor, limit });
+
+export const getCommitDetail = (repoId: string, id: string) =>
+  invoke<CommitDetail>("get_commit_detail", { repoId, id });
+
+/** Diff of a file of a commit; files over 1 MiB are only diffed with `force`. */
+export const getFileDiff = (
+  repoId: string,
+  id: string,
+  path: string,
+  oldPath: string | null,
+  force: boolean,
+) => invoke<FileDiff>("get_file_diff", { repoId, id, path, oldPath, force });

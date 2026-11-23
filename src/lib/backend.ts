@@ -1,6 +1,11 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  getCommitDetail,
+  getFileDiff,
   getGraphMeta,
+  type CommitDetail,
+  type FileChange,
+  type FileDiff,
   getGraphPage,
   type GraphMeta,
   type GraphPage,
@@ -25,6 +30,10 @@ export interface RepoBackend {
   close(repoId: string): Promise<void>;
   /** Graph of the repository without the commits only reachable from `hiddenRefs`. */
   graph(repoId: string, hiddenRefs: string[]): Promise<GraphSource>;
+  /** Message and changed files of a commit. */
+  commitDetail(repoId: string, commitId: string): Promise<CommitDetail>;
+  /** Diff of one file of a commit; `force` allows files over the automatic size limit. */
+  fileDiff(repoId: string, commitId: string, file: FileChange, force: boolean): Promise<FileDiff>;
 }
 
 export const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
@@ -43,4 +52,7 @@ export const tauriBackend: RepoBackend = {
     const meta = await getGraphMeta(repoId, hiddenRefs);
     return { meta, fetchPage: (cursor, limit) => getGraphPage(repoId, cursor, limit) };
   },
+  commitDetail: getCommitDetail,
+  fileDiff: (repoId, commitId, file, force) =>
+    getFileDiff(repoId, commitId, file.path, file.oldPath, force),
 };

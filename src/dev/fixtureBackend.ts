@@ -1,5 +1,6 @@
 import type { RepoBackend } from "@/lib/backend";
 import type { GraphMeta, GraphRow, RefInfo } from "@/lib/api";
+import { demoCommitDetail, demoFileDiff } from "./demoDiffs";
 
 /**
  * Stand-in backend for plain-browser development: one recorded repository of invented
@@ -28,6 +29,8 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
     pickFolder: async () => info.path,
     open: async () => ({ info, refs }),
     close: async () => {},
+    commitDetail: async (_repoId, commitId) => demoCommitDetail(commitId),
+    fileDiff: async (_repoId, _commitId, file, force) => demoFileDiff(file, force),
     graph: async () => ({
       meta: data.meta,
       fetchPage: async (cursor, limit) => {
