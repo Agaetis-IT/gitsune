@@ -178,23 +178,26 @@ impl LaneBuilder {
         }
     }
 
-    fn finish(self, id: usize) -> Lane {
+    /// The lane, without its color yet (colors are chosen for all lanes together), and the
+    /// name its color is chosen by.
+    fn finish(self, id: usize) -> (Lane, Option<String>) {
         let (name, kind, color_key) = match (self.best, self.merge_hint) {
             (Some(best), _) => (Some(best.name), LaneKind::Branch, Some(best.color_key)),
             (None, Some(hint)) => (Some(hint.clone()), LaneKind::Merged, Some(hint)),
             (None, None) => (None, LaneKind::Anonymous, None),
         };
-        Lane {
+        let lane = Lane {
             id: to_u32(id),
             col: self.col,
             first_row: self.first_row,
             last_row: self.last_row,
             forked: self.forked,
             joins: self.joins,
-            color: color_key.as_deref().map(naming::color_for),
+            color: None,
             name,
             kind,
-        }
+        };
+        (lane, color_key)
     }
 }
 
@@ -331,11 +334,20 @@ pub fn layout(commits: &[Commit], refs: &[RefLabel]) -> Layout {
     }
 
     let max_cols = builders.iter().map(|b| b.col + 1).max().unwrap_or(0);
-    let lanes = builders
+    let (mut lanes, keys): (Vec<Lane>, Vec<Option<String>>) = builders
         .into_iter()
         .enumerate()
         .map(|(id, b)| b.finish(id))
+        .unzip();
+    let named: Vec<(&str, usize, usize)> = lanes
+        .iter()
+        .zip(&keys)
+        .filter_map(|(lane, key)| Some((key.as_deref()?, lane.first_row, lane.last_row)))
         .collect();
+    let colors = naming::assign_colors(&named);
+    for (lane, key) in lanes.iter_mut().zip(&keys) {
+        lane.color = key.as_ref().map(|key| colors[key]);
+    }
     Layout {
         rows,
         lanes,

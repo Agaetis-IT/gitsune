@@ -11,7 +11,7 @@ import type {
 } from "@/lib/api";
 import type { GraphSource, RepoBackend } from "@/lib/backend";
 import { createRecentStore } from "@/lib/recents";
-import { createWorkspace } from "./useWorkspace";
+import { createWorkspace, describeOpenError } from "./useWorkspace";
 
 const ref = (name: string, kind: RefInfo["kind"], isHead = false): RefInfo => ({
   name,
@@ -177,7 +177,7 @@ describe("opening repositories", () => {
     });
     await workspace.openPath("/nope");
     expect(workspace.tabs.value).toHaveLength(0);
-    expect(workspace.openError.value).toContain("cannot open repository");
+    expect(workspace.openError.value).toBe("/nope is not a git repository, or it cannot be read.");
     expect(workspace.recentRepos.value).toEqual([]);
     expect(workspace.opening.value).toBe(false);
   });
@@ -854,5 +854,48 @@ describe("refreshing when the repository changes", () => {
     await vi.waitFor(() => expect(tab.refreshing).toBe(false));
     expect(tab.source?.meta.total).toBe(5);
     expect(tab.loading).toBe(false);
+  });
+});
+
+describe("error and empty states", () => {
+  it("explains a folder that cannot be opened and passes other errors through", () => {
+    expect(describeOpenError("/x", new Error("cannot open repository at /x: not a repo"))).toBe(
+      "/x is not a git repository, or it cannot be read.",
+    );
+    expect(describeOpenError("/x", "disk on fire")).toBe("disk on fire");
+  });
+
+  it("shows every hidden ref again", async () => {
+    const { workspace, graphCalls } = setup();
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+    await workspace.toggleKind(tab, "tag");
+    await workspace.toggleRef(tab, "refs/heads/feature/x");
+    expect(tab.hidden.size).toBe(3);
+
+    await workspace.showAllRefs(tab);
+    expect(tab.hidden.size).toBe(0);
+    expect(lastOf(graphCalls)?.hidden).toEqual([]);
+  });
+
+  it("retries a graph that failed to load", async () => {
+    let failing = true;
+    const { workspace } = setup({
+      graph: async () => {
+        if (failing) throw new Error("boom");
+        return {
+          meta: emptyMeta(10),
+          fetchPage: async () => ({ start: 0, rows: [], nextCursor: null, total: 0 }),
+        };
+      },
+    });
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+    expect(tab.error).toBe("boom");
+
+    failing = false;
+    await workspace.retry(tab);
+    expect(tab.error).toBe("");
+    expect(tab.source?.meta.total).toBe(10);
   });
 });

@@ -1,16 +1,62 @@
 //! Lane naming helpers: merge-subject parsing and stable color assignment.
 
+use std::collections::HashMap;
+
 /// Number of colors in the frontend palette; lane colors are indices below this.
 pub const PALETTE_SIZE: u32 = 12;
 
-/// Stable color index for a lane name (FNV-1a hash, so it never changes between runs).
-pub fn color_for(key: &str) -> u32 {
+/// FNV-1a hash: the same on every run and platform.
+fn hash(key: &str) -> u32 {
     let mut hash: u32 = 0x811c_9dc5;
     for byte in key.bytes() {
         hash ^= u32::from(byte);
         hash = hash.wrapping_mul(0x0100_0193);
     }
-    hash % PALETTE_SIZE
+    hash
+}
+
+/// The color a name asks for: stable, but two names can ask for the same one.
+pub fn color_for(key: &str) -> u32 {
+    hash(key) % PALETTE_SIZE
+}
+
+/// Picks a palette color for every name so that names shown at the same time (their rows
+/// overlap) get different colors whenever the palette allows it.
+///
+/// Each name asks for its hash color and keeps it unless an overlapping name already took it;
+/// then it gets the next free one (or, when more names overlap than the palette has colors,
+/// the least used one). Names are handled in hash order, so the result only depends on the
+/// names and their extents, not on the order of the lanes.
+///
+/// `names` are (name, first row, last row); names given twice are merged into one extent.
+pub fn assign_colors(names: &[(&str, usize, usize)]) -> HashMap<String, u32> {
+    let mut extents: HashMap<&str, (usize, usize)> = HashMap::new();
+    for &(name, first, last) in names {
+        let extent = extents.entry(name).or_insert((first, last));
+        extent.0 = extent.0.min(first);
+        extent.1 = extent.1.max(last);
+    }
+    let mut ordered: Vec<(&str, (usize, usize))> = extents.into_iter().collect();
+    ordered.sort_by_key(|(name, _)| (hash(name), *name));
+
+    let mut assigned: Vec<(usize, usize, u32)> = Vec::with_capacity(ordered.len());
+    let mut colors = HashMap::with_capacity(ordered.len());
+    for (name, (first, last)) in ordered {
+        let mut uses = [0u32; PALETTE_SIZE as usize];
+        for &(other_first, other_last, color) in &assigned {
+            if other_first <= last && first <= other_last {
+                uses[color as usize] += 1;
+            }
+        }
+        let preferred = color_for(name);
+        let color = (0..PALETTE_SIZE)
+            .map(|step| (preferred + step) % PALETTE_SIZE)
+            .min_by_key(|&color| uses[color as usize])
+            .expect("the palette is not empty");
+        assigned.push((first, last, color));
+        colors.insert(name.to_string(), color);
+    }
+    colors
 }
 
 /// Strips the remote name from a remote-tracking branch (`origin/feature/x` -> `feature/x`).
