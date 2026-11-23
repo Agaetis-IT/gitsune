@@ -1350,6 +1350,8 @@ export function createWorkspace(
   ): Promise<void> {
     const result = await write(tab, () => backend.rebase(tab.id, onto, items, autostash));
     if (!result) {
+      // The rebase may have stopped on something other than a conflict: the banner must show it.
+      void refreshStatus(tab, true);
       const failure = tab.writeError;
       if (failure?.kind === "wouldOverwriteChanges") {
         notify(

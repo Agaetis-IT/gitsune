@@ -592,6 +592,10 @@ pub fn classify(stdout: &str, stderr: &str) -> Option<ErrorKind> {
     if has("gpg failed to sign the data")
         || has("failed to sign the data")
         || has("Couldn't load public key")
+        || has("failed to write commit object")
+        || has("agent refused operation")
+        || has("op-ssh-sign")
+        || both.to_lowercase().contains("signing failed")
     {
         return Some(ErrorKind::SigningFailed);
     }
