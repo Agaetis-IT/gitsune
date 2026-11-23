@@ -67,6 +67,17 @@ Clean transit-map style, inspired by GitKraken but not copying it:
 - Lane color: FNV-1a hash of the lane name (remote prefix removed, so `main` and `origin/main` match) modulo the 12-color palette. Anonymous lanes have no color.
 - Measured on the 100,000-commit synthetic repository (1,199 refs): read and order the graph 145 ms, layout 13 ms. The synthetic repo keeps ~1,180 unmerged branches alive, which gives 1,539 columns; real repositories are far narrower, and very wide graphs are handled by branch hiding (M7).
 
+### 4.2.2 Renderer (M4, `src/lib/metro`, `src/components/graph/MetroGraph.vue`)
+
+- One Canvas 2D for the graph and the commit text, in a scroll container: a sticky canvas the size of the viewport and a spacer that gives the scrollbars their range. Only visible rows are drawn (virtualization); rows arrive by chunks of 200 through a bounded cache (30 chunks, 1 chunk prefetched on each side, stale responses ignored after a reset).
+- The lane area takes at most 45% of the width and **scrolls sideways on its own**; the commit text stays fixed. This keeps very wide graphs usable until branch hiding (M7).
+- Lanes are straight verticals (from `Lane.col`, `forked`, `joins`, `firstRow`, `lastRow`); only connectors come from row data. Corners are quadratic curves of radius 9 px (compact) / 12 px (detailed).
+- Stations: ring in the lane color with the theme background inside; merge commits are bigger "interchange" stations with a dot in the middle.
+- Commit list: ref labels (local filled in the lane color, HEAD outlined and bold, remotes outlined, tags grey), the summary, then author and date on the right in compact mode; in detailed mode a second line with author, date and short id. This settles the open question about a commit list column: it is drawn in the same canvas, aligned with the stations.
+- Interactions: click and arrow/Page/Home/End keys select a row; hovering a station shows a tooltip (summary, short id, author, date, merge info); Ctrl/Cmd + wheel (or trackpad pinch) switches the density, keeping the same commit at the top.
+- Theme: colors are read from the CSS variables of the app (`--background`, `--foreground`, `--muted-foreground`) and the 12-color palette has a light and a dark variant (`palette.ts`, must stay in sync with `PALETTE_SIZE` in Rust).
+- In a plain browser during development (no Tauri) the app shows a recorded graph of an invented 500-commit repository (`src/dev/graph-demo.json`, generated from the Rust backend; see `dump_graph_fixture` in `src-tauri/src/git/tests.rs`). It is excluded from production builds.
+
 ### 4.3 Interactions (v1)
 - Scroll and select a commit (updates the right panel).
 - Hover a station: tooltip with hash, message, author, date.
@@ -173,7 +184,7 @@ Each milestone ends with lint and tests passing and a short demo.
 
 ## 10. Open questions (to settle during the milestones)
 - Exact palette and line thickness: tuned at M4/M9.
-- Whether to add a minimal commit list column (hash, author, date) next to the graph or keep only summaries: decide at M4.
+- Lane colors come from a hash of the name modulo 12, so two branches can share a color (seen on the demo graph: `main` and a merged feature branch). Options if it bothers in practice: bigger palette, or assign colors first-come per repository while keeping them stable across sessions.
 
 ## 11. Decisions
 

@@ -377,3 +377,18 @@ fn paging_a_synthetic_repository() {
     );
     assert_eq!(seen, meta.total);
 }
+
+/// Writes the whole graph of a (small) synthetic repository as JSON, for frontend demos and tests:
+/// `SYNTH_REPO=/path FIXTURE_OUT=/path/graph.json cargo test dump_graph_fixture -- --ignored`
+#[test]
+#[ignore = "needs SYNTH_REPO and FIXTURE_OUT"]
+fn dump_graph_fixture() {
+    let path = std::env::var("SYNTH_REPO").expect("set SYNTH_REPO");
+    let out = std::env::var("FIXTURE_OUT").expect("set FIXTURE_OUT");
+    let (repo, _) = open_repository(Path::new(&path)).unwrap();
+    let cache = build_graph_cache(&repo).unwrap();
+    let meta = graph_meta(&cache);
+    let page = graph_page(&repo, &cache, 0, meta.total).unwrap();
+    let json = serde_json::json!({ "meta": meta, "rows": page.rows });
+    std::fs::write(&out, serde_json::to_string(&json).unwrap()).unwrap();
+}

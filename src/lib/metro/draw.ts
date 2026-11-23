@@ -1,0 +1,310 @@
+import type { GraphMeta, GraphRow, RefInfo } from "@/lib/api";
+import { connectorPath, laneVerticalRange, visibleRows } from "./geometry";
+import { colX, type Density, type Metrics, rowCenterY, rowTop } from "./metrics";
+import { contrastText, laneColor, type Palette } from "./palette";
+
+export interface Theme {
+  background: string;
+  foreground: string;
+  muted: string;
+  palette: Palette;
+}
+
+export interface DrawInput {
+  ctx: CanvasRenderingContext2D;
+  /** Canvas size in CSS pixels. */
+  width: number;
+  height: number;
+  dpr: number;
+  scrollTop: number;
+  /** Horizontal offset of the lane area (it scrolls on its own, the text does not). */
+  graphScrollX: number;
+  graphViewportW: number;
+  textX: number;
+  meta: GraphMeta;
+  metrics: Metrics;
+  density: Density;
+  theme: Theme;
+  getRow: (row: number) => GraphRow | undefined;
+  selectedRow: number | null;
+  hoverRow: number | null;
+}
+
+const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif";
+const dateFormat = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+});
+
+/** Draws the visible part of the graph: lanes, connectors, stations, and the commit text. */
+export function draw(input: DrawInput): void {
+  const { ctx, width, height, dpr, theme, metrics: m } = input;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = theme.background;
+  ctx.fillRect(0, 0, width, height);
+
+  const range = visibleRows(input.scrollTop, height, input.meta.total, m);
+  if (!range) return;
+
+  drawBands(input, range);
+  drawLanes(input, range);
+  drawText(input, range);
+}
+
+type Range = { first: number; last: number };
+
+function drawBands(input: DrawInput, range: Range): void {
+  const { ctx, width, theme, metrics: m, scrollTop } = input;
+  const band = (row: number | null, alpha: number) => {
+    if (row === null || row < range.first || row > range.last) return;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = theme.foreground;
+    ctx.fillRect(0, rowTop(row, m) - scrollTop, width, m.rowH);
+    ctx.globalAlpha = 1;
+  };
+  band(input.hoverRow, 0.05);
+  band(input.selectedRow, 0.1);
+
+  if (
+    input.selectedRow !== null &&
+    input.selectedRow >= range.first &&
+    input.selectedRow <= range.last
+  ) {
+    const row = input.getRow(input.selectedRow);
+    const lane = row ? input.meta.lanes[row.lane] : undefined;
+    ctx.fillStyle = lane ? laneColor(theme.palette, lane.color) : theme.foreground;
+    ctx.fillRect(0, rowTop(input.selectedRow, m) - scrollTop, 3, m.rowH);
+  }
+}
+
+function drawLanes(input: DrawInput, range: Range): void {
+  const { ctx, meta, theme, metrics: m } = input;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, input.graphViewportW, input.height);
+  ctx.clip();
+  ctx.translate(-input.graphScrollX, -input.scrollTop);
+  ctx.lineWidth = m.lineW;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  const minX = input.graphScrollX - m.colW;
+  const maxX = input.graphScrollX + input.graphViewportW + m.colW;
+
+  // Straight vertical parts of the lanes.
+  for (const lane of meta.lanes) {
+    const vertical = laneVerticalRange(lane);
+    if (!vertical || vertical.to < range.first - 1 || vertical.from > range.last + 1) continue;
+    const x = colX(lane.col, m);
+    if (x < minX || x > maxX) continue;
+    ctx.strokeStyle = laneColor(theme.palette, lane.color);
+    ctx.beginPath();
+    ctx.moveTo(x, rowCenterY(Math.max(vertical.from, range.first - 1), m));
+    ctx.lineTo(x, rowCenterY(Math.min(vertical.to, range.last + 1), m));
+    ctx.stroke();
+  }
+
+  // Connectors where lanes fork away or join.
+  for (let row = Math.max(0, range.first - 1); row <= range.last; row++) {
+    const data = input.getRow(row);
+    if (!data) continue;
+    for (const edge of data.edges) {
+      const lane = meta.lanes[edge.lane];
+      if (!lane) continue;
+      const left = Math.min(colX(edge.fromCol, m), colX(edge.toCol, m));
+      const right = Math.max(colX(edge.fromCol, m), colX(edge.toCol, m));
+      if (right < minX || left > maxX) continue;
+      ctx.strokeStyle = laneColor(theme.palette, lane.color);
+      ctx.beginPath();
+      for (const command of connectorPath(edge, rowCenterY(row, m), m)) {
+        if (command[0] === "M") ctx.moveTo(command[1], command[2]);
+        else if (command[0] === "L") ctx.lineTo(command[1], command[2]);
+        else ctx.quadraticCurveTo(command[1], command[2], command[3], command[4]);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // Stations on top of the lines.
+  for (let row = range.first; row <= range.last; row++) {
+    const data = input.getRow(row);
+    if (!data) continue;
+    const x = colX(data.col, m);
+    if (x < minX || x > maxX) continue;
+    const lane = meta.lanes[data.lane];
+    drawStation(
+      ctx,
+      x,
+      rowCenterY(row, m),
+      laneColor(theme.palette, lane?.color ?? null),
+      data.parents.length > 1,
+      input,
+    );
+  }
+  ctx.restore();
+}
+
+function drawStation(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  color: string,
+  isMerge: boolean,
+  input: DrawInput,
+): void {
+  const { theme, metrics: m } = input;
+  ctx.lineWidth = m.lineW * 0.7;
+  ctx.fillStyle = theme.background;
+  ctx.strokeStyle = color;
+  if (isMerge) {
+    // Interchange: bigger ring with a dot in the middle.
+    ctx.beginPath();
+    ctx.arc(x, y, m.stationR + 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = theme.foreground;
+    ctx.beginPath();
+    ctx.arc(x, y, m.stationR * 0.4, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.arc(x, y, m.stationR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.lineWidth = m.lineW;
+}
+
+function drawText(input: DrawInput, range: Range): void {
+  const { ctx, width, theme, metrics: m, density } = input;
+  const detailed = density === "detailed";
+  const available = width - input.textX - 12;
+  if (available < 60) return;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(input.textX - 4, 0, width - input.textX + 4, input.height);
+  ctx.clip();
+  ctx.textBaseline = "middle";
+
+  for (let row = range.first; row <= range.last; row++) {
+    const data = input.getRow(row);
+    const centerY = rowCenterY(row, m) - input.scrollTop;
+    if (!data) {
+      // Rows still loading: a faint placeholder bar.
+      ctx.globalAlpha = 0.08;
+      ctx.fillStyle = theme.foreground;
+      ctx.fillRect(input.textX, centerY - 4, Math.min(available * 0.5, 240), 8);
+      ctx.globalAlpha = 1;
+      continue;
+    }
+    const lane = input.meta.lanes[data.lane];
+    const color = laneColor(theme.palette, lane?.color ?? null);
+    const summaryY = detailed ? centerY - 8 : centerY;
+
+    // Right-aligned author and date in compact mode.
+    let right = width - 12;
+    if (!detailed && available > 520) {
+      const date = dateFormat.format(new Date(data.time * 1000));
+      ctx.font = `11px ${FONT}`;
+      ctx.fillStyle = theme.muted;
+      ctx.textAlign = "right";
+      ctx.fillText(date, right, centerY);
+      right -= 92;
+      ctx.fillText(fitText(ctx, data.author, 130), right, centerY);
+      right -= 142;
+      ctx.textAlign = "left";
+    }
+
+    let x = input.textX;
+    ctx.textAlign = "left";
+    x = drawRefPills(ctx, data.refs, x, summaryY, color, input, right);
+    ctx.font = `${detailed ? 13 : 12}px ${FONT}`;
+    ctx.fillStyle = theme.foreground;
+    ctx.fillText(fitText(ctx, data.summary, right - x), x, summaryY);
+
+    if (detailed) {
+      ctx.font = `11px ${FONT}`;
+      ctx.fillStyle = theme.muted;
+      const meta = `${data.author} · ${dateFormat.format(new Date(data.time * 1000))} · ${data.id.slice(0, 7)}`;
+      ctx.fillText(fitText(ctx, meta, available), input.textX, centerY + 11);
+    }
+  }
+  ctx.restore();
+}
+
+/** Draws ref labels from `x`, returns the x where the next element can start. */
+function drawRefPills(
+  ctx: CanvasRenderingContext2D,
+  refs: RefInfo[],
+  startX: number,
+  y: number,
+  color: string,
+  input: DrawInput,
+  limitX: number,
+): number {
+  const { theme, metrics: m } = input;
+  const height = Math.round(m.rowH * (input.density === "detailed" ? 0.4 : 0.64));
+  const shown = refs.slice(0, 3);
+  let x = startX;
+  const labels = shown.map((ref) => ({ ref, text: ref.name }));
+  if (refs.length > shown.length) {
+    labels.push({ ref: refs[0], text: `+${refs.length - shown.length}` });
+  }
+  for (const { ref, text } of labels) {
+    const extra = text.startsWith("+") && ref === refs[0] && refs.length > shown.length;
+    ctx.font = `${ref.isHead && !extra ? "700" : "600"} 11px ${FONT}`;
+    const label = fitText(ctx, text, Math.min(180, limitX - x - 12));
+    const w = ctx.measureText(label).width + 14;
+    if (x + w > limitX - 40) break;
+    const top = y - height / 2;
+    ctx.beginPath();
+    ctx.roundRect(x, top, w, height, height / 2);
+    if (extra) {
+      ctx.fillStyle = theme.muted;
+      ctx.globalAlpha = 0.25;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = theme.foreground;
+    } else if (ref.kind === "local") {
+      ctx.fillStyle = color;
+      ctx.fill();
+      if (ref.isHead) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = theme.foreground;
+        ctx.stroke();
+      }
+      ctx.fillStyle = contrastText(color);
+    } else if (ref.kind === "remote") {
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = color;
+      ctx.stroke();
+      ctx.fillStyle = color;
+    } else {
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = theme.muted;
+      ctx.stroke();
+      ctx.fillStyle = theme.muted;
+    }
+    ctx.textAlign = "left";
+    ctx.fillText(label, x + 7, y + 0.5);
+    x += w + 6;
+  }
+  return x + (labels.length > 0 ? 2 : 0);
+}
+
+/** Shortens `text` with an ellipsis so it fits in `maxWidth` pixels (current font). */
+export function fitText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string {
+  if (maxWidth <= 0) return "";
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (ctx.measureText(`${text.slice(0, mid)}…`).width <= maxWidth) low = mid;
+    else high = mid - 1;
+  }
+  return low === 0 ? "" : `${text.slice(0, low)}…`;
+}
