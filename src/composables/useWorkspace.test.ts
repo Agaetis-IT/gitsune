@@ -791,6 +791,32 @@ const newWorld = (): World => ({
   lanes: ["main", "feature/x"],
 });
 
+describe("the checked-out branch follows the repository", () => {
+  const switchTo = (name: string | null): RefInfo[] =>
+    REFS.map((r) => ({ ...r, isHead: r.kind === "local" && r.name === name }));
+
+  it("is read again on refresh, so the dialogs name the branch we are on", async () => {
+    const world = newWorld();
+    const { workspace, tab, change } = await openChanging(world);
+    expect(tab.headBranch).toBe("main");
+
+    world.refs = switchTo("feature/x"); // a checkout made elsewhere, or by the app
+    change();
+    await vi.waitFor(() => expect(tab.headBranch).toBe("feature/x"));
+
+    await workspace.askPush(tab);
+    expect(tab.dialog).toMatchObject({ type: "push", branch: "feature/x" });
+  });
+
+  it("becomes null on a detached HEAD", async () => {
+    const world = newWorld();
+    const { tab, change } = await openChanging(world);
+    world.refs = switchTo(null);
+    change();
+    await vi.waitFor(() => expect(tab.headBranch).toBeNull());
+  });
+});
+
 describe("refreshing when the repository changes", () => {
   it("keeps the commit at the top of the view and follows the selected commit", async () => {
     const world = newWorld();

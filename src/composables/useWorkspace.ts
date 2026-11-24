@@ -347,6 +347,8 @@ export function createWorkspace(
       }
 
       tab.refs = refs;
+      // The branch checked out changes with a checkout, a rename or a deletion.
+      tab.headBranch = refs.find((ref) => ref.kind === "local" && ref.isHead)?.name ?? null;
       tab.source = source;
       if (atTop) tab.anchor = { row: 0, offset: 0 };
       else if (topRow !== null && top) tab.anchor = { row: topRow, offset: top.offset };
