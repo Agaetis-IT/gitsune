@@ -64,6 +64,15 @@ const emit = defineEmits<{
   select: [row: GraphRow];
   /** Double click on a ref label (`ref` set) or on a commit row. */
   activate: [target: { commit: GraphRow; ref: RefInfo | null }];
+  /** The `+N` label of a commit was clicked: the branches it hides (positions are window coordinates). */
+  moreRefs: [
+    target: {
+      items: Array<{ label: string; ref: RefInfo }>;
+      commit: GraphRow | undefined;
+      clientX: number;
+      clientY: number;
+    },
+  ];
   /** The first and last rows in view, to tell where the rest of the graph is. */
   range: [first: number, last: number];
   /** A lane line was clicked (position relative to this component); `null` for any other click. */
@@ -303,7 +312,11 @@ function onPointerMove(event: PointerEvent) {
       inGraph(point.x) &&
       point.y >= inset.value &&
       laneAt(point.x - graphX.value + scrollLeft, contentY, props.meta.lanes, m) !== null;
-    scroller.value.style.cursor = onLane ? "pointer" : "";
+    const onMore = lastPills.some(
+      (p) =>
+        p.more && point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h,
+    );
+    scroller.value.style.cursor = onLane || onMore ? "pointer" : "";
   }
   if (row !== hoverRow.value) {
     hoverRow.value = row;
@@ -343,6 +356,22 @@ function onClick(event: MouseEvent) {
   const contentY = point.y - inset.value + scrollTop;
   const row = rowAtY(contentY, props.meta.total, m);
 
+  // The `+N` label lists the branches it hides.
+  const more = lastPills.find(
+    (p) =>
+      p.more && point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h,
+  );
+  if (more?.more) {
+    emit("laneClick", null);
+    emit("moreRefs", {
+      items: more.more,
+      commit: cache.getRow(more.row),
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+    return;
+  }
+
   // A click on a lane line (not on a station) offers actions on that lane.
   if (inGraph(point.x)) {
     const data = row === null ? undefined : cache.getRow(row);
@@ -370,7 +399,8 @@ function onContextMenu(event: MouseEvent) {
 
   // A ref label first: its menu is about the branch or tag.
   const pill = lastPills.find(
-    (p) => point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h,
+    (p) =>
+      !p.more && point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h,
   );
   if (pill) {
     emit("contextMenu", { kind: "ref", ref: pill.ref, commit: cache.getRow(pill.row), ...where });
@@ -397,7 +427,8 @@ function onDoubleClick(event: MouseEvent) {
   const point = pointerPosition(event);
   if (!point || point.y < inset.value) return;
   const pill = lastPills.find(
-    (p) => point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h,
+    (p) =>
+      !p.more && point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h,
   );
   if (pill) {
     const commit = cache.getRow(pill.row);

@@ -164,6 +164,39 @@ function openRefMenu(ref: RefInfo, x: number, y: number, commitId: string | null
   };
 }
 
+/** The list of what a `+N` label hides; choosing one opens the menu of that branch. */
+const moreMenu = ref<{
+  refs: RefInfo[];
+  commitId: string | null;
+  items: MenuItem[];
+  x: number;
+  y: number;
+} | null>(null);
+
+function onMoreRefs(target: {
+  items: Array<{ label: string; ref: RefInfo }>;
+  commit: GraphRow | undefined;
+  clientX: number;
+  clientY: number;
+}) {
+  moreMenu.value = {
+    refs: target.items.map((item) => item.ref),
+    commitId: target.commit?.id ?? null,
+    items: target.items.map((item, index) => ({ id: String(index), label: item.label })),
+    x: target.clientX,
+    y: target.clientY,
+  };
+}
+
+function onMoreSelect(id: string) {
+  const current = moreMenu.value;
+  moreMenu.value = null;
+  const ref = current?.refs[Number(id)];
+  if (current && ref) openRefMenu(ref, current.x, current.y, current.commitId);
+}
+
+watch(activeId, () => (moreMenu.value = null));
+
 function onGraphMenu(target: GraphContextTarget) {
   const tab = active.value;
   if (!tab) return;
@@ -729,6 +762,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             @wip-click="workspace.selectWip(active)"
             @lane-click="lanePopover = $event"
             @context-menu="onGraphMenu"
+            @more-refs="onMoreRefs"
             @activate="onActivate"
             @range="(first, last) => (visibleRows = [first, last])"
             @update:selected="workspace.select(active, $event)"
@@ -840,6 +874,14 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       <MergeDialogs :tab="active" />
       <RebaseDialog :tab="active" />
       <RemoteStatus :tab="active" />
+      <ContextMenu
+        v-if="moreMenu"
+        :items="moreMenu.items"
+        :x="moreMenu.x"
+        :y="moreMenu.y"
+        @select="onMoreSelect"
+        @close="moreMenu = null"
+      />
       <ContextMenu
         v-if="fileMenu"
         :items="fileMenuItems"

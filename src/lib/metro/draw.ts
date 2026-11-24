@@ -62,6 +62,17 @@ export interface PillRect {
   h: number;
   ref: RefInfo;
   row: number;
+  /** For the `+N` label: the labels it stands for, to list them when it is clicked. */
+  more?: Array<{ label: string; ref: RefInfo }>;
+}
+
+/** What a label says about where a branch is: "this computer, origin", "tag". */
+export function describeGroup(group: RefGroup): string {
+  const places: string[] = [];
+  if (group.tag) places.push("tag");
+  if (group.local) places.push("this computer");
+  for (const { remote } of group.remotes) if (!places.includes(remote)) places.push(remote);
+  return `${group.name} (${places.join(", ")})`;
 }
 
 /** The pinned row that stands for the uncommitted changes. */
@@ -516,6 +527,15 @@ function drawRefs(input: DrawInput, range: Range): void {
         input.highlightLane === null || data.lane === input.highlightLane ? 1 : FADED_TEXT;
       ctx.fillStyle = theme.foreground;
       ctx.fillText(text, x + 6, y + 0.5);
+      input.pills?.push({
+        x,
+        y: y - height / 2 + input.topInset,
+        w,
+        h: height,
+        ref: groups[shown].primary,
+        row,
+        more: groups.slice(shown).map((g) => ({ label: describeGroup(g), ref: g.primary })),
+      });
       x += w + 4;
     }
 

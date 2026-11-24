@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { MenuItem } from "@/lib/menus";
 
 const props = defineProps<{
@@ -12,11 +12,23 @@ const emit = defineEmits<{ select: [id: string]; close: [] }>();
 
 const root = ref<HTMLElement>();
 
-// Keep the menu inside the window.
+/** The height the menu really has (long labels wrap), measured once it is shown. */
+const height = ref(0);
+const MARGIN = 4;
+
+// Keep the menu inside the window: moved up when it would run past the bottom, and scrolled
+// when it is taller than the window.
 const position = computed(() => ({
-  left: `${Math.max(4, Math.min(props.x, window.innerWidth - 270))}px`,
-  top: `${Math.max(4, Math.min(props.y, window.innerHeight - props.items.length * 34 - 16))}px`,
+  left: `${Math.max(MARGIN, Math.min(props.x, window.innerWidth - 270))}px`,
+  top: `${Math.max(MARGIN, Math.min(props.y, window.innerHeight - height.value - MARGIN))}px`,
+  maxHeight: `${window.innerHeight - MARGIN * 2}px`,
 }));
+
+async function measure() {
+  await nextTick();
+  height.value = root.value?.offsetHeight ?? 0;
+}
+watch(() => props.items, measure);
 
 function pick(item: MenuItem) {
   if (item.disabled) return;
@@ -31,6 +43,7 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 onMounted(() => {
+  void measure();
   document.addEventListener("pointerdown", onPointerDown, true);
   document.addEventListener("keydown", onKeydown);
   window.addEventListener("blur", () => emit("close"), { once: true });
@@ -45,7 +58,7 @@ onBeforeUnmount(() => {
   <div
     ref="root"
     role="menu"
-    class="bg-popover text-popover-foreground fixed z-50 w-64 rounded-md border p-1 text-sm shadow-md"
+    class="bg-popover text-popover-foreground fixed z-50 w-64 overflow-y-auto rounded-md border p-1 text-sm shadow-md"
     :style="position"
     @contextmenu.prevent
   >
