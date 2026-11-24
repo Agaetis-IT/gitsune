@@ -165,6 +165,7 @@ export interface FileDiff {
 /** Largest page the backend returns. */
 export const MAX_PAGE_SIZE = 1000;
 
+export const revealInFinder = (path: string) => invoke<void>("reveal_in_finder", { path });
 export const openRepo = (path: string) => invoke<RepoInfo>("open_repo", { path });
 export const closeRepo = (repoId: string) => invoke<void>("close_repo", { repoId });
 export const listRefs = (repoId: string) => invoke<RefInfo[]>("list_refs", { repoId });

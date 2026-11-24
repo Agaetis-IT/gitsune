@@ -36,6 +36,9 @@ import { Button } from "@/components/ui/button";
 import WelcomeScreen from "@/components/WelcomeScreen.vue";
 import WorkingPanel from "@/components/WorkingPanel.vue";
 import { useGraphSettings } from "@/composables/useGraphSettings";
+import { type AppMenuState, buildMenuModel, parseMenuAction } from "@/lib/appMenu";
+import { revealInFinder } from "@/lib/api";
+import { hasNativeMenu, setNativeMenu } from "@/lib/nativeMenu";
 import { useSettings } from "@/composables/useSettings";
 import { useWorkspace } from "@/composables/useWorkspace";
 import type { FileChange, GraphRow, Lane, RefInfo, StashEntry, StatusEntry } from "@/lib/api";
@@ -347,6 +350,124 @@ watch(
 const settings = useSettings();
 const graphSettings = useGraphSettings();
 const density = graphSettings.density;
+
+// ---------- the menu bar (macOS) ----------
+
+const menuState = computed<AppMenuState>(() => {
+  const tab = active.value;
+  return {
+    hasRepo: !!tab,
+    canWrite: !!tab && !tab.readOnly && !tab.busy,
+    remoteBusy: !!tab && tab.remote !== null,
+    readOnly: tab?.readOnly ?? false,
+    detached: !!tab && tab.headBranch === null,
+    hasHead: headRow.value !== null,
+    tabCount: tabs.value.length,
+    recents: recentRepos.value.map((r) => ({ path: r.path, name: r.name })),
+    branches: (tab?.refs ?? [])
+      .filter((ref) => ref.kind === "local")
+      .map((ref) => ({ name: ref.name, isHead: ref.isHead })),
+    density: density.value,
+    activityOpen: workspace.activityOpen.value,
+  };
+});
+
+function shiftTab(delta: 1 | -1) {
+  const list = tabs.value;
+  if (list.length < 2) return;
+  const index = list.findIndex((tab) => tab.id === activeId.value);
+  workspace.activate(list[(index + delta + list.length) % list.length].id);
+}
+
+/** What a choice in the menu bar does: the same things the toolbar and the sidebar do. */
+function onMenuAction(id: string) {
+  const { name, arg } = parseMenuAction(id);
+  const tab = active.value;
+  switch (name) {
+    case "settings":
+      settings.openSettings();
+      return;
+    case "open":
+      void workspace.pickAndOpen();
+      return;
+    case "recent":
+      void workspace.openPath(arg);
+      return;
+    case "clearRecents":
+      workspace.clearRecents();
+      return;
+    case "nextTab":
+      shiftTab(1);
+      return;
+    case "previousTab":
+      shiftTab(-1);
+      return;
+  }
+  if (!tab) return;
+  switch (name) {
+    case "closeTab":
+      void workspace.closeTab(tab.id);
+      break;
+    case "fetch":
+      void workspace.fetchRemote(tab);
+      break;
+    case "pull":
+      void workspace.pull(tab);
+      break;
+    case "push":
+      void workspace.push(tab);
+      break;
+    case "refresh":
+      void workspace.refreshGraph(tab);
+      break;
+    case "readOnly":
+      void workspace.setReadOnly(tab, !tab.readOnly);
+      break;
+    case "reveal":
+      void revealInFinder(tab.path).catch(() =>
+        workspace.notify("error", "Could not open Finder."),
+      );
+      break;
+    case "copyPath":
+      copy(tab.path);
+      break;
+    case "newBranch":
+      workspace.askCreateBranch(tab, null);
+      break;
+    case "checkout":
+      void workspace.checkout(tab, { kind: "branch", name: arg });
+      break;
+    case "merge":
+      void workspace.askMerge(tab, arg);
+      break;
+    case "rebase":
+      void workspace.askRebase(tab, arg);
+      break;
+    case "stash":
+      workspace.askStash(tab);
+      break;
+    case "search":
+      void openSearch();
+      break;
+    case "goToHead":
+      goToHead();
+      break;
+    case "density":
+      graphSettings.setDensity(arg === "detailed" ? "detailed" : "compact");
+      break;
+    case "activity":
+      toggleActivity();
+      break;
+  }
+}
+
+if (hasNativeMenu()) {
+  watch(
+    menuState,
+    (state) => void setNativeMenu(buildMenuModel(state), onMenuAction).catch(() => {}),
+    { immediate: true, deep: true },
+  );
+}
 
 // Ctrl/Cmd+F goes to the search box.
 function onKeydown(event: KeyboardEvent) {

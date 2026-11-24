@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { Check, GitBranch, Monitor, Moon, Palette, Sun } from "@lucide/vue";
+import { Check, GitBranch, Monitor, Moon, Palette, SlidersHorizontal, Sun } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import ThemeEditor from "@/components/ThemeEditor.vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useSettings } from "@/composables/useSettings";
+import { useGeneralSettings } from "@/composables/useGeneralSettings";
 import { useGraphSettings } from "@/composables/useGraphSettings";
 import { useWorkspace } from "@/composables/useWorkspace";
 import { defaultRemoteIcon, REMOTE_ICON_CHOICES, type IconName } from "@/lib/metro/icons";
@@ -25,14 +26,16 @@ const {
   setRemoteIcon,
 } = useGraphSettings();
 const workspace = useWorkspace();
+const { restoreTabs, setRestoreTabs } = useGeneralSettings();
 const { mode, setMode, themes, themeId, setTheme, createFrom, removeCustom, importTheme, dark } =
   useTheme();
 
 const SECTIONS = [
+  { id: "general", label: "General", icon: SlidersHorizontal },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "graph", label: "Graph", icon: GitBranch },
 ] as const;
-const section = ref<(typeof SECTIONS)[number]["id"]>("appearance");
+const section = ref<(typeof SECTIONS)[number]["id"]>("general");
 
 const MODES: Array<{ mode: ThemeMode; label: string; icon: typeof Sun }> = [
   { mode: "system", label: "System", icon: Monitor },
@@ -146,7 +149,26 @@ function onOpenChange(value: boolean) {
         </nav>
 
         <div class="min-h-0 flex-1 overflow-y-auto p-5">
-          <template v-if="section === 'appearance'">
+          <template v-if="section === 'general'">
+            <h2 class="text-base font-semibold">General</h2>
+            <label class="mt-4 flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                class="mt-1"
+                :checked="restoreTabs"
+                @change="setRestoreTabs(($event.target as HTMLInputElement).checked)"
+              />
+              <span>
+                Restore the tabs at start
+                <span class="text-muted-foreground block text-xs">
+                  The repositories that were open when the application was closed are opened again,
+                  with the tab that was shown and the branches hidden from the graph.
+                </span>
+              </span>
+            </label>
+          </template>
+
+          <template v-else-if="section === 'appearance'">
             <!-- The editor of a custom theme -->
             <template v-if="editing">
               <h2 class="mb-3 text-base font-semibold">Edit the theme</h2>

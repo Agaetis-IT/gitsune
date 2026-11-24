@@ -22,6 +22,7 @@ import {
 import type { GraphSource, RepoBackend } from "@/lib/backend";
 import { createReadOnlyStore } from "@/lib/readOnly";
 import { createRecentStore } from "@/lib/recents";
+import { createSessionStore } from "@/lib/session";
 import { createWorkspace, describeOpenError } from "./useWorkspace";
 
 const ref = (name: string, kind: RefInfo["kind"], isHead = false): RefInfo => ({
@@ -2535,5 +2536,82 @@ describe("hiding a folder of the sidebar", () => {
     const before = tab.hidden;
     await workspace.toggleRefs(tab, []);
     expect(tab.hidden).toBe(before);
+  });
+});
+
+describe("session: the tabs come back", () => {
+  function withSession(overrides: Partial<RepoBackend> = {}) {
+    const storage = memoryStorage();
+    const fake = fakeBackend(overrides);
+    const make = () =>
+      createWorkspace(
+        fake.backend,
+        createRecentStore(storage),
+        createReadOnlyStore(null),
+        createSessionStore(storage),
+      );
+    return { ...fake, make };
+  }
+
+  it("reopens the tabs in order, with the active one and its hidden branches", async () => {
+    const { make, graphCalls } = withSession();
+    const first = make();
+    await first.openPath("/fake/alpha");
+    await first.openPath("/fake/beta");
+    await first.toggleRef(first.active.value!, "refs/heads/feature/x");
+    first.activate("/fake/alpha");
+
+    graphCalls.length = 0;
+    const second = make();
+    await second.restoreSession();
+    expect(second.tabs.value.map((t) => t.name)).toEqual(["alpha", "beta"]);
+    expect(second.activeId.value).toBe("/fake/alpha");
+    expect(graphCalls.find((call) => call.id === "/fake/beta")?.hidden).toEqual([
+      "refs/heads/feature/x",
+    ]);
+  });
+
+  it("does not bring back a tab that was closed", async () => {
+    const { make } = withSession();
+    const first = make();
+    await first.openPath("/fake/alpha");
+    await first.openPath("/fake/beta");
+    await first.closeTab("/fake/beta");
+    const second = make();
+    await second.restoreSession();
+    expect(second.tabs.value.map((t) => t.name)).toEqual(["alpha"]);
+  });
+
+  it("leaves out a repository that cannot be opened and says so once", async () => {
+    // A session that names a repository which has been moved.
+    const store = createSessionStore(memoryStorage());
+    store.write({ paths: ["/fake/alpha", "/fake/gone"], active: "/fake/gone", hidden: {} });
+    const fake = fakeBackend({
+      open: async (path) => {
+        if (path === "/fake/gone") throw new Error("cannot open repository");
+        return { info: infoFor(path), refs: REFS };
+      },
+    });
+    const workspace = createWorkspace(
+      fake.backend,
+      createRecentStore(memoryStorage()),
+      createReadOnlyStore(null),
+      store,
+    );
+    await workspace.restoreSession();
+    expect(workspace.tabs.value.map((t) => t.name)).toEqual(["alpha"]);
+    expect(workspace.openError.value).toBe("");
+    expect(workspace.notices.value).toHaveLength(1);
+    expect(workspace.notices.value[0].text).toContain("gone");
+    // The session keeps the tabs that are open, not the missing one.
+    expect(store.read().paths).toEqual(["/fake/alpha"]);
+  });
+
+  it("does nothing without a saved session", async () => {
+    const { make } = withSession();
+    const workspace = make();
+    await workspace.restoreSession();
+    expect(workspace.tabs.value).toEqual([]);
+    expect(workspace.notices.value).toEqual([]);
   });
 });

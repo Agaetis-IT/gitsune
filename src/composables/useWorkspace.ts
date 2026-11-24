@@ -1,4 +1,4 @@
-import { computed, ref, shallowReactive, shallowRef } from "vue";
+import { computed, ref, shallowReactive, shallowRef, watch } from "vue";
 import {
   type ActivityEntry,
   type Area,
@@ -34,6 +34,7 @@ import { type GraphSource, type RepoBackend } from "@/lib/backend";
 import type { Density } from "@/lib/metro/metrics";
 import { createReadOnlyStore, type ReadOnlyStore } from "@/lib/readOnly";
 import { createRecentStore, type RecentRepo, type RecentStore } from "@/lib/recents";
+import { createSessionStore, type Session, type SessionStore } from "@/lib/session";
 
 /** Result of the commit search of a tab. */
 export interface SearchState {
@@ -232,6 +233,7 @@ export function createWorkspace(
   backend: RepoBackend,
   recents: RecentStore,
   readOnlyStore: ReadOnlyStore = createReadOnlyStore(null),
+  sessionStore: SessionStore = createSessionStore(null),
 ) {
   const tabs = shallowRef<RepoTab[]>([]);
   const activeId = ref<string | null>(null);
@@ -243,6 +245,27 @@ export function createWorkspace(
   const opening = ref(false);
 
   const active = computed(() => tabs.value.find((tab) => tab.id === activeId.value) ?? null);
+
+  // ---------- session: the tabs come back at the next start ----------
+
+  /** Set while the tabs of the last session are reopened, so a partial state is not saved. */
+  let restoring = false;
+
+  const currentSession = (): Session => ({
+    paths: tabs.value.map((tab) => tab.path),
+    active: active.value?.path ?? null,
+    hidden: Object.fromEntries(
+      tabs.value.filter((tab) => tab.hidden.size > 0).map((tab) => [tab.path, [...tab.hidden]]),
+    ),
+  });
+
+  watch(
+    () => JSON.stringify(currentSession()),
+    () => {
+      if (!restoring) sessionStore.write(currentSession());
+    },
+    { flush: "sync" },
+  );
 
   async function loadGraph(tab: RepoTab): Promise<void> {
     const request = ++tab.request;
@@ -1448,7 +1471,7 @@ export function createWorkspace(
     tab.activity = [];
   }
 
-  async function openPath(path: string): Promise<void> {
+  async function openPath(path: string, hidden: readonly string[] = []): Promise<void> {
     const trimmed = path.trim();
     if (!trimmed) return;
     opening.value = true;
@@ -1466,7 +1489,7 @@ export function createWorkspace(
         path: info.path,
         headBranch: info.headBranch,
         refs,
-        hidden: new Set(),
+        hidden: new Set(hidden),
         source: null,
         loading: false,
         error: "",
@@ -1516,6 +1539,35 @@ export function createWorkspace(
       openError.value = describeOpenError(trimmed, error);
     } finally {
       opening.value = false;
+    }
+  }
+
+  /**
+   * Reopens the tabs of the last session, with the branches they hid, and shows the tab that
+   * was shown. A repository that cannot be opened any more is left out, with one notice.
+   */
+  async function restoreSession(): Promise<void> {
+    const session = sessionStore.read();
+    if (session.paths.length === 0) return;
+    restoring = true;
+    const missing: string[] = [];
+    try {
+      for (const path of session.paths) {
+        await openPath(path, session.hidden[path] ?? []);
+        if (openError.value) missing.push(path.split("/").filter(Boolean).pop() ?? path);
+      }
+      openError.value = "";
+      const shown = tabs.value.find((tab) => tab.path === session.active);
+      if (shown) activeId.value = shown.id;
+    } finally {
+      restoring = false;
+      sessionStore.write(currentSession());
+    }
+    if (missing.length > 0) {
+      notify(
+        "error",
+        `${missing.length === 1 ? "1 repository" : `${missing.length} repositories`} could not be reopened: ${missing.join(", ")}.`,
+      );
     }
   }
 
@@ -1683,6 +1735,10 @@ export function createWorkspace(
     return backend.fileDiff(tab.id, tab.selectedCommit.id, tab.openFile, force);
   }
 
+  function clearRecents(): void {
+    recentRepos.value = recents.clear();
+  }
+
   function forgetRecent(path: string): void {
     recentRepos.value = recents.remove(path);
   }
@@ -1787,6 +1843,8 @@ export function createWorkspace(
     clearHighlight,
     hideBranch,
     forgetRecent,
+    clearRecents,
+    restoreSession,
   };
 }
 
@@ -1804,7 +1862,12 @@ export function useWorkspace(backend?: RepoBackend): Workspace {
     } catch {
       storage = null;
     }
-    shared = createWorkspace(backend, createRecentStore(storage), createReadOnlyStore(storage));
+    shared = createWorkspace(
+      backend,
+      createRecentStore(storage),
+      createReadOnlyStore(storage),
+      createSessionStore(storage),
+    );
   }
   return shared;
 }

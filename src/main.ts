@@ -1,5 +1,6 @@
 import { createApp } from "vue";
 import App from "./App.vue";
+import { useGeneralSettings } from "@/composables/useGeneralSettings";
 import { useWorkspace } from "@/composables/useWorkspace";
 import { isTauri, tauriBackend } from "@/lib/backend";
 import "./assets/main.css";
@@ -14,6 +15,7 @@ async function start() {
   void workspace.watchRepos();
   createApp(App).mount("#app");
   if (demo) await workspace.openPath("demo-repo");
+  else if (useGeneralSettings().restoreTabs.value) await workspace.restoreSession();
 }
 
 void start();

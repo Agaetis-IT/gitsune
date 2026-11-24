@@ -9,6 +9,7 @@ pub fn run() {
         .manage(commands::RepoRegistry::default())
         .manage(commands::RemoteOps::default())
         .invoke_handler(tauri::generate_handler![
+            commands::reveal_in_finder,
             commands::open_repo,
             commands::close_repo,
             commands::list_refs,

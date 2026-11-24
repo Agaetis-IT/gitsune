@@ -144,6 +144,31 @@ impl RepoRegistry {
     }
 }
 
+/// Shows a folder in the Finder (macOS), selecting it in its parent.
+#[tauri::command]
+pub fn reveal_in_finder(path: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    if !path.is_dir() {
+        return Err(format!("{} is not a folder", path.display()));
+    }
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg("-R").arg(&path);
+        command
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(&path);
+        command
+    };
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub fn open_repo(
     path: String,

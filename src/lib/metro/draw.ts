@@ -317,29 +317,25 @@ function drawStation(
   author: string,
 ): void {
   const { theme, metrics: m } = input;
+  if (isMerge) {
+    // A merge is a plain dot in the color of its branch: no initials, no ring.
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(3.5, m.stationR * (input.initials ? 0.45 : 0.6)), 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
   if (input.initials) {
-    drawInitialsStation(ctx, x, y, color, isMerge, input, author);
+    drawInitialsStation(ctx, x, y, color, false, input, author);
     return;
   }
   ctx.lineWidth = m.lineW * 0.7;
   ctx.fillStyle = theme.background;
   ctx.strokeStyle = color;
-  if (isMerge) {
-    // Interchange: bigger ring with a dot in the middle.
-    ctx.beginPath();
-    ctx.arc(x, y, m.stationR + 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = theme.foreground;
-    ctx.beginPath();
-    ctx.arc(x, y, m.stationR * 0.4, 0, Math.PI * 2);
-    ctx.fill();
-  } else {
-    ctx.beginPath();
-    ctx.arc(x, y, m.stationR, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-  }
+  ctx.beginPath();
+  ctx.arc(x, y, m.stationR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
   ctx.lineWidth = m.lineW;
 }
 
