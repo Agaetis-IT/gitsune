@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { EDITORS, TERMINALS, useIntegrations } from "@/composables/useIntegrations";
-import { tokenClear, tokenSet, tokenStatus } from "@/lib/api";
+import { azureSignIn, type HostStatus, hostStatuses } from "@/lib/api";
 import { isTauri } from "@/lib/backend";
 
 const { editor, setEditor, terminal, setTerminal } = useIntegrations();
@@ -12,57 +11,79 @@ const HOSTS = [
   {
     host: "github.com",
     label: "GitHub",
-    help: "A personal access token that can read pull requests.",
+    tool: "GitHub CLI",
+    signIn: "gh auth login",
+    install: "brew install gh",
   },
   {
     host: "dev.azure.com",
     label: "Azure DevOps",
-    help: "A personal access token with the “Code (Read)” scope.",
+    tool: "Azure CLI",
+    signIn: "az login",
+    install: "brew install azure-cli",
+  },
+  {
+    host: "gitlab.com",
+    label: "GitLab",
+    tool: "GitLab CLI",
+    signIn: "glab auth login",
+    install: "brew install glab",
   },
 ] as const;
 
-/** Tokens can only be kept by the desktop application (they go to the macOS keychain). */
+/** The sign-in is the one of the command line tools: only the desktop application runs them. */
 const available = isTauri();
-const kept = ref<Record<string, boolean>>({});
-const drafts = ref<Record<string, string>>({});
+const statuses = ref<Record<string, HostStatus>>({});
+const loading = ref(false);
+const signingIn = ref(false);
 const message = ref("");
 const failed = ref(false);
+const copied = ref("");
 
 async function refresh() {
   if (!available) return;
+  loading.value = true;
   try {
-    kept.value = Object.fromEntries(await tokenStatus());
-  } catch (error) {
-    message.value = String(error);
-    failed.value = true;
-  }
-}
-
-async function save(host: string) {
-  failed.value = false;
-  message.value = "";
-  try {
-    await tokenSet(host, drafts.value[host] ?? "");
-    drafts.value[host] = "";
-    message.value = "Token kept in the keychain.";
+    statuses.value = Object.fromEntries((await hostStatuses()).map((s) => [s.host, s]));
   } catch (error) {
     message.value = error instanceof Error ? error.message : String(error);
     failed.value = true;
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function signInAzure() {
+  signingIn.value = true;
+  failed.value = false;
+  message.value = "Finish the sign-in in your browser…";
+  try {
+    await azureSignIn();
+    message.value = "Signed in with the Azure CLI.";
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : String(error);
+    failed.value = true;
+  } finally {
+    signingIn.value = false;
   }
   await refresh();
 }
 
-async function forget(host: string) {
-  failed.value = false;
-  message.value = "";
+async function copy(command: string) {
   try {
-    await tokenClear(host);
-    message.value = "Token removed.";
-  } catch (error) {
-    message.value = error instanceof Error ? error.message : String(error);
-    failed.value = true;
+    await navigator.clipboard.writeText(command);
+    copied.value = command;
+  } catch {
+    // Clipboard unavailable: the command is shown anyway.
   }
-  await refresh();
+}
+
+function stateText(status: HostStatus | undefined, tool: string): string {
+  if (!status) return loading.value ? "Checking…" : "Unknown";
+  if (status.state === "signedIn") {
+    return `Signed in with the ${status.tool}${status.account ? ` (${status.account})` : ""}`;
+  }
+  return status.state === "missing" ? `The ${tool} is not installed` : "Not signed in";
 }
 
 onMounted(refresh);
@@ -104,45 +125,58 @@ onMounted(refresh);
   <fieldset class="mt-6">
     <legend class="text-sm font-medium">Pull requests</legend>
     <p class="text-muted-foreground mt-1 text-xs">
-      Without a token, “Open or create a pull request” opens the page that starts one. With a token
-      for the host, the application first looks for an open pull request of the branch and opens it.
-      Tokens are kept in the macOS keychain and are never shown again.
+      “Open or create a pull request” opens the page that starts one. When you are signed in with
+      the Azure CLI, the GitHub CLI or the GitLab CLI, the application first looks for an open pull
+      request (a merge request on GitLab) of the branch and opens it. GitLab instances of your own
+      use the same sign-in, with <code>glab auth login --hostname your.host</code>. It uses your
+      sign-in without keeping any password or token.
     </p>
     <p v-if="!available" class="text-muted-foreground mt-2 text-sm">
-      Tokens can only be kept by the desktop application.
+      Sign-in is only available in the desktop application.
     </p>
     <ul v-else class="mt-3 space-y-3">
       <li v-for="h in HOSTS" :key="h.host">
-        <div class="flex items-center gap-2 text-sm">
+        <div class="flex flex-wrap items-center gap-2 text-sm">
           <span class="w-28 font-medium">{{ h.label }}</span>
           <span class="text-muted-foreground text-xs">
-            {{ kept[h.host] ? "A token is kept" : "No token" }}
+            {{ stateText(statuses[h.host], h.tool) }}
           </span>
         </div>
-        <p class="text-muted-foreground text-xs">{{ h.help }}</p>
-        <form class="mt-1 flex gap-2" @submit.prevent="save(h.host)">
-          <Input
-            v-model="drafts[h.host]"
-            type="password"
-            autocomplete="off"
-            spellcheck="false"
-            class="h-8 max-w-sm"
-            :aria-label="`Token for ${h.label}`"
-            placeholder="Paste a token"
-          />
-          <Button size="sm" type="submit" :disabled="!(drafts[h.host] ?? '').trim()">Save</Button>
+        <div
+          v-if="statuses[h.host] && statuses[h.host].state !== 'signedIn'"
+          class="mt-1 flex flex-wrap items-center gap-2"
+        >
           <Button
+            v-if="h.host === 'dev.azure.com' && statuses[h.host].state === 'signedOut'"
             size="sm"
-            type="button"
-            variant="outline"
-            :disabled="!kept[h.host]"
-            @click="forget(h.host)"
+            :disabled="signingIn"
+            @click="signInAzure"
           >
-            Remove
+            {{ signingIn ? "Waiting for the browser…" : "Sign in with the Azure CLI" }}
           </Button>
-        </form>
+          <template v-else>
+            <code class="bg-muted rounded px-1.5 py-0.5 text-xs">
+              {{ statuses[h.host].state === "missing" ? h.install : h.signIn }}
+            </code>
+            <Button
+              size="sm"
+              variant="outline"
+              @click="copy(statuses[h.host].state === 'missing' ? h.install : h.signIn)"
+            >
+              {{
+                copied === (statuses[h.host].state === "missing" ? h.install : h.signIn)
+                  ? "Copied"
+                  : "Copy the command"
+              }}
+            </Button>
+            <span class="text-muted-foreground text-xs">then run it in a terminal</span>
+          </template>
+        </div>
       </li>
     </ul>
+    <div v-if="available" class="mt-2">
+      <Button size="sm" variant="ghost" :disabled="loading" @click="refresh">Check again</Button>
+    </div>
     <p
       v-if="message"
       class="mt-2 text-sm"

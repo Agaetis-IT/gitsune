@@ -146,7 +146,7 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
     openExternal: vi.fn(async () => {}),
     openInEditor: vi.fn(async () => {}),
     openInTerminal: vi.fn(async () => {}),
-    findPullRequest: vi.fn(async () => ({ state: "noToken" as const })),
+    findPullRequest: vi.fn(async () => ({ state: "signedOut" as const })),
     close: vi.fn(async () => {}),
     status: async () => cleanStatus(),
     workingDiff: async () => diffFor("wip", FILE, false),
@@ -2684,7 +2684,7 @@ describe("opening things outside the application", () => {
 
   it("explains that a remote on an unknown host has no pull request page", async () => {
     const { workspace, backend } = setup({
-      remoteUrls: async () => [{ name: "origin", url: "https://gitlab.com/a/b.git" }],
+      remoteUrls: async () => [{ name: "origin", url: "https://bitbucket.org/a/b.git" }],
     });
     await workspace.openPath("/fake/alpha");
     await workspace.openPullRequest(workspace.active.value!, "topic");

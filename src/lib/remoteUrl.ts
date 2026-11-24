@@ -1,11 +1,16 @@
 /** A repository on a hosting service the app knows how to link to. */
 export type HostedRepo =
   | { kind: "github"; owner: string; repo: string }
-  | { kind: "azure"; org: string; project: string; repo: string };
+  | { kind: "azure"; org: string; project: string; repo: string }
+  /** `path` is the project with its groups: `group/subgroup/project`. */
+  | { kind: "gitlab"; host: string; path: string };
 
-/** The host a token belongs to (one token per host). */
-export const tokenHost = (repo: HostedRepo): string =>
-  repo.kind === "github" ? "github.com" : "dev.azure.com";
+/** The host of a repository (the sign-in of the command line tool is per host). */
+export const hostOf = (repo: HostedRepo): string =>
+  repo.kind === "github" ? "github.com" : repo.kind === "azure" ? "dev.azure.com" : repo.host;
+
+/** A host name GitLab can be on: `gitlab.com`, or an instance with "gitlab" in its name. */
+const isGitlabHost = (host: string): boolean => host === "gitlab.com" || host.includes("gitlab");
 
 const decode = (value: string): string => {
   try {
@@ -69,6 +74,13 @@ export function parseRemoteUrl(url: string): HostedRepo | null {
     if (!org || rest.length !== 3 || rest[1] !== "_git") return null;
     return { kind: "azure", org, project: rest[0], repo: rest[2] };
   }
+
+  // https://gitlab.com/group/subgroup/project.git, git@gitlab.example.com:group/project.git
+  if (isGitlabHost(host)) {
+    if (parts.length < 2) return null;
+    const path = [...parts.slice(0, -1), stripGit(parts[parts.length - 1])].join("/");
+    return { kind: "gitlab", host, path };
+  }
   return null;
 }
 
@@ -76,6 +88,9 @@ const enc = encodeURIComponent;
 
 /** The web page that starts a pull request from `branch` (the service picks the target). */
 export function createPullRequestUrl(repo: HostedRepo, branch: string): string {
+  if (repo.kind === "gitlab") {
+    return `https://${repo.host}/${repo.path.split("/").map(enc).join("/")}/-/merge_requests/new?merge_request%5Bsource_branch%5D=${enc(branch)}`;
+  }
   if (repo.kind === "github") {
     const branchPath = branch.split("/").map(enc).join("/");
     return `https://github.com/${enc(repo.owner)}/${enc(repo.repo)}/compare/${branchPath}?expand=1`;
@@ -86,6 +101,9 @@ export function createPullRequestUrl(repo: HostedRepo, branch: string): string {
 
 /** The address of a pull request page, from what the API answered. */
 export function pullRequestUrl(repo: HostedRepo, id: number): string {
+  if (repo.kind === "gitlab") {
+    return `https://${repo.host}/${repo.path.split("/").map(enc).join("/")}/-/merge_requests/${id}`;
+  }
   if (repo.kind === "github") {
     return `https://github.com/${enc(repo.owner)}/${enc(repo.repo)}/pull/${id}`;
   }

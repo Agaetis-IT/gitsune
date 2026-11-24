@@ -855,33 +855,23 @@ pub async fn open_in_terminal(
     })
 }
 
-/// Keeps the token of a host in the keychain.
+/// Whether the user is signed in with the command line tool of each host.
 #[tauri::command]
-pub async fn token_set(host: String, token: String) -> Result<(), String> {
-    crate::hosting::token_set(&host, &token)
+pub async fn host_statuses() -> Result<Vec<crate::hosting::HostStatus>, String> {
+    tauri::async_runtime::spawn_blocking(crate::hosting::host_statuses)
+        .await
+        .map_err(|error| error.to_string())
 }
 
-/// Forgets the token of a host.
+/// Opens the sign-in page of the Azure CLI and waits until the user is done.
 #[tauri::command]
-pub async fn token_clear(host: String) -> Result<(), String> {
-    crate::hosting::token_clear(&host)
+pub async fn azure_sign_in() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(crate::hosting::azure_sign_in)
+        .await
+        .map_err(|error| error.to_string())?
 }
 
-/// Whether a token is kept for each host (the token itself never leaves the keychain).
-#[tauri::command]
-pub async fn token_status() -> Result<Vec<(String, bool)>, String> {
-    crate::hosting::HOSTS
-        .iter()
-        .map(|host| {
-            Ok((
-                host.to_string(),
-                crate::hosting::read_token(host)?.is_some(),
-            ))
-        })
-        .collect()
-}
-
-/// The open pull request of a branch, when a token is kept for its host.
+/// The open pull request of a branch, when the user is signed in with the tool of its host.
 #[tauri::command]
 pub async fn find_pull_request(
     repo: crate::hosting::HostedRepo,

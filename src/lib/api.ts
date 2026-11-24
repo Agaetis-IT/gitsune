@@ -174,7 +174,7 @@ export interface RemoteUrl {
 
 /** What the lookup of the pull request of a branch found. */
 export type PullRequestLookup =
-  { state: "noToken" } | { state: "none" } | { state: "found"; id: number; title: string };
+  { state: "signedOut" } | { state: "none" } | { state: "found"; id: number; title: string };
 
 const plainError = (error: unknown): Error =>
   new Error(typeof error === "string" ? error : String(error));
@@ -195,10 +195,18 @@ export const openInEditor = (repoId: string, editor: string, path: string | null
   gitInvoke<void>("open_in_editor", { repoId, editor, path });
 export const openInTerminal = (repoId: string, terminal: string) =>
   gitInvoke<void>("open_in_terminal", { repoId, terminal });
-export const tokenStatus = () => plainInvoke<Array<[string, boolean]>>("token_status");
-export const tokenSet = (host: string, token: string) =>
-  plainInvoke<void>("token_set", { host, token });
-export const tokenClear = (host: string) => plainInvoke<void>("token_clear", { host });
+/** Whether the user is signed in with the command line tool of a host (`az`, `gh`). */
+export interface HostStatus {
+  host: string;
+  /** The tool that holds the sign-in: "Azure CLI", "GitHub CLI". */
+  tool: string;
+  state: "signedIn" | "signedOut" | "missing";
+  account: string | null;
+}
+
+export const hostStatuses = () => plainInvoke<HostStatus[]>("host_statuses");
+/** Opens the sign-in page of the Azure CLI (`az login`) and resolves when the user is done. */
+export const azureSignIn = () => plainInvoke<void>("azure_sign_in");
 export const findPullRequest = (repo: HostedRepo, branch: string) =>
   plainInvoke<PullRequestLookup>("find_pull_request", { repo, branch });
 

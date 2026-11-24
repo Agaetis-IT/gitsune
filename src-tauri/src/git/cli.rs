@@ -604,7 +604,7 @@ fn ssh_agent_socket() -> Option<&'static str> {
         .as_deref()
 }
 
-fn tool_path() -> &'static str {
+pub fn tool_path() -> &'static str {
     static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     PATH.get_or_init(|| with_common_tool_dirs(&std::env::var("PATH").unwrap_or_default()))
 }

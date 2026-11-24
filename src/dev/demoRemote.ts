@@ -94,7 +94,7 @@ export function createDemoRemote(hooks: Hooks) {
     openExternal: async (url: string) => void window.open(url, "_blank", "noopener"),
     openInEditor: async () => {},
     openInTerminal: async () => {},
-    findPullRequest: async () => ({ state: "noToken" as const }),
+    findPullRequest: async () => ({ state: "signedOut" as const }),
     fetch: (_repoId: string, opId: string) =>
       track(opId, async (op) => {
         await play(opId, op, transfer("Receiving"));

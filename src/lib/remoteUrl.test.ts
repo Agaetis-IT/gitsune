@@ -3,8 +3,8 @@ import {
   createPullRequestUrl,
   parseRemoteUrl,
   pickHostedRepo,
+  hostOf,
   pullRequestUrl,
-  tokenHost,
 } from "./remoteUrl";
 
 const azure = { kind: "azure", org: "org", project: "My Project", repo: "repo" } as const;
@@ -40,8 +40,28 @@ describe("parseRemoteUrl", () => {
     expect(parseRemoteUrl("https://dev.azure.com/org/My%20Project/_git/repo")).toEqual(azure);
   });
 
+  it("reads GitLab, with subgroups and on a self-hosted instance", () => {
+    expect(parseRemoteUrl("https://gitlab.com/group/sub/project.git")).toEqual({
+      kind: "gitlab",
+      host: "gitlab.com",
+      path: "group/sub/project",
+    });
+    expect(parseRemoteUrl("git@gitlab.example.fr:team/app.git")).toEqual({
+      kind: "gitlab",
+      host: "gitlab.example.fr",
+      path: "team/app",
+    });
+    expect(parseRemoteUrl("ssh://git@gitlab.example.fr:2222/team/app.git")).toEqual({
+      kind: "gitlab",
+      host: "gitlab.example.fr",
+      path: "team/app",
+    });
+    expect(parseRemoteUrl("https://gitlab.com/onlyone")).toBeNull();
+  });
+
   it("gives null for unknown hosts and malformed paths", () => {
-    expect(parseRemoteUrl("https://gitlab.com/a/b.git")).toBeNull();
+    expect(parseRemoteUrl("https://bitbucket.org/a/b.git")).toBeNull();
+    expect(parseRemoteUrl("https://code.example.com/a/b.git")).toBeNull();
     expect(parseRemoteUrl("git@github.com:onlyone")).toBeNull();
     expect(parseRemoteUrl("https://dev.azure.com/org/project")).toBeNull();
     expect(parseRemoteUrl("/local/path/repo")).toBeNull();
@@ -68,9 +88,22 @@ describe("pull request addresses", () => {
     );
   });
 
-  it("tells the token host", () => {
-    expect(tokenHost({ kind: "github", owner: "a", repo: "b" })).toBe("github.com");
-    expect(tokenHost(azure)).toBe("dev.azure.com");
+  it("builds the GitLab merge request pages", () => {
+    const gitlab = { kind: "gitlab", host: "gitlab.com", path: "group/sub/project" } as const;
+    expect(createPullRequestUrl(gitlab, "feature/x y")).toBe(
+      "https://gitlab.com/group/sub/project/-/merge_requests/new?merge_request%5Bsource_branch%5D=feature%2Fx%20y",
+    );
+    expect(pullRequestUrl(gitlab, 5)).toBe(
+      "https://gitlab.com/group/sub/project/-/merge_requests/5",
+    );
+  });
+
+  it("tells the host of a repository", () => {
+    expect(hostOf({ kind: "github", owner: "a", repo: "b" })).toBe("github.com");
+    expect(hostOf(azure)).toBe("dev.azure.com");
+    expect(hostOf({ kind: "gitlab", host: "gitlab.example.fr", path: "a/b" })).toBe(
+      "gitlab.example.fr",
+    );
   });
 });
 
@@ -78,12 +111,12 @@ describe("pickHostedRepo", () => {
   it("prefers origin and skips unknown hosts", () => {
     const picked = pickHostedRepo([
       { name: "backup", url: "git@github.com:a/mirror.git" },
-      { name: "other", url: "https://gitlab.com/a/b" },
+      { name: "other", url: "https://bitbucket.org/a/b" },
       { name: "origin", url: "git@ssh.dev.azure.com:v3/o/p/r" },
     ]);
     expect(picked?.remote).toBe("origin");
     expect(picked?.repo.kind).toBe("azure");
-    expect(pickHostedRepo([{ name: "x", url: "https://gitlab.com/a/b" }])).toBeNull();
+    expect(pickHostedRepo([{ name: "x", url: "https://bitbucket.org/a/b" }])).toBeNull();
     expect(pickHostedRepo([])).toBeNull();
   });
 });

@@ -28,7 +28,7 @@ pub use branches::{
     create_branch, create_tag, delete_branch, delete_tag, rename_branch, restore_branch,
     restore_tag, set_upstream,
 };
-pub use cli::{GitError, LongIo, answer_prompt};
+pub use cli::{GitError, LongIo, answer_prompt, tool_path};
 pub use commit_detail::{CommitDetail, FileDiff, commit_detail, file_diff};
 pub use graph_page::{
     GraphCache, GraphMeta, GraphPage, build_graph_cache_with, graph_meta, graph_page, graph_search,
