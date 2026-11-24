@@ -12,6 +12,8 @@ Tauri 2 (Rust) + Vue 3 + TypeScript + Tailwind + shadcn-vue. macOS first.
 - Click a lane in the graph to highlight or hide its branch.
 - Branch and tag labels in their own column on the left of the graph, linked to their station; a laptop for a local branch and an icon per remote (configurable per remote in Settings); resizable columns and optional author / date / id columns.
 - The tabs open at the last close come back at start (switch off in Settings, General); on macOS a full menu bar (open and recent repositories, fetch / pull / push, branch actions, view options) with greyed entries when an action makes no sense.
+- From a branch: open or create its pull request on GitHub or Azure DevOps (with an optional token in the macOS keychain, the open one is found); open the repository or a file in Zed (or VS Code, Cursor) and the repository in a terminal.
+- Themes with the colors of the code in diffs, fonts and base size, import from a file, and a different theme when the system is light or dark.
 - Search commits by message, author or id: the _Search_ button or Ctrl/Cmd+F opens a small box at the top right of the graph (Enter and Shift+Enter step through the matches, Esc closes it).
 - Commit details, changed files, unified and side-by-side diffs with syntax highlighting; large and binary files are handled.
 - Live refresh: commits, fetches and checkouts made in a terminal appear without losing your place; changes to the working tree show up in the status as you save files.

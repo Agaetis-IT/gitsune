@@ -142,6 +142,11 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
   const backend: RepoBackend = {
     pickFolder: async () => null,
     open: async (path) => ({ info: infoFor(path), refs: REFS }),
+    remoteUrls: async () => [{ name: "origin", url: "git@ssh.dev.azure.com:v3/acme/Demo/repo" }],
+    openExternal: vi.fn(async () => {}),
+    openInEditor: vi.fn(async () => {}),
+    openInTerminal: vi.fn(async () => {}),
+    findPullRequest: vi.fn(async () => ({ state: "noToken" as const })),
     close: vi.fn(async () => {}),
     status: async () => cleanStatus(),
     workingDiff: async () => diffFor("wip", FILE, false),
@@ -2613,5 +2618,65 @@ describe("session: the tabs come back", () => {
     await workspace.restoreSession();
     expect(workspace.tabs.value).toEqual([]);
     expect(workspace.notices.value).toEqual([]);
+  });
+});
+
+describe("opening things outside the application", () => {
+  it("opens the page that starts a pull request when no token is kept", async () => {
+    const { workspace, backend } = setup();
+    await workspace.openPath("/fake/alpha");
+    await workspace.openPullRequest(workspace.active.value!, "feature/x");
+    expect(backend.openExternal).toHaveBeenCalledWith(
+      "https://dev.azure.com/acme/Demo/_git/repo/pullrequestcreate?sourceRef=feature%2Fx",
+    );
+  });
+
+  it("opens the existing pull request when the host knows one", async () => {
+    const { workspace, backend } = setup({
+      findPullRequest: vi.fn(async () => ({ state: "found" as const, id: 12, title: "Fix y" })),
+    });
+    await workspace.openPath("/fake/alpha");
+    await workspace.openPullRequest(workspace.active.value!, "feature/x");
+    expect(backend.openExternal).toHaveBeenCalledWith(
+      "https://dev.azure.com/acme/Demo/_git/repo/pullrequest/12",
+    );
+    expect(lastOf(workspace.notices.value)?.text).toContain("Fix y");
+  });
+
+  it("says so, and still opens the creation page, when the lookup fails", async () => {
+    const { workspace, backend } = setup({
+      findPullRequest: vi.fn(async () => {
+        throw new Error("dev.azure.com refused the token.");
+      }),
+    });
+    await workspace.openPath("/fake/alpha");
+    await workspace.openPullRequest(workspace.active.value!, "topic");
+    expect(lastOf(workspace.notices.value)?.kind).toBe("error");
+    expect(lastOf(workspace.notices.value)?.text).toContain("refused the token");
+    expect(backend.openExternal).toHaveBeenCalledWith(expect.stringContaining("pullrequestcreate"));
+  });
+
+  it("explains that a remote on an unknown host has no pull request page", async () => {
+    const { workspace, backend } = setup({
+      remoteUrls: async () => [{ name: "origin", url: "https://gitlab.com/a/b.git" }],
+    });
+    await workspace.openPath("/fake/alpha");
+    await workspace.openPullRequest(workspace.active.value!, "topic");
+    expect(backend.openExternal).not.toHaveBeenCalled();
+    expect(lastOf(workspace.notices.value)?.text).toContain("GitHub or Azure DevOps");
+  });
+
+  it("reports a failure to open the editor or the terminal as a notice", async () => {
+    const { workspace, backend } = setup({
+      openInEditor: vi.fn(async () => {
+        throw new Error("could not open Zed");
+      }),
+    });
+    await workspace.openPath("/fake/alpha");
+    const tab = workspace.active.value!;
+    await workspace.openInEditor(tab, "zed", "src/a.ts");
+    expect(lastOf(workspace.notices.value)?.text).toContain("could not open Zed");
+    await workspace.openInTerminal(tab, "terminal");
+    expect(backend.openInTerminal).toHaveBeenCalledWith("/fake/alpha", "terminal");
   });
 });

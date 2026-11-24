@@ -23,6 +23,8 @@ const STATE: AppMenuState = {
   ],
   density: "compact",
   activityOpen: false,
+  editorLabel: "Zed",
+  terminalLabel: "Terminal",
 };
 
 function search(nodes: readonly MenuNode[], label: string): MenuNode | undefined {
@@ -81,6 +83,20 @@ describe("application menu", () => {
     for (const label of ["Pull", "Push", "New Branch…", "Stash…", "Check Out"]) {
       expect(enabled(readOnly, label), label).toBe(false);
     }
+  });
+
+  it("names the chosen editor and terminal, and needs a repository for both", () => {
+    expect(find(buildMenuModel(STATE), "Open in Zed").kind).toBe("item");
+    expect(find(buildMenuModel(STATE), "Open in Terminal").kind).toBe("item");
+    const none = { ...STATE, hasRepo: false };
+    expect(enabled(none, "Open in Zed")).toBe(false);
+    expect(enabled(none, "Open or Create a Pull Request")).toBe(false);
+  });
+
+  it("opens a pull request from a branch, even in read-only mode, but not from a detached HEAD", () => {
+    const readOnly = { ...STATE, canWrite: false, readOnly: true };
+    expect(enabled(readOnly, "Open or Create a Pull Request")).toBe(true);
+    expect(enabled({ ...STATE, detached: true }, "Open or Create a Pull Request")).toBe(false);
   });
 
   it("greys the remote actions while one is running", () => {

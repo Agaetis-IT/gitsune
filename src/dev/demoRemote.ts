@@ -90,6 +90,11 @@ export function createDemoRemote(hooks: Hooks) {
 
   return {
     remotes: async () => ["origin"],
+    remoteUrls: async () => [{ name: "origin", url: "git@ssh.dev.azure.com:v3/acme/Demo/demo-repo" }],
+    openExternal: async (url: string) => void window.open(url, "_blank", "noopener"),
+    openInEditor: async () => {},
+    openInTerminal: async () => {},
+    findPullRequest: async () => ({ state: "noToken" as const }),
     fetch: (_repoId: string, opId: string) =>
       track(opId, async (op) => {
         await play(opId, op, transfer("Receiving"));

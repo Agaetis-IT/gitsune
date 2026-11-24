@@ -1,5 +1,7 @@
 mod commands;
+mod external;
 mod git;
+mod hosting;
 mod layout;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -10,6 +12,14 @@ pub fn run() {
         .manage(commands::RemoteOps::default())
         .invoke_handler(tauri::generate_handler![
             commands::reveal_in_finder,
+            commands::list_remote_urls,
+            commands::open_external,
+            commands::token_set,
+            commands::token_clear,
+            commands::token_status,
+            commands::find_pull_request,
+            commands::open_in_editor,
+            commands::open_in_terminal,
             commands::open_repo,
             commands::close_repo,
             commands::list_refs,

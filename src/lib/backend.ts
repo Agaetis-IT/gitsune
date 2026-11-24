@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import type { HostedRepo } from "@/lib/remoteUrl";
 import {
   type ActivityEntry,
   type StatusHint,
@@ -56,6 +57,13 @@ import {
   pushBranch,
   deleteRemoteBranch,
   listRemotes,
+  listRemoteUrls,
+  openExternal,
+  openInEditor,
+  openInTerminal,
+  findPullRequest,
+  type PullRequestLookup,
+  type RemoteUrl,
   cancelOperation,
   answerAskpass,
   createTag,
@@ -248,6 +256,16 @@ export interface RepoBackend {
   speedUpStatus(repoId: string): Promise<StatusHint>;
   /** The names of the remotes. */
   remotes(repoId: string): Promise<string[]>;
+  /** The remotes with their fetch addresses. */
+  remoteUrls(repoId: string): Promise<RemoteUrl[]>;
+  /** Opens an `https` address in the browser. */
+  openExternal(url: string): Promise<void>;
+  /** Opens the repository (`path` null) or a file of it in an editor (`zed`, `vscode`...). */
+  openInEditor(repoId: string, editor: string, path: string | null): Promise<void>;
+  /** Opens a terminal in the repository. */
+  openInTerminal(repoId: string, terminal: string): Promise<void>;
+  /** The open pull request of a branch (needs the token of the host). */
+  findPullRequest(repo: HostedRepo, branch: string): Promise<PullRequestLookup>;
   /** Downloads new commits and refs (`remote` null: every remote). */
   fetch(repoId: string, opId: string, remote: string | null, prune: boolean): Promise<RemoteResult>;
   /** Fetches and integrates the upstream; `divergedBranches` means a strategy is needed. */
@@ -316,6 +334,11 @@ export const tauriBackend: RepoBackend = {
     listen<{ repoId: string }>("activity-changed", (event) => handler(event.payload.repoId)),
   createBranch,
   remotes: listRemotes,
+  remoteUrls: listRemoteUrls,
+  openExternal,
+  openInEditor,
+  openInTerminal,
+  findPullRequest,
   statusHint: getStatusHint,
   speedUpStatus,
   rebasePlan: rebasePreview,

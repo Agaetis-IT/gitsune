@@ -52,8 +52,48 @@ export const TOKEN_LABELS: Record<ColorToken, string> = {
   ring: "Focus ring",
 };
 
+/** The colors of the syntax highlighting in the diffs. */
+export const SYNTAX_TOKENS = [
+  "keyword",
+  "string",
+  "number",
+  "function",
+  "type",
+  "comment",
+] as const;
+
+export type SyntaxToken = (typeof SYNTAX_TOKENS)[number];
+
+export type SyntaxColors = Record<SyntaxToken, string>;
+
+export const SYNTAX_LABELS: Record<SyntaxToken, string> = {
+  keyword: "Keywords",
+  string: "Strings",
+  number: "Numbers",
+  function: "Functions and names",
+  type: "Types and properties",
+  comment: "Comments",
+};
+
+/** Fonts and size of the interface; what is left out is the default of the application. */
+export interface ThemeFonts {
+  /** The font of the interface (a CSS font-family list). */
+  ui?: string;
+  /** The font of code and diffs. */
+  code?: string;
+  /** The base size in pixels: everything is sized from it. */
+  size?: number;
+}
+
+export const FONT_SIZE = { min: 12, max: 20, default: 16 } as const;
+
 export interface ThemeVariant {
   colors: Record<ColorToken, string>;
+  /**
+   * Colors of the syntax highlighting. A theme without them (an older one) gets colors drawn
+   * from its lane colors, see `syntaxOf`.
+   */
+  syntax?: SyntaxColors;
   /** Colors of the branch lines of the graph, by palette index. */
   lanes: string[];
   /** Color of lines that belong to no named branch. */
@@ -67,6 +107,7 @@ export interface Theme {
   builtin: boolean;
   /** Corner radius, in rem. */
   radius: number;
+  fonts?: ThemeFonts;
   light: ThemeVariant;
   dark: ThemeVariant;
 }
@@ -79,6 +120,29 @@ const HEX = /^#(?:[0-9a-f]{6}|[0-9a-f]{8})$/i;
 /** `#rrggbb` or `#rrggbbaa`. */
 export const isColor = (value: unknown): value is string =>
   typeof value === "string" && HEX.test(value);
+
+const isSyntax = (value: unknown): value is SyntaxColors =>
+  typeof value === "object" &&
+  value !== null &&
+  SYNTAX_TOKENS.every((token) => isColor((value as SyntaxColors)[token]));
+
+/** A font list is plain names: nothing that could close a CSS rule or load something. */
+const FONT_LIST = /^[\p{L}\p{N} ,'"._-]{1,120}$/u;
+
+/** Whether a font list is acceptable (see `FONT_LIST`). */
+export const isFontList = (value: string): boolean => FONT_LIST.test(value.trim());
+
+const parseFonts = (value: unknown): ThemeFonts | undefined => {
+  if (typeof value !== "object" || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  const fonts: ThemeFonts = {};
+  if (typeof raw.ui === "string" && FONT_LIST.test(raw.ui.trim())) fonts.ui = raw.ui.trim();
+  if (typeof raw.code === "string" && FONT_LIST.test(raw.code.trim())) fonts.code = raw.code.trim();
+  if (typeof raw.size === "number" && raw.size >= FONT_SIZE.min && raw.size <= FONT_SIZE.max) {
+    fonts.size = Math.round(raw.size);
+  }
+  return Object.keys(fonts).length > 0 ? fonts : undefined;
+};
 
 const isVariant = (value: unknown): value is ThemeVariant => {
   if (typeof value !== "object" || value === null) return false;
@@ -98,6 +162,7 @@ const cloneVariant = (variant: ThemeVariant): ThemeVariant => ({
   colors: { ...variant.colors },
   lanes: [...variant.lanes],
   anonymous: variant.anonymous,
+  ...(isSyntax(variant.syntax) ? { syntax: { ...variant.syntax } } : {}),
 });
 
 /**
@@ -120,10 +185,13 @@ export function parseTheme(value: unknown): Theme | null {
     name: name.slice(0, 60),
     builtin: false,
     radius,
+    ...fontsField(parseFonts(raw.fonts)),
     light: cloneVariant((light ?? dark) as ThemeVariant),
     dark: cloneVariant((dark ?? light) as ThemeVariant),
   };
 }
+
+const fontsField = (fonts: ThemeFonts | undefined) => (fonts ? { fonts: { ...fonts } } : {});
 
 /** A deep copy that also works on a reactive object (`structuredClone` refuses a proxy). */
 export const cloneTheme = (theme: Theme): Theme => JSON.parse(JSON.stringify(theme)) as Theme;
@@ -135,6 +203,7 @@ export function duplicateTheme(theme: Theme, id: string, name: string): Theme {
     name,
     builtin: false,
     radius: theme.radius,
+    ...fontsField(theme.fonts),
     light: cloneVariant(theme.light),
     dark: cloneVariant(theme.dark),
   };
@@ -142,8 +211,8 @@ export function duplicateTheme(theme: Theme, id: string, name: string): Theme {
 
 /** The JSON text of a theme, for export (without the identity of this installation). */
 export function exportTheme(theme: Theme): string {
-  const { name, radius, light, dark } = theme;
-  return JSON.stringify({ name, radius, light, dark }, null, 2);
+  const { name, radius, fonts, light, dark } = theme;
+  return JSON.stringify({ name, radius, fonts, light, dark }, null, 2);
 }
 
 // ---------- colors ----------
@@ -173,3 +242,62 @@ export function contrastRatio(a: string, b: string): number {
 export function splitAlpha(hex: string): { rgb: string; alpha: string } {
   return { rgb: hex.slice(0, 7), alpha: hex.length === 9 ? hex.slice(7) : "" };
 }
+
+// ---------- syntax colors ----------
+
+/** Hue of a `#rrggbb[aa]` color in degrees (0 to 360), and how colorful it is (0 to 1). */
+export function hueOf(hex: string): { hue: number; chroma: number } {
+  const [r, g, b] = [channel(hex, 1), channel(hex, 3), channel(hex, 5)].map((c) => c / 255);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const delta = max - min;
+  if (delta === 0) return { hue: 0, chroma: 0 };
+  let hue: number;
+  if (max === r) hue = ((g - b) / delta) % 6;
+  else if (max === g) hue = (b - r) / delta + 2;
+  else hue = (r - g) / delta + 4;
+  return { hue: (hue * 60 + 360) % 360, chroma: delta };
+}
+
+/** The hue each kind of token is drawn in when a theme does not set its syntax colors. */
+const SYNTAX_HUES: Record<Exclude<SyntaxToken, "comment">, number> = {
+  keyword: 285,
+  string: 140,
+  number: 30,
+  function: 225,
+  type: 185,
+};
+
+const hueDistance = (a: number, b: number) => {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+};
+
+/**
+ * Syntax colors for a theme that has none: for each kind of token the lane color whose hue is
+ * the closest to the usual one (purple keywords, green strings...), and the muted text color
+ * for comments. Colors without any hue (grays) are not considered.
+ */
+export function deriveSyntax(variant: ThemeVariant): SyntaxColors {
+  const candidates = [...variant.lanes, variant.anonymous]
+    .map((color) => ({ color: color.slice(0, 7), ...hueOf(color) }))
+    .filter((c) => c.chroma > 0.15);
+  const pick = (token: Exclude<SyntaxToken, "comment">): string => {
+    const best = candidates
+      .map((c) => ({ c, d: hueDistance(c.hue, SYNTAX_HUES[token]) }))
+      .sort((a, b) => a.d - b.d)[0];
+    return best ? best.c.color : variant.colors.foreground.slice(0, 7);
+  };
+  return {
+    keyword: pick("keyword"),
+    string: pick("string"),
+    number: pick("number"),
+    function: pick("function"),
+    type: pick("type"),
+    comment: variant.colors["muted-foreground"].slice(0, 7),
+  };
+}
+
+/** The syntax colors in use for a variant: its own, or the ones drawn from its lanes. */
+export const syntaxOf = (variant: ThemeVariant): SyntaxColors =>
+  isSyntax(variant.syntax) ? variant.syntax : deriveSyntax(variant);

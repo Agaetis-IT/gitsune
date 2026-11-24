@@ -807,6 +807,91 @@ pub async fn list_remotes(
     with_ctx(&registry, &repo_id, git::list_remotes)
 }
 
+/// The remotes with their addresses (to link to a pull request).
+#[tauri::command]
+pub async fn list_remote_urls(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<git::RemoteUrl>, GitError> {
+    with_ctx(&registry, &repo_id, git::remote_urls)
+}
+
+/// Opens an `https` address in the browser.
+#[tauri::command]
+pub fn open_external(url: String) -> Result<(), String> {
+    crate::external::open_url(&url)
+}
+
+/// Opens the repository, or a file of it, in an editor (`zed`, `vscode`, `cursor`).
+#[tauri::command]
+pub async fn open_in_editor(
+    repo_id: String,
+    editor: String,
+    path: Option<String>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<(), GitError> {
+    let app = crate::external::app_name("editor", &editor).map_err(GitError::other)?;
+    with_ctx(&registry, &repo_id, |ctx| {
+        let target = match path.as_deref() {
+            Some(relative) => {
+                crate::external::inside_workdir(ctx.workdir, relative).map_err(GitError::other)?
+            }
+            None => ctx.workdir.to_path_buf(),
+        };
+        crate::external::open_with(app, &target).map_err(GitError::other)
+    })
+}
+
+/// Opens a terminal in the repository (`terminal`, `iterm`, `ghostty`).
+#[tauri::command]
+pub async fn open_in_terminal(
+    repo_id: String,
+    terminal: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<(), GitError> {
+    let app = crate::external::app_name("terminal", &terminal).map_err(GitError::other)?;
+    with_ctx(&registry, &repo_id, |ctx| {
+        crate::external::open_with(app, ctx.workdir).map_err(GitError::other)
+    })
+}
+
+/// Keeps the token of a host in the keychain.
+#[tauri::command]
+pub async fn token_set(host: String, token: String) -> Result<(), String> {
+    crate::hosting::token_set(&host, &token)
+}
+
+/// Forgets the token of a host.
+#[tauri::command]
+pub async fn token_clear(host: String) -> Result<(), String> {
+    crate::hosting::token_clear(&host)
+}
+
+/// Whether a token is kept for each host (the token itself never leaves the keychain).
+#[tauri::command]
+pub async fn token_status() -> Result<Vec<(String, bool)>, String> {
+    crate::hosting::HOSTS
+        .iter()
+        .map(|host| {
+            Ok((
+                host.to_string(),
+                crate::hosting::read_token(host)?.is_some(),
+            ))
+        })
+        .collect()
+}
+
+/// The open pull request of a branch, when a token is kept for its host.
+#[tauri::command]
+pub async fn find_pull_request(
+    repo: crate::hosting::HostedRepo,
+    branch: String,
+) -> Result<crate::hosting::PullRequestLookup, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::hosting::find_pull_request(&repo, &branch))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 /// Stops a running fetch, pull or push.
 #[tauri::command]
 pub async fn cancel_operation(op_id: String, ops: State<'_, RemoteOps>) -> Result<(), GitError> {

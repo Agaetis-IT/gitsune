@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { HostedRepo } from "@/lib/remoteUrl";
 
 // Types mirror the Rust structs serialized by the backend (camelCase).
 
@@ -164,6 +165,42 @@ export interface FileDiff {
 
 /** Largest page the backend returns. */
 export const MAX_PAGE_SIZE = 1000;
+
+/** A remote with the address it is fetched from. */
+export interface RemoteUrl {
+  name: string;
+  url: string;
+}
+
+/** What the lookup of the pull request of a branch found. */
+export type PullRequestLookup =
+  { state: "noToken" } | { state: "none" } | { state: "found"; id: number; title: string };
+
+const plainError = (error: unknown): Error =>
+  new Error(typeof error === "string" ? error : String(error));
+
+/** Commands that fail with a plain message (not a git error). */
+async function plainInvoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    throw plainError(error);
+  }
+}
+
+export const listRemoteUrls = (repoId: string) =>
+  gitInvoke<RemoteUrl[]>("list_remote_urls", { repoId });
+export const openExternal = (url: string) => plainInvoke<void>("open_external", { url });
+export const openInEditor = (repoId: string, editor: string, path: string | null) =>
+  gitInvoke<void>("open_in_editor", { repoId, editor, path });
+export const openInTerminal = (repoId: string, terminal: string) =>
+  gitInvoke<void>("open_in_terminal", { repoId, terminal });
+export const tokenStatus = () => plainInvoke<Array<[string, boolean]>>("token_status");
+export const tokenSet = (host: string, token: string) =>
+  plainInvoke<void>("token_set", { host, token });
+export const tokenClear = (host: string) => plainInvoke<void>("token_clear", { host });
+export const findPullRequest = (repo: HostedRepo, branch: string) =>
+  plainInvoke<PullRequestLookup>("find_pull_request", { repo, branch });
 
 export const revealInFinder = (path: string) => invoke<void>("reveal_in_finder", { path });
 export const openRepo = (path: string) => invoke<RepoInfo>("open_repo", { path });

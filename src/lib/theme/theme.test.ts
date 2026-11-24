@@ -5,12 +5,15 @@ import {
   cloneTheme,
   COLOR_TOKENS,
   contrastRatio,
+  deriveSyntax,
   duplicateTheme,
   exportTheme,
   isColor,
   LANE_COLORS,
   parseTheme,
   splitAlpha,
+  SYNTAX_TOKENS,
+  syntaxOf,
 } from "./types";
 
 describe("built-in themes", () => {
@@ -169,5 +172,103 @@ describe("color helpers", () => {
   it("splits the alpha a color picker cannot hold", () => {
     expect(splitAlpha("#ffffff1a")).toEqual({ rgb: "#ffffff", alpha: "1a" });
     expect(splitAlpha("#112233")).toEqual({ rgb: "#112233", alpha: "" });
+  });
+});
+
+describe("syntax colors", () => {
+  const base = BUILTIN_THEMES[0];
+
+  it("are drawn from the lane colors when a theme sets none", () => {
+    for (const theme of BUILTIN_THEMES) {
+      for (const mode of ["light", "dark"] as const) {
+        const colors = syntaxOf(theme[mode]);
+        for (const token of SYNTAX_TOKENS) expect(isColor(colors[token]), token).toBe(true);
+        // Comments use the muted text color.
+        expect(colors.comment).toBe(theme[mode].colors["muted-foreground"].slice(0, 7));
+      }
+    }
+  });
+
+  it("pick the lane whose hue is the nearest to the usual one", () => {
+    const variant = cloneTheme(base).dark;
+    variant.lanes = variant.lanes.map(() => "#808080");
+    variant.lanes[0] = "#a050e0"; // purple
+    variant.lanes[1] = "#40c050"; // green
+    variant.lanes[2] = "#e08030"; // orange
+    variant.lanes[3] = "#3080e0"; // blue
+    const colors = deriveSyntax(variant);
+    expect(colors.keyword).toBe("#a050e0");
+    expect(colors.string).toBe("#40c050");
+    expect(colors.number).toBe("#e08030");
+    expect(colors.function).toBe("#3080e0");
+  });
+
+  it("use the text color when a theme has only grays", () => {
+    const variant = cloneTheme(base).light;
+    variant.lanes = variant.lanes.map(() => "#777777");
+    variant.anonymous = "#777777";
+    expect(deriveSyntax(variant).keyword).toBe(variant.colors.foreground.slice(0, 7));
+  });
+
+  it("are kept by a theme that sets them, through copy, export and import", () => {
+    const theme = cloneTheme(base);
+    theme.dark.syntax = {
+      keyword: "#111111",
+      string: "#222222",
+      number: "#333333",
+      function: "#444444",
+      type: "#555555",
+      comment: "#666666",
+    };
+    expect(syntaxOf(theme.dark).keyword).toBe("#111111");
+    const copy = duplicateTheme(theme, "x", "Copy");
+    expect(copy.dark.syntax?.string).toBe("#222222");
+    const parsed = parseTheme(JSON.parse(exportTheme(theme)));
+    expect(parsed?.dark.syntax?.comment).toBe("#666666");
+    expect(parsed?.light.syntax).toBeUndefined();
+  });
+
+  it("an incomplete set of syntax colors is ignored, not an error", () => {
+    const raw = JSON.parse(exportTheme(base));
+    raw.dark.syntax = { keyword: "#111111" };
+    const parsed = parseTheme(raw);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.dark.syntax).toBeUndefined();
+  });
+});
+
+describe("theme fonts", () => {
+  const withFonts = (fonts: unknown) => {
+    const raw = JSON.parse(exportTheme(BUILTIN_THEMES[0]));
+    raw.fonts = fonts;
+    return parseTheme(raw);
+  };
+
+  it("are read from an imported theme and exported again", () => {
+    const parsed = withFonts({
+      ui: "Inter, sans-serif",
+      code: "'JetBrains Mono', monospace",
+      size: 14,
+    });
+    expect(parsed?.fonts).toEqual({
+      ui: "Inter, sans-serif",
+      code: "'JetBrains Mono', monospace",
+      size: 14,
+    });
+    expect(JSON.parse(exportTheme(parsed!)).fonts.size).toBe(14);
+  });
+
+  it("refuse anything that could break out of a CSS value", () => {
+    expect(withFonts({ ui: "Inter; background: red" })?.fonts).toBeUndefined();
+    expect(withFonts({ code: "x} body{display:none" })?.fonts).toBeUndefined();
+    expect(withFonts({ ui: "url(http://evil/x)" })?.fonts).toBeUndefined();
+    expect(withFonts({ ui: "a".repeat(300) })?.fonts).toBeUndefined();
+  });
+
+  it("keep the size within limits and leave an old theme without fonts", () => {
+    expect(withFonts({ size: 40 })?.fonts).toBeUndefined();
+    expect(withFonts({ size: 3 })?.fonts).toBeUndefined();
+    expect(withFonts({ size: 13.6 })?.fonts?.size).toBe(14);
+    expect(parseTheme(JSON.parse(exportTheme(BUILTIN_THEMES[0])))?.fonts).toBeUndefined();
   });
 });

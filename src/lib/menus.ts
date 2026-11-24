@@ -107,6 +107,7 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
         label: `Rebase the current branch onto ${ref.name}…`,
         disabled: ref.isHead ? "This is the current branch." : undefined,
       }),
+      { id: "pullRequest", label: "Open or create a pull request", separatorBefore: true },
       write(ctx, {
         id: "delete",
         label: "Delete…",
@@ -122,6 +123,7 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
       write(ctx, { id: "checkout", label: "Checkout as a local branch" }),
       write(ctx, { id: "merge", label: `Merge ${ref.name} into the current branch…` }),
       write(ctx, { id: "rebase", label: `Rebase the current branch onto ${ref.name}…` }),
+      { id: "pullRequest", label: "Open or create a pull request", separatorBefore: true },
       write(ctx, {
         id: "deleteRemote",
         label: "Delete on the remote…",

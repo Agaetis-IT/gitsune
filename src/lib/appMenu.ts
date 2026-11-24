@@ -17,6 +17,9 @@ export interface AppMenuState {
   branches: ReadonlyArray<{ name: string; isHead: boolean }>;
   density: "compact" | "detailed";
   activityOpen: boolean;
+  /** The names of the editor and the terminal chosen in the settings. */
+  editorLabel: string;
+  terminalLabel: string;
 }
 
 export type PredefinedItem =
@@ -160,6 +163,8 @@ export function buildMenuModel(state: AppMenuState): MenuNode[] {
         item("refresh", "Refresh", repo, "CmdOrCtrl+R"),
         item("readOnly", "Read-only Mode", repo, undefined, state.readOnly),
         separator,
+        item("openEditor", `Open in ${state.editorLabel}`, repo, "CmdOrCtrl+Shift+E"),
+        item("openTerminal", `Open in ${state.terminalLabel}`, repo, "CmdOrCtrl+Shift+T"),
         item("reveal", "Reveal in Finder", repo),
         item("copyPath", "Copy the Path", repo),
       ],
@@ -172,6 +177,7 @@ export function buildMenuModel(state: AppMenuState): MenuNode[] {
         branchMenu("Check Out", "checkout", state, write, false),
         branchMenu("Merge into the Current Branch", "merge", state, write && !state.detached, true),
         branchMenu("Rebase onto", "rebase", state, write && !state.detached, true),
+        item("pullRequest", "Open or Create a Pull Request", repo && !state.detached),
         separator,
         item("stash", "Stash…", write, "CmdOrCtrl+Shift+S"),
       ],

@@ -1,6 +1,16 @@
 <script setup lang="ts">
-import { Check, GitBranch, Monitor, Moon, Palette, SlidersHorizontal, Sun } from "@lucide/vue";
+import {
+  Check,
+  ExternalLink,
+  GitBranch,
+  Monitor,
+  Moon,
+  Palette,
+  SlidersHorizontal,
+  Sun,
+} from "@lucide/vue";
 import { computed, ref, watch } from "vue";
+import IntegrationsSettings from "@/components/IntegrationsSettings.vue";
 import ThemeEditor from "@/components/ThemeEditor.vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -27,13 +37,26 @@ const {
 } = useGraphSettings();
 const workspace = useWorkspace();
 const { restoreTabs, setRestoreTabs } = useGeneralSettings();
-const { mode, setMode, themes, themeId, setTheme, createFrom, removeCustom, importTheme, dark } =
-  useTheme();
+const {
+  mode,
+  setMode,
+  themes,
+  themeId,
+  setTheme,
+  createFrom,
+  removeCustom,
+  importTheme,
+  dark,
+  lightThemeId,
+  darkThemeId,
+  setSystemTheme,
+} = useTheme();
 
 const SECTIONS = [
   { id: "general", label: "General", icon: SlidersHorizontal },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "graph", label: "Graph", icon: GitBranch },
+  { id: "integrations", label: "Integrations", icon: ExternalLink },
 ] as const;
 const section = ref<(typeof SECTIONS)[number]["id"]>("general");
 
@@ -122,6 +145,27 @@ async function doExport() {
   }
 }
 
+const fileInput = ref<HTMLInputElement>();
+
+/** Imports a theme from a JSON file chosen by the user. */
+async function importFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  if (file.size > 256 * 1024) {
+    message.value = "This file is too big to be a theme.";
+    return;
+  }
+  const result = importTheme(await file.text());
+  message.value = "error" in result ? result.error : `Imported “${result.theme.name}”.`;
+}
+
+function onSystemTheme(which: "light" | "dark", event: Event) {
+  const value = (event.target as HTMLSelectElement).value;
+  setSystemTheme(which, value === "" ? null : value);
+}
+
 function onOpenChange(value: boolean) {
   if (!value) closeSettings();
 }
@@ -199,6 +243,37 @@ function onOpenChange(value: boolean) {
                 </div>
               </fieldset>
 
+              <fieldset v-if="mode === 'system'" class="mt-4">
+                <legend class="text-sm font-medium">Theme for each look of the system</legend>
+                <p class="text-muted-foreground mb-2 text-xs">
+                  Follow the system with a different theme when it is light and when it is dark.
+                </p>
+                <div class="flex flex-wrap gap-4">
+                  <label class="flex items-center gap-2 text-sm">
+                    Light
+                    <select
+                      class="bg-background h-8 rounded-md border px-2 text-sm"
+                      :value="lightThemeId ?? ''"
+                      @change="onSystemTheme('light', $event)"
+                    >
+                      <option value="">Same as the selected theme</option>
+                      <option v-for="t in themes" :key="t.id" :value="t.id">{{ t.name }}</option>
+                    </select>
+                  </label>
+                  <label class="flex items-center gap-2 text-sm">
+                    Dark
+                    <select
+                      class="bg-background h-8 rounded-md border px-2 text-sm"
+                      :value="darkThemeId ?? ''"
+                      @change="onSystemTheme('dark', $event)"
+                    >
+                      <option value="">Same as the selected theme</option>
+                      <option v-for="t in themes" :key="t.id" :value="t.id">{{ t.name }}</option>
+                    </select>
+                  </label>
+                </div>
+              </fieldset>
+
               <section class="mt-6">
                 <h3 class="text-sm font-medium">Theme</h3>
                 <ul
@@ -264,6 +339,17 @@ function onOpenChange(value: boolean) {
                   <Button size="sm" variant="outline" @click="importing = !importing">
                     Import…
                   </Button>
+                  <Button size="sm" variant="outline" @click="fileInput?.click()">
+                    Import from a file…
+                  </Button>
+                  <input
+                    ref="fileInput"
+                    type="file"
+                    accept=".json,application/json"
+                    class="hidden"
+                    aria-label="Theme file"
+                    @change="importFile"
+                  />
                   <template v-if="selected && !selected.builtin">
                     <Button
                       v-if="!confirmDelete"
@@ -313,6 +399,8 @@ function onOpenChange(value: boolean) {
               </section>
             </template>
           </template>
+          <IntegrationsSettings v-else-if="section === 'integrations'" />
+
           <template v-else-if="section === 'graph'">
             <h2 class="text-base font-semibold">Graph</h2>
             <fieldset class="mt-6">

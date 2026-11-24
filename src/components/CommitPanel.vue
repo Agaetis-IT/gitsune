@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Check, Copy, Loader } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
+import { useFileMenu } from "@/composables/useFileMenu";
 import type { ChangeStatus, CommitDetail, FileChange, GraphRow } from "@/lib/api";
 
 const props = defineProps<{
@@ -13,6 +14,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ openFile: [file: FileChange] }>();
 
+const { openFileMenu } = useFileMenu();
 const copied = ref(false);
 let resetTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -145,6 +147,7 @@ function split(path: string): { dir: string; name: string } {
               :class="{ 'bg-accent': file.path === openPath }"
               :title="file.oldPath ? `${file.oldPath} → ${file.path}` : file.path"
               @click="emit('openFile', file)"
+              @contextmenu="openFileMenu(file.path, $event)"
             >
               <span
                 class="w-4 shrink-0 text-center text-xs font-bold"

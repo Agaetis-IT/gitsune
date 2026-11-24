@@ -66,6 +66,42 @@ pub fn list_remotes(ctx: &OpCtx) -> Result<Vec<String>, GitError> {
         .collect())
 }
 
+/// A remote with the address it is fetched from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RemoteUrl {
+    pub name: String,
+    pub url: String,
+}
+
+/// The remotes and their fetch addresses.
+pub fn remote_urls(ctx: &OpCtx) -> Result<Vec<RemoteUrl>, GitError> {
+    let output = ctx
+        .runner()
+        .run(ctx.workdir, &["remote", "-v"], RunOptions::background())?;
+    Ok(parse_remote_urls(&output.stdout_text()))
+}
+
+/// Reads `git remote -v`: `name<TAB>url (fetch)` lines (the push lines are the same address
+/// unless a `pushurl` is set, which a pull request does not care about).
+pub fn parse_remote_urls(text: &str) -> Vec<RemoteUrl> {
+    let mut urls: Vec<RemoteUrl> = Vec::new();
+    for line in text.lines() {
+        let Some((name, rest)) = line.split_once('\t') else {
+            continue;
+        };
+        let Some(url) = rest.strip_suffix(" (fetch)") else {
+            continue;
+        };
+        if !urls.iter().any(|known| known.name == name) {
+            urls.push(RemoteUrl {
+                name: name.to_string(),
+                url: url.trim().to_string(),
+            });
+        }
+    }
+    urls
+}
+
 fn finish(ctx: &OpCtx, output: RunOutput) -> Result<RemoteResult, GitError> {
     Ok(RemoteResult {
         summary: summarize(&output),

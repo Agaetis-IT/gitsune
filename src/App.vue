@@ -36,6 +36,8 @@ import { Button } from "@/components/ui/button";
 import WelcomeScreen from "@/components/WelcomeScreen.vue";
 import WorkingPanel from "@/components/WorkingPanel.vue";
 import { useGraphSettings } from "@/composables/useGraphSettings";
+import { useFileMenu } from "@/composables/useFileMenu";
+import { useIntegrations } from "@/composables/useIntegrations";
 import { type AppMenuState, buildMenuModel, parseMenuAction } from "@/lib/appMenu";
 import { revealInFinder } from "@/lib/api";
 import { hasNativeMenu, setNativeMenu } from "@/lib/nativeMenu";
@@ -240,6 +242,13 @@ function onMenuSelect(id: string) {
       if (lane !== null) workspace.toggleHighlight(tab, lane);
     } else if (id === "hide") workspace.toggleRef(tab, ref.fullName);
     else if (id === "copyName") copy(ref.name);
+    else if (id === "pullRequest") {
+      const slash = ref.name.indexOf("/");
+      void workspace.openPullRequest(
+        tab,
+        ref.kind === "remote" ? ref.name.slice(slash + 1) : ref.name,
+      );
+    }
   }
 }
 
@@ -353,6 +362,28 @@ const density = graphSettings.density;
 
 // ---------- the menu bar (macOS) ----------
 
+const integrations = useIntegrations();
+const { fileMenu, closeFileMenu } = useFileMenu();
+
+const fileMenuItems = computed<MenuItem[]>(() => [
+  { id: "openEditor", label: `Open in ${integrations.editorLabel()}` },
+  { id: "openTerminal", label: `Open ${integrations.terminalLabel()} in the repository` },
+  { id: "copyPath", label: "Copy the path", separatorBefore: true },
+]);
+
+function onFileMenuSelect(id: string) {
+  const tab = active.value;
+  const target = fileMenu.value;
+  closeFileMenu();
+  if (!tab || !target) return;
+  if (id === "openEditor") void workspace.openInEditor(tab, integrations.editor.value, target.path);
+  else if (id === "openTerminal") void workspace.openInTerminal(tab, integrations.terminal.value);
+  else if (id === "copyPath") copy(target.path);
+}
+
+// A menu belongs to one repository.
+watch(activeId, closeFileMenu);
+
 const menuState = computed<AppMenuState>(() => {
   const tab = active.value;
   return {
@@ -369,6 +400,8 @@ const menuState = computed<AppMenuState>(() => {
       .map((ref) => ({ name: ref.name, isHead: ref.isHead })),
     density: density.value,
     activityOpen: workspace.activityOpen.value,
+    editorLabel: integrations.editorLabel(),
+    terminalLabel: integrations.terminalLabel(),
   };
 });
 
@@ -422,6 +455,15 @@ function onMenuAction(id: string) {
       break;
     case "readOnly":
       void workspace.setReadOnly(tab, !tab.readOnly);
+      break;
+    case "openEditor":
+      void workspace.openInEditor(tab, integrations.editor.value, null);
+      break;
+    case "openTerminal":
+      void workspace.openInTerminal(tab, integrations.terminal.value);
+      break;
+    case "pullRequest":
+      if (tab.headBranch) void workspace.openPullRequest(tab, tab.headBranch);
       break;
     case "reveal":
       void revealInFinder(tab.path).catch(() =>
@@ -798,6 +840,14 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       <MergeDialogs :tab="active" />
       <RebaseDialog :tab="active" />
       <RemoteStatus :tab="active" />
+      <ContextMenu
+        v-if="fileMenu"
+        :items="fileMenuItems"
+        :x="fileMenu.x"
+        :y="fileMenu.y"
+        @select="onFileMenuSelect"
+        @close="closeFileMenu"
+      />
       <ContextMenu
         v-if="menu"
         :items="menu.items"

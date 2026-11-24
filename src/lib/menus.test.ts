@@ -85,12 +85,20 @@ describe("ref menu", () => {
       "push",
       "merge",
       "rebase",
+      "pullRequest",
       "delete",
       "highlight",
       "hide",
       "copyName",
     ]);
     expect(find(items, "delete")?.danger).toBe(true);
+  });
+
+  it("a pull request can be opened from a branch even in read-only mode", () => {
+    const local = refMenu(ref("topic", "local"), ctx({ readOnly: true }));
+    expect(find(local, "pullRequest")?.disabled).toBeUndefined();
+    const remote = refMenu(ref("origin/topic", "remote"), ctx({ readOnly: true }));
+    expect(find(remote, "pullRequest")?.disabled).toBeUndefined();
   });
 
   it("the checked-out branch cannot be merged into itself", () => {
@@ -109,7 +117,15 @@ describe("ref menu", () => {
 
   it("a remote branch is checked out as a local one and can be hidden", () => {
     const items = refMenu(ref("origin/topic", "remote"), ctx());
-    expect(ids(items)).toEqual(["checkout", "merge", "rebase", "deleteRemote", "hide", "copyName"]);
+    expect(ids(items)).toEqual([
+      "checkout",
+      "merge",
+      "rebase",
+      "pullRequest",
+      "deleteRemote",
+      "hide",
+      "copyName",
+    ]);
     expect(find(items, "checkout")?.label).toContain("local branch");
     expect(find(items, "deleteRemote")?.danger).toBe(true);
     expect(

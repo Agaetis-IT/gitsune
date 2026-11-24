@@ -34,6 +34,7 @@ import { type GraphSource, type RepoBackend } from "@/lib/backend";
 import type { Density } from "@/lib/metro/metrics";
 import { createReadOnlyStore, type ReadOnlyStore } from "@/lib/readOnly";
 import { createRecentStore, type RecentRepo, type RecentStore } from "@/lib/recents";
+import { createPullRequestUrl, pickHostedRepo, pullRequestUrl } from "@/lib/remoteUrl";
 import { createSessionStore, type Session, type SessionStore } from "@/lib/session";
 
 /** Result of the commit search of a tab. */
@@ -1735,6 +1736,58 @@ export function createWorkspace(
     return backend.fileDiff(tab.id, tab.selectedCommit.id, tab.openFile, force);
   }
 
+  // ---------- outside the application: pull requests, editor, terminal ----------
+
+  /**
+   * Opens the pull request of a branch in the browser: the open one when the host says there is
+   * one (it needs a token), otherwise the page that starts one. A failed lookup is reported and
+   * the page that starts one is opened anyway.
+   */
+  async function openPullRequest(tab: RepoTab, branch: string): Promise<void> {
+    const remotes = await backend.remoteUrls(tab.id).catch(() => []);
+    const hosted = pickHostedRepo(remotes);
+    if (!hosted) {
+      notify(
+        "error",
+        "No remote of this repository is on GitHub or Azure DevOps: there is no pull request page to open.",
+      );
+      return;
+    }
+    let url = createPullRequestUrl(hosted.repo, branch);
+    try {
+      const lookup = await backend.findPullRequest(hosted.repo, branch);
+      if (lookup.state === "found") {
+        url = pullRequestUrl(hosted.repo, lookup.id);
+        notify("info", `Pull request ${lookup.id}: ${lookup.title}`);
+      }
+    } catch (error) {
+      notify("error", `${message(error)} Opening the page to create one instead.`);
+    }
+    try {
+      await backend.openExternal(url);
+    } catch (error) {
+      notify("error", message(error));
+    }
+  }
+
+  /** Opens the repository, or one file of it, in the editor. */
+  async function openInEditor(tab: RepoTab, editor: string, path: string | null): Promise<void> {
+    try {
+      await backend.openInEditor(tab.id, editor, path);
+    } catch (error) {
+      notify("error", message(error));
+    }
+  }
+
+  /** Opens a terminal in the repository. */
+  async function openInTerminal(tab: RepoTab, terminal: string): Promise<void> {
+    try {
+      await backend.openInTerminal(tab.id, terminal);
+    } catch (error) {
+      notify("error", message(error));
+    }
+  }
+
   function clearRecents(): void {
     recentRepos.value = recents.clear();
   }
@@ -1845,6 +1898,9 @@ export function createWorkspace(
     forgetRecent,
     clearRecents,
     restoreSession,
+    openPullRequest,
+    openInEditor,
+    openInTerminal,
   };
 }
 

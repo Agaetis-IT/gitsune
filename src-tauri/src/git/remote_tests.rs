@@ -552,3 +552,30 @@ fn answers_to_unknown_ids_are_refused() {
     assert!(answer_prompt(dir.path(), "../x", Some("a")).is_err());
     assert!(answer_prompt(dir.path(), "", Some("a")).is_err());
 }
+
+#[test]
+fn remote_urls_lists_each_remote_once_with_its_fetch_address() {
+    let (tmp, remote) = with_remote();
+    git(
+        tmp.path(),
+        &["remote", "add", "azure", "git@ssh.dev.azure.com:v3/o/p/r"],
+    );
+    let stores = RepoStores::default();
+    let urls = remote_urls(&ctx(&tmp, &stores)).unwrap();
+    assert_eq!(urls.len(), 2);
+    assert_eq!(urls[0].name, "azure");
+    assert_eq!(urls[0].url, "git@ssh.dev.azure.com:v3/o/p/r");
+    assert_eq!(urls[1].name, "origin");
+    assert_eq!(urls[1].url, remote.path().to_string_lossy());
+}
+
+#[test]
+fn parse_remote_urls_ignores_push_lines_and_noise() {
+    let text =
+        "origin\thttps://a/b (fetch)\norigin\thttps://a/b (push)\nweird line\nup\tx (fetch)\n";
+    let urls = parse_remote_urls(text);
+    assert_eq!(
+        urls.iter().map(|u| u.name.as_str()).collect::<Vec<_>>(),
+        ["origin", "up"]
+    );
+}
