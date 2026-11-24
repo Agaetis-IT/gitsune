@@ -682,3 +682,13 @@ fn the_usual_tool_folders_are_added_to_a_short_path() {
     );
     assert!(with_common_tool_dirs("").starts_with("/opt/homebrew/bin"));
 }
+
+#[test]
+fn the_toolchain_folders_of_the_home_directory_are_added() {
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let extended = with_common_tool_dirs("/usr/bin");
+    let bun = format!("{}/.bun/bin", home.trim_end_matches('/'));
+    assert!(extended.split(':').any(|p| p == bun), "{extended}");
+}

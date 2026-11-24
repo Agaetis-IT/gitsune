@@ -77,3 +77,12 @@ GitHub/GitLab integrations, submodules and worktrees, file editing.
 
 The **search** is a *Search* button (a magnifier and the word) in the toolbar and Ctrl/Cmd+F; both open a small box floating at the top right of the graph, which closes with Esc or its close button and then clears the search; it closes when another repository is shown. The **compact / detailed** choice is gone from the toolbar: it lives in *Settings, Appearance, Graph* and is remembered (`git-hydra:graph-density`); Ctrl+wheel on the graph still changes it, and the choice is saved the same way.
 
+
+## 18. Three-column graph
+
+The graph has three columns under a header (*Branch / tag*, *Graph*, *Commit message*): the **labels** of the branches and tags on the left, the **lanes** in the middle, the commit message on the right. A label is linked to its station by a line in the color of the branch, and every row is faintly tinted in that color.
+
+- **One label per branch.** `feature/x`, `origin/feature/x` and `upstream/feature/x` on one commit make a single label (`src/lib/metro/refGroups.ts`) with a laptop when the branch exists locally and one icon per remote that has it; a tag has a tag icon; the current branch has a check mark. Labels that do not fit are folded into `+N`. `origin/HEAD` is not shown.
+- **Icons per remote.** Chosen by remote name in *Settings, Graph, Remote icons* from a fixed set (Lucide outlines drawn on the canvas, `src/lib/metro/icons.ts`); the default is people for `origin`, fork for `upstream`, server for the others. Stored in `git-hydra:remote-icons`.
+- **Resizable columns.** The dividers in the header are dragged (or moved with the arrow keys; double click resets): `git-hydra:graph-refs-width` and `git-hydra:graph-width` (the lane area fits the graph when no width is set).
+- **Optional columns** right of the message: author, date, commit id (`git-hydra:graph-columns`; author and date on by default). In the detailed density, what is not in a column stays under the message.

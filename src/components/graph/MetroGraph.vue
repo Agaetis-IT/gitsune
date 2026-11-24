@@ -4,6 +4,7 @@ import type { GraphMeta, GraphRow, Lane, RefInfo } from "@/lib/api";
 import { draw, type PillRect, type Theme, type WipRow } from "@/lib/metro/draw";
 import { isOnStation, laneAt, rowAtY } from "@/lib/metro/geometry";
 import { type Density, graphContentWidth, metricsFor, rowTop } from "@/lib/metro/metrics";
+import { GRAPH_WIDTH_MIN, REFS_WIDTH, useGraphSettings } from "@/composables/useGraphSettings";
 import { useTheme } from "@/composables/useTheme";
 import { type FetchPage, RowCache } from "@/lib/metro/rowCache";
 
@@ -77,20 +78,40 @@ const viewH = ref(0);
 const hoverRow = ref<number | null>(null);
 const tooltip = ref<{ row: GraphRow; x: number; y: number } | null>(null);
 
+const graphSettings = useGraphSettings();
+const { refsWidth, graphWidth, columns } = graphSettings;
+
+/** Height of the header with the names of the columns. */
+const HEADER_H = 24;
+/** Room kept for the commit message when a column is resized. */
+const MESSAGE_MIN_W = 200;
+
 const metrics = computed(() => metricsFor(props.density, props.initials));
 const matchSet = computed(() => new Set(props.matches));
 /** Height taken by the pinned working tree row. */
 const inset = computed(() => (props.wip ? metrics.value.rowH : 0));
 const contentH = computed(() => props.meta.total * metrics.value.rowH + inset.value);
 const graphContentW = computed(() => graphContentWidth(props.meta.maxCols, metrics.value));
-// The lane area takes at most ~45% of the width and scrolls sideways on its own.
-const graphViewportW = computed(() =>
-  Math.min(graphContentW.value, Math.max(120, Math.floor(viewW.value * 0.45))),
+/** Left edge of the lane area: the column of branch labels comes first. */
+const graphX = computed(() =>
+  Math.min(refsWidth.value, Math.max(REFS_WIDTH.min, viewW.value - MESSAGE_MIN_W - 120)),
 );
+// The lane area fits the graph, up to ~45% of the rest, and scrolls sideways on its own; the user
+// can give it a width of their own.
+const graphViewportW = computed(() => {
+  const room = Math.max(GRAPH_WIDTH_MIN, viewW.value - graphX.value);
+  if (graphWidth.value !== null) {
+    return Math.max(GRAPH_WIDTH_MIN, Math.min(graphWidth.value, room - MESSAGE_MIN_W));
+  }
+  return Math.min(graphContentW.value, Math.max(120, Math.floor(room * 0.45)));
+});
 const spacerW = computed(
   () => viewW.value + Math.max(0, graphContentW.value - graphViewportW.value),
 );
-const textX = computed(() => graphViewportW.value + 12);
+const textX = computed(() => graphX.value + graphViewportW.value + 12);
+
+/** Whether a position (relative to the scroller) is over the lane area. */
+const inGraph = (x: number) => x >= graphX.value && x < graphX.value + graphViewportW.value;
 
 let scrollTop = 0;
 let scrollLeft = 0;
@@ -211,7 +232,10 @@ function render() {
     scrollTop,
     graphScrollX: scrollLeft,
     graphViewportW: graphViewportW.value,
+    graphX: graphX.value,
     textX: textX.value,
+    columns: columns.value,
+    remoteIcon: graphSettings.remoteIcon,
     meta: props.meta,
     metrics: metrics.value,
     density: props.density,
@@ -262,19 +286,23 @@ function onPointerMove(event: PointerEvent) {
   const contentY = point.y - inset.value + scrollTop;
   const row = point.y < inset.value ? null : rowAtY(contentY, props.meta.total, m);
   let next: typeof tooltip.value = null;
-  if (row !== null && point.x < graphViewportW.value) {
+  if (row !== null && inGraph(point.x)) {
     const data = cache.getRow(row);
-    if (data && isOnStation(point.x + scrollLeft, contentY, row, data.col, m)) {
-      next = { row: data, x: Math.min(point.x + 14, viewW.value - 300), y: point.y + 16 };
+    if (data && isOnStation(point.x - graphX.value + scrollLeft, contentY, row, data.col, m)) {
+      next = {
+        row: data,
+        x: Math.min(point.x + 14, viewW.value - 300),
+        y: point.y + 16 + HEADER_H,
+      };
     }
   }
   tooltip.value = next;
   if (scroller.value) {
     const onLane =
       next === null &&
-      point.x < graphViewportW.value &&
+      inGraph(point.x) &&
       point.y >= inset.value &&
-      laneAt(point.x + scrollLeft, contentY, props.meta.lanes, m) !== null;
+      laneAt(point.x - graphX.value + scrollLeft, contentY, props.meta.lanes, m) !== null;
     scroller.value.style.cursor = onLane ? "pointer" : "";
   }
   if (row !== hoverRow.value) {
@@ -316,15 +344,14 @@ function onClick(event: MouseEvent) {
   const row = rowAtY(contentY, props.meta.total, m);
 
   // A click on a lane line (not on a station) offers actions on that lane.
-  if (point.x < graphViewportW.value) {
+  if (inGraph(point.x)) {
     const data = row === null ? undefined : cache.getRow(row);
+    const laneX = point.x - graphX.value + scrollLeft;
     const onStation =
-      row !== null &&
-      data !== undefined &&
-      isOnStation(point.x + scrollLeft, contentY, row, data.col, m);
-    const lane = onStation ? null : laneAt(point.x + scrollLeft, contentY, props.meta.lanes, m);
+      row !== null && data !== undefined && isOnStation(laneX, contentY, row, data.col, m);
+    const lane = onStation ? null : laneAt(laneX, contentY, props.meta.lanes, m);
     if (lane) {
-      emit("laneClick", { lane, x: point.x, y: point.y });
+      emit("laneClick", { lane, x: point.x, y: point.y + HEADER_H });
       return;
     }
   }
@@ -350,12 +377,11 @@ function onContextMenu(event: MouseEvent) {
     return;
   }
   const data = row === null ? undefined : cache.getRow(row);
-  if (point.x < graphViewportW.value) {
+  if (inGraph(point.x)) {
+    const laneX = point.x - graphX.value + scrollLeft;
     const onStation =
-      row !== null &&
-      data !== undefined &&
-      isOnStation(point.x + scrollLeft, contentY, row, data.col, m);
-    const lane = onStation ? null : laneAt(point.x + scrollLeft, contentY, props.meta.lanes, m);
+      row !== null && data !== undefined && isOnStation(laneX, contentY, row, data.col, m);
+    const lane = onStation ? null : laneAt(laneX, contentY, props.meta.lanes, m);
     if (lane) {
       emit("contextMenu", { kind: "lane", lane, ...where });
       return;
@@ -528,10 +554,56 @@ watch(
     props.matches,
     props.wip,
     graphViewportW.value,
+    graphX.value,
     textX.value,
+    columns.value,
+    graphSettings.remoteIcons.value,
   ],
   scheduleDraw,
 );
+
+type Handle = "refs" | "graph";
+
+/** Drags the divider between two columns. */
+function startResize(handle: Handle, event: PointerEvent) {
+  const target = event.currentTarget as HTMLElement;
+  target.setPointerCapture(event.pointerId);
+  const startX = event.clientX;
+  const startRefs = graphX.value;
+  const startGraph = graphViewportW.value;
+  const move = (e: PointerEvent) => {
+    const delta = e.clientX - startX;
+    if (handle === "refs") {
+      graphSettings.setRefsWidth(
+        Math.min(startRefs + delta, viewW.value - MESSAGE_MIN_W - GRAPH_WIDTH_MIN),
+      );
+    } else {
+      graphSettings.setGraphWidth(startGraph + delta);
+    }
+  };
+  const stop = () => {
+    target.removeEventListener("pointermove", move);
+    target.removeEventListener("pointerup", stop);
+    target.removeEventListener("pointercancel", stop);
+  };
+  target.addEventListener("pointermove", move);
+  target.addEventListener("pointerup", stop);
+  target.addEventListener("pointercancel", stop);
+}
+
+function resizeByKey(handle: Handle, event: KeyboardEvent) {
+  const step = event.key === "ArrowLeft" ? -10 : event.key === "ArrowRight" ? 10 : 0;
+  if (step === 0) return;
+  event.preventDefault();
+  if (handle === "refs") graphSettings.setRefsWidth(graphX.value + step);
+  else graphSettings.setGraphWidth(graphViewportW.value + step);
+}
+
+/** Double click: the lane area fits the graph again (the labels go back to their usual width). */
+function resetResize(handle: Handle) {
+  if (handle === "refs") graphSettings.setRefsWidth(REFS_WIDTH.initial);
+  else graphSettings.setGraphWidth(null);
+}
 
 defineExpose({ scrollToRow, focusRow });
 
@@ -539,10 +611,40 @@ const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", tim
 </script>
 
 <template>
-  <div class="relative h-full w-full overflow-hidden">
+  <div class="relative flex h-full w-full flex-col overflow-hidden">
+    <div
+      class="text-muted-foreground bg-background relative shrink-0 border-b text-[10px] font-medium tracking-wide uppercase select-none"
+      :style="{ height: `${HEADER_H}px` }"
+    >
+      <span class="absolute top-0 flex h-full items-center pl-2" :style="{ left: '0px' }">
+        Branch / tag
+      </span>
+      <span class="absolute top-0 flex h-full items-center pl-2" :style="{ left: `${graphX}px` }">
+        Graph
+      </span>
+      <span
+        class="absolute top-0 flex h-full items-center pl-2"
+        :style="{ left: `${textX - 12}px` }"
+      >
+        Commit message
+      </span>
+      <div
+        v-for="handle in ['refs', 'graph'] as const"
+        :key="handle"
+        class="hover:bg-ring/50 focus-visible:bg-ring/50 absolute top-0 z-10 h-full w-1.5 -translate-x-1/2 cursor-col-resize"
+        :style="{ left: `${handle === 'refs' ? graphX : graphX + graphViewportW}px` }"
+        role="separator"
+        aria-orientation="vertical"
+        :aria-label="handle === 'refs' ? 'Resize the branch column' : 'Resize the graph column'"
+        tabindex="0"
+        @pointerdown.prevent="startResize(handle, $event)"
+        @keydown="resizeByKey(handle, $event)"
+        @dblclick="resetResize(handle)"
+      />
+    </div>
     <div
       ref="scroller"
-      class="h-full w-full overflow-auto outline-none"
+      class="min-h-0 w-full flex-1 overflow-auto outline-none"
       tabindex="0"
       role="listbox"
       aria-label="Commit graph"

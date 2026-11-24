@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, Monitor, Moon, Palette, Sun } from "@lucide/vue";
+import { Check, GitBranch, Monitor, Moon, Palette, Sun } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import ThemeEditor from "@/components/ThemeEditor.vue";
 import { Button } from "@/components/ui/button";
@@ -7,16 +7,31 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Textarea } from "@/components/ui/textarea";
 import { useSettings } from "@/composables/useSettings";
 import { useGraphSettings } from "@/composables/useGraphSettings";
+import { useWorkspace } from "@/composables/useWorkspace";
+import { defaultRemoteIcon, REMOTE_ICON_CHOICES, type IconName } from "@/lib/metro/icons";
+import { remoteOf } from "@/lib/metro/refGroups";
 import { type ThemeMode, useTheme } from "@/composables/useTheme";
 import { exportTheme, type Theme } from "@/lib/theme/types";
 
 const { open, closeSettings } = useSettings();
-const { showInitials, setShowInitials, density, setDensity } = useGraphSettings();
+const {
+  showInitials,
+  setShowInitials,
+  density,
+  setDensity,
+  columns,
+  setColumn,
+  remoteIcons,
+  setRemoteIcon,
+} = useGraphSettings();
+const workspace = useWorkspace();
 const { mode, setMode, themes, themeId, setTheme, createFrom, removeCustom, importTheme, dark } =
   useTheme();
 
-/** Only one section for now; the window is laid out for more. */
-const SECTIONS = [{ id: "appearance", label: "Appearance", icon: Palette }] as const;
+const SECTIONS = [
+  { id: "appearance", label: "Appearance", icon: Palette },
+  { id: "graph", label: "Graph", icon: GitBranch },
+] as const;
 const section = ref<(typeof SECTIONS)[number]["id"]>("appearance");
 
 const MODES: Array<{ mode: ThemeMode; label: string; icon: typeof Sun }> = [
@@ -32,6 +47,26 @@ const importing = ref(false);
 const importText = ref("");
 const message = ref("");
 const exported = ref("");
+
+/** The remotes to set an icon for: those of the open repository, and those already set. */
+const remoteNames = computed(() => {
+  const names = new Set(Object.keys(remoteIcons.value));
+  for (const ref of workspace.active.value?.refs ?? []) {
+    if (ref.kind === "remote") names.add(remoteOf(ref));
+  }
+  return [...names].sort();
+});
+
+const COLUMN_LABELS = [
+  ["author", "Author"],
+  ["date", "Date"],
+  ["sha", "Commit id"],
+] as const;
+
+function onRemoteIcon(remote: string, event: Event) {
+  const value = (event.target as HTMLSelectElement).value;
+  setRemoteIcon(remote, value === "" ? null : (value as IconName));
+}
 
 const selected = computed(() => themes.value.find((t) => t.id === themeId.value));
 
@@ -140,42 +175,6 @@ function onOpenChange(value: boolean) {
                     {{ m.label }}
                   </Button>
                 </div>
-              </fieldset>
-
-              <fieldset class="mt-6">
-                <legend class="text-sm font-medium">Graph</legend>
-                <p class="text-muted-foreground mt-1 text-xs">
-                  Compact: one line per commit. Detailed: the author, the date and the id under each
-                  line.
-                </p>
-                <div class="mt-2 flex gap-2" role="radiogroup" aria-label="Density of the graph">
-                  <Button
-                    v-for="d in ['compact', 'detailed'] as const"
-                    :key="d"
-                    size="sm"
-                    role="radio"
-                    :aria-checked="density === d"
-                    :variant="density === d ? 'default' : 'outline'"
-                    @click="setDensity(d)"
-                  >
-                    {{ d === "compact" ? "Compact" : "Detailed" }}
-                  </Button>
-                </div>
-                <label class="mt-2 flex items-start gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    class="mt-1"
-                    :checked="showInitials"
-                    @change="setShowInitials(($event.target as HTMLInputElement).checked)"
-                  />
-                  <span>
-                    Show the initials of the author in the stations
-                    <span class="text-muted-foreground block text-xs">
-                      Each person has a color of their own; the ring keeps the color of the branch.
-                      The stations are a little bigger.
-                    </span>
-                  </span>
-                </label>
               </fieldset>
 
               <section class="mt-6">
@@ -291,6 +290,89 @@ function onOpenChange(value: boolean) {
                 </div>
               </section>
             </template>
+          </template>
+          <template v-else-if="section === 'graph'">
+            <h2 class="text-base font-semibold">Graph</h2>
+            <fieldset class="mt-6">
+              <legend class="text-sm font-medium">Rows</legend>
+              <p class="text-muted-foreground mt-1 text-xs">
+                Compact: one line per commit. Detailed: the author, the date and the id under each
+                line.
+              </p>
+              <div class="mt-2 flex gap-2" role="radiogroup" aria-label="Density of the graph">
+                <Button
+                  v-for="d in ['compact', 'detailed'] as const"
+                  :key="d"
+                  size="sm"
+                  role="radio"
+                  :aria-checked="density === d"
+                  :variant="density === d ? 'default' : 'outline'"
+                  @click="setDensity(d)"
+                >
+                  {{ d === "compact" ? "Compact" : "Detailed" }}
+                </Button>
+              </div>
+              <label class="mt-2 flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  class="mt-1"
+                  :checked="showInitials"
+                  @change="setShowInitials(($event.target as HTMLInputElement).checked)"
+                />
+                <span>
+                  Show the initials of the author in the stations
+                  <span class="text-muted-foreground block text-xs">
+                    Each person has a color of their own; the ring keeps the color of the branch.
+                    The stations are a little bigger.
+                  </span>
+                </span>
+              </label>
+            </fieldset>
+
+            <fieldset class="mt-6">
+              <legend class="text-sm font-medium">Columns</legend>
+              <p class="text-muted-foreground mt-1 text-xs">
+                Shown to the right of the commit message. The widths of the branch and graph columns
+                are set by dragging the dividers in the header of the graph (double click to reset).
+              </p>
+              <div class="mt-2 flex flex-wrap gap-4">
+                <label v-for="[key, label] in COLUMN_LABELS" :key="key" class="flex gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    :checked="columns[key]"
+                    @change="setColumn(key, ($event.target as HTMLInputElement).checked)"
+                  />
+                  {{ label }}
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="mt-6">
+              <legend class="text-sm font-medium">Remote icons</legend>
+              <p class="text-muted-foreground mt-1 text-xs">
+                A branch label shows a laptop when the branch exists on this computer, and one icon
+                for each remote that has it. Pick the icon of each remote.
+              </p>
+              <p v-if="remoteNames.length === 0" class="text-muted-foreground mt-2 text-sm">
+                Open a repository with remotes to set their icons.
+              </p>
+              <ul v-else class="mt-2 space-y-2">
+                <li v-for="remote in remoteNames" :key="remote" class="flex items-center gap-3">
+                  <span class="w-40 truncate font-mono text-sm">{{ remote }}</span>
+                  <select
+                    class="bg-background h-8 rounded-md border px-2 text-sm"
+                    :aria-label="`Icon of ${remote}`"
+                    :value="remoteIcons[remote] ?? ''"
+                    @change="onRemoteIcon(remote, $event)"
+                  >
+                    <option value="">Default ({{ defaultRemoteIcon(remote) }})</option>
+                    <option v-for="icon in REMOTE_ICON_CHOICES" :key="icon.name" :value="icon.name">
+                      {{ icon.label }}
+                    </option>
+                  </select>
+                </li>
+              </ul>
+            </fieldset>
           </template>
         </div>
       </div>

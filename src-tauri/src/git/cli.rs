@@ -516,13 +516,37 @@ const COMMON_TOOL_DIRS: [&str; 4] = [
     "/usr/local/sbin",
 ];
 
+/// Folders under the home directory where JS and Rust toolchains put their binaries (husky
+/// hooks call `bunx`, `npx`, `node`...).
+const HOME_TOOL_DIRS: [&str; 6] = [
+    ".bun/bin",
+    ".volta/bin",
+    ".cargo/bin",
+    ".deno/bin",
+    ".local/bin",
+    "Library/pnpm",
+];
+
 /// `path` with the usual tool folders added at the end when they are missing. An application
 /// started from the Finder gets a short `PATH` without them, so hooks and commit signing that
 /// work in a terminal would fail from the app (a rebase replays every commit, hooks and
 /// signing included).
 pub fn with_common_tool_dirs(path: &str) -> String {
-    let mut parts: Vec<&str> = path.split(':').filter(|p| !p.is_empty()).collect();
-    for dir in COMMON_TOOL_DIRS {
+    let mut parts: Vec<String> = path
+        .split(':')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let home_dirs = HOME_TOOL_DIRS
+        .iter()
+        .filter(|_| !home.is_empty())
+        .map(|dir| format!("{}/{dir}", home.trim_end_matches('/')));
+    let dirs = COMMON_TOOL_DIRS
+        .iter()
+        .map(|d| d.to_string())
+        .chain(home_dirs);
+    for dir in dirs {
         if !parts.contains(&dir) {
             parts.push(dir);
         }

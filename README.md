@@ -10,6 +10,7 @@ Tauri 2 (Rust) + Vue 3 + TypeScript + Tailwind + shadcn-vue. macOS first.
 - Tabs per repository, recent repositories, system light/dark theme.
 - Sidebar with local branches, remotes and tags, in folders by the `/` of their names (`feature/auth-18` is in `feature`; a remote's name is its first folder): close and open folders (remembered per repository), hide a branch, a folder or a group, highlight a branch, jump to its commit.
 - Click a lane in the graph to highlight or hide its branch.
+- Branch and tag labels in their own column on the left of the graph, linked to their station; a laptop for a local branch and an icon per remote (configurable per remote in Settings); resizable columns and optional author / date / id columns.
 - Search commits by message, author or id: the _Search_ button or Ctrl/Cmd+F opens a small box at the top right of the graph (Enter and Shift+Enter step through the matches, Esc closes it).
 - Commit details, changed files, unified and side-by-side diffs with syntax highlighting; large and binary files are handled.
 - Live refresh: commits, fetches and checkouts made in a terminal appear without losing your place; changes to the working tree show up in the status as you save files.
