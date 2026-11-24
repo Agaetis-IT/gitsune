@@ -8,6 +8,7 @@ import {
   LockOpen,
   RefreshCw,
   ScrollText,
+  Search,
 } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import BranchDialogs from "@/components/BranchDialogs.vue";
@@ -41,16 +42,14 @@ import type { FileChange, GraphRow, Lane, RefInfo, StashEntry, StatusEntry } fro
 import { commitMenu, laneMenu, type MenuItem, refMenu } from "@/lib/menus";
 import { refsOfBranch } from "@/lib/branchRefs";
 import { headSide as headSideOf, pickCheckoutRef } from "@/lib/navigation";
-import type { Density } from "@/lib/metro/metrics";
 import type { WipRow } from "@/lib/metro/draw";
 
 const workspace = useWorkspace();
-const { tabs, active, activeId, density, diffMode, recentRepos, openError, opening } = workspace;
+const { tabs, active, activeId, diffMode, recentRepos, openError, opening } = workspace;
 
 const graph = ref<InstanceType<typeof MetroGraph>>();
 const searchBar = ref<InstanceType<typeof SearchBar>>();
 const lanePopover = ref<{ lane: Lane; x: number; y: number } | null>(null);
-const densities: Density[] = ["compact", "detailed"];
 
 /** Name of the highlighted lane, for the chip in the toolbar. */
 const highlightName = computed(() => {
@@ -58,6 +57,28 @@ const highlightName = computed(() => {
   if (!tab || tab.highlightLane === null) return "";
   return tab.source?.meta.lanes[tab.highlightLane]?.name ?? "this line";
 });
+
+/** The search box, floating at the top right of the graph: opened by the magnifier or Ctrl/Cmd+F. */
+const searchOpen = ref(false);
+
+async function openSearch() {
+  searchOpen.value = true;
+  await nextTick();
+  searchBar.value?.focus();
+}
+
+function closeSearch() {
+  searchOpen.value = false;
+  if (active.value) workspace.clearSearch(active.value);
+}
+
+function toggleSearch() {
+  if (searchOpen.value) closeSearch();
+  else void openSearch();
+}
+
+// A search belongs to one repository: the box closes when another one is shown.
+watch(activeId, () => (searchOpen.value = false));
 
 async function runSearch(query: string) {
   const tab = active.value;
@@ -325,6 +346,7 @@ watch(
 
 const settings = useSettings();
 const graphSettings = useGraphSettings();
+const density = graphSettings.density;
 
 // Ctrl/Cmd+F goes to the search box.
 function onKeydown(event: KeyboardEvent) {
@@ -336,7 +358,7 @@ function onKeydown(event: KeyboardEvent) {
   }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && active.value) {
     event.preventDefault();
-    searchBar.value?.focus();
+    openSearch();
   }
 }
 onMounted(() => document.addEventListener("keydown", onKeydown));
@@ -388,18 +410,17 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             Highlighting {{ highlightName }} ✕
           </button>
           <div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
-            <SearchBar
-              :key="active.id"
-              ref="searchBar"
-              :query="active.search.query"
-              :total="active.search.total"
-              :current="active.search.current"
-              :loading="active.search.loading"
-              :error="active.search.error"
-              @search="runSearch"
-              @step="stepMatch"
-              @clear="workspace.clearSearch(active)"
-            />
+            <Button
+              size="sm"
+              :variant="searchOpen ? 'default' : 'outline'"
+              title="Search the commits (Cmd/Ctrl+F)"
+              aria-label="Search the commits"
+              :aria-pressed="searchOpen"
+              @click="toggleSearch"
+            >
+              <Search class="size-3.5" />
+              Search
+            </Button>
             <Button
               size="sm"
               variant="outline"
@@ -495,17 +516,6 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
               <ScrollText class="size-3.5" />
               Activity
             </Button>
-            <div class="flex gap-1">
-              <Button
-                v-for="d in densities"
-                :key="d"
-                size="sm"
-                :variant="density === d ? 'default' : 'outline'"
-                @click="density = d"
-              >
-                {{ d }}
-              </Button>
-            </div>
           </div>
         </div>
 
@@ -522,11 +532,26 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
         <OperationBanner :tab="active" />
 
         <div class="relative min-h-0 flex-1">
+          <SearchBar
+            v-if="searchOpen"
+            :key="active.id"
+            ref="searchBar"
+            class="absolute top-2 right-6 z-30 shadow-md"
+            :query="active.search.query"
+            :total="active.search.total"
+            :current="active.search.current"
+            :loading="active.search.loading"
+            :error="active.search.error"
+            @search="runSearch"
+            @step="stepMatch"
+            @clear="workspace.clearSearch(active)"
+            @close="closeSearch"
+          />
           <MetroGraph
             v-if="active.source && active.source.meta.total > 0"
             :key="active.id"
             ref="graph"
-            v-model:density="density"
+            :density="density"
             :selected="active.selected"
             :initial-scroll-top="active.scrollTop"
             :anchor="active.anchor"
@@ -537,6 +562,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             :wip="wipRow"
             :head-row="headRow"
             :initials="graphSettings.showInitials.value"
+            @update:density="graphSettings.setDensity"
             @wip-click="workspace.selectWip(active)"
             @lane-click="lanePopover = $event"
             @context-menu="onGraphMenu"

@@ -11,7 +11,7 @@ import { type ThemeMode, useTheme } from "@/composables/useTheme";
 import { exportTheme, type Theme } from "@/lib/theme/types";
 
 const { open, closeSettings } = useSettings();
-const { showInitials, setShowInitials } = useGraphSettings();
+const { showInitials, setShowInitials, density, setDensity } = useGraphSettings();
 const { mode, setMode, themes, themeId, setTheme, createFrom, removeCustom, importTheme, dark } =
   useTheme();
 
@@ -144,6 +144,23 @@ function onOpenChange(value: boolean) {
 
               <fieldset class="mt-6">
                 <legend class="text-sm font-medium">Graph</legend>
+                <p class="text-muted-foreground mt-1 text-xs">
+                  Compact: one line per commit. Detailed: the author, the date and the id under each
+                  line.
+                </p>
+                <div class="mt-2 flex gap-2" role="radiogroup" aria-label="Density of the graph">
+                  <Button
+                    v-for="d in ['compact', 'detailed'] as const"
+                    :key="d"
+                    size="sm"
+                    role="radio"
+                    :aria-checked="density === d"
+                    :variant="density === d ? 'default' : 'outline'"
+                    @click="setDensity(d)"
+                  >
+                    {{ d === "compact" ? "Compact" : "Detailed" }}
+                  </Button>
+                </div>
                 <label class="mt-2 flex items-start gap-2 text-sm">
                   <input
                     type="checkbox"
