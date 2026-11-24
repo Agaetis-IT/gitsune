@@ -10,6 +10,8 @@ export interface RepoInfo {
   /** Checked-out branch, `null` when HEAD is detached or unborn. */
   headBranch: string | null;
   isBare: boolean;
+  /** A linked working tree (made by `git worktree add`), not the main one. */
+  isLinked: boolean;
 }
 
 export type RefKind = "local" | "remote" | "tag";
@@ -176,6 +178,118 @@ export interface RemoteUrl {
 export type PullRequestLookup =
   { state: "signedOut" } | { state: "none" } | { state: "found"; id: number; title: string };
 
+export type PrReview = "none" | "approved" | "changesRequested" | "pending";
+export type PrChecks = "none" | "pending" | "success" | "failure";
+
+/** An open pull request, by its source branch, with the state of its review and builds. */
+export interface BranchPr {
+  branch: string;
+  id: number;
+  title: string;
+  draft: boolean;
+  review: PrReview;
+  checks: PrChecks;
+}
+
+export type PullRequestList = { state: "signedOut" } | { state: "listed"; items: BranchPr[] };
+
+/** What the user filled in to create a pull request. */
+export interface NewPullRequest {
+  source: string;
+  target: string;
+  title: string;
+  description: string;
+  draft: boolean;
+}
+
+/** A working tree of the repository (`git worktree list`). */
+export interface Worktree {
+  path: string;
+  /** The commit checked out there. */
+  head: string;
+  /** `null` for a detached HEAD or a bare repository. */
+  branch: string | null;
+  detached: boolean;
+  bare: boolean;
+  /** The first one listed is the main working tree. */
+  isMain: boolean;
+  /** Set (maybe empty) when locked: its reason. */
+  locked: string | null;
+  /** Set when git would prune it: its folder is gone. */
+  prunable: string | null;
+  /** Uncommitted changes there; `null` when it could not be told. */
+  dirty: boolean | null;
+}
+
+/** A commit that wrote lines of a file. */
+export interface BlameCommit {
+  id: string;
+  author: string;
+  /** Author time, seconds since the Unix epoch. */
+  time: number;
+  summary: string;
+  /** The lines are in the working tree only. */
+  uncommitted: boolean;
+}
+
+export interface Blame {
+  commits: BlameCommit[];
+  /** One entry per line of the file; `commit` indexes `commits`. */
+  lines: Array<{ commit: number; text: string }>;
+  /** The file has more lines than are returned. */
+  truncated: boolean;
+}
+
+/** What the system the application runs on offers. */
+export interface PlatformInfo {
+  os: "macos" | "linux" | "windows";
+  editors: Array<{ id: string; label: string }>;
+  terminals: Array<{ id: string; label: string }>;
+  /** "Finder", "Explorer" or "the file manager". */
+  fileManager: string;
+  /** There is a native menu bar (the other systems use the command palette). */
+  nativeMenu: boolean;
+}
+
+/** What the application can tell about its surroundings, with nothing personal in it. */
+export interface Diagnostics {
+  appVersion: string;
+  os: string;
+  arch: string;
+  pathDirs: string[];
+  tools: Array<{ name: string; found: boolean; path: string | null; version: string | null }>;
+  hosts: Array<{ host: string; tool: string; state: "signedIn" | "signedOut" | "missing" }>;
+  sshAgent: string;
+  /** Keys the agent holds; `null` when it cannot be asked. */
+  sshKeys: number | null;
+  signing: { format: string | null; enabled: boolean; hasKey: boolean };
+}
+
+/** A branch that received commits from an automatic fetch. */
+export interface BranchUpdate {
+  branch: string;
+  upstream: string;
+  newCommits: number;
+}
+
+export interface AutoFetchResult {
+  /** Commits waiting to be pulled, over every branch that has an upstream. */
+  behindTotal: number;
+  updates: BranchUpdate[];
+}
+
+/** An author of the repository and how many commits they wrote. */
+export interface AuthorCount {
+  name: string;
+  count: number;
+}
+
+/** A commit of a branch that its target does not have, for the text of a pull request. */
+export interface RangeCommit {
+  id: string;
+  summary: string;
+}
+
 const plainError = (error: unknown): Error =>
   new Error(typeof error === "string" ? error : String(error));
 
@@ -209,6 +323,37 @@ export const hostStatuses = () => plainInvoke<HostStatus[]>("host_statuses");
 export const azureSignIn = () => plainInvoke<void>("azure_sign_in");
 export const findPullRequest = (repo: HostedRepo, branch: string) =>
   plainInvoke<PullRequestLookup>("find_pull_request", { repo, branch });
+export const listPullRequests = (repo: HostedRepo) =>
+  plainInvoke<PullRequestList>("list_pull_requests", { repo });
+/** The default branch of the repository on its host; `null` when not signed in. */
+export const defaultBranch = (repo: HostedRepo) =>
+  plainInvoke<string | null>("default_branch", { repo });
+/** Creates the pull request and returns its number. */
+export const createPullRequest = (repo: HostedRepo, request: NewPullRequest) =>
+  plainInvoke<number>("create_pull_request", { repo, request });
+/** Fetches every remote without ever asking the user anything. */
+export const autoFetch = (repoId: string) => gitInvoke<AutoFetchResult>("auto_fetch", { repoId });
+export const listWorktrees = (repoId: string) =>
+  gitInvoke<Worktree[]>("list_worktrees", { repoId });
+export const addWorktree = (
+  repoId: string,
+  path: string,
+  branch: string,
+  newBranch: boolean,
+  start: string | null,
+) => gitInvoke<void>("add_worktree", { repoId, path, branch, newBranch, start });
+export const removeWorktree = (repoId: string, path: string, force: boolean) =>
+  gitInvoke<void>("remove_worktree", { repoId, path, force });
+export const lockWorktree = (repoId: string, path: string, lock: boolean) =>
+  gitInvoke<void>("lock_worktree", { repoId, path, lock });
+export const pruneWorktrees = (repoId: string) => gitInvoke<void>("prune_worktrees", { repoId });
+export const blameFile = (repoId: string, commit: string | null, path: string) =>
+  gitInvoke<Blame>("blame_file", { repoId, commit, path });
+export const getPlatformInfo = () => plainInvoke<PlatformInfo>("platform_info");
+export const getDiagnostics = () => plainInvoke<Diagnostics>("get_diagnostics");
+export const listAuthors = (repoId: string) => gitInvoke<AuthorCount[]>("list_authors", { repoId });
+export const commitsBetween = (repoId: string, base: string, head: string) =>
+  gitInvoke<RangeCommit[]>("commits_between", { repoId, base, head });
 
 export const revealInFinder = (path: string) => invoke<void>("reveal_in_finder", { path });
 export const openRepo = (path: string) => invoke<RepoInfo>("open_repo", { path });
@@ -419,6 +564,10 @@ export const stagePaths = (repoId: string, paths: string[]) =>
   gitInvoke<WorkingStatus>("stage_paths", { repoId, paths });
 export const unstagePaths = (repoId: string, paths: string[]) =>
   gitInvoke<WorkingStatus>("unstage_paths", { repoId, paths });
+export const stageLines = (repoId: string, path: string, hunkId: string, lines: number[]) =>
+  gitInvoke<WorkingStatus>("stage_lines", { repoId, path, hunkId, lines });
+export const unstageLines = (repoId: string, path: string, hunkId: string, lines: number[]) =>
+  gitInvoke<WorkingStatus>("unstage_lines", { repoId, path, hunkId, lines });
 export const stageHunk = (repoId: string, path: string, hunkId: string) =>
   gitInvoke<WorkingStatus>("stage_hunk", { repoId, path, hunkId });
 export const unstageHunk = (repoId: string, path: string, hunkId: string) =>
@@ -659,6 +808,30 @@ export const resetTo = (repoId: string, target: string, mode: ResetMode) =>
 
 export const undoReset = (repoId: string, before: string, after: string, snapshot: string | null) =>
   gitInvoke<DiscardResult>("undo_reset", { repoId, before, after, snapshot });
+
+export interface ReflogEntry {
+  /** The commit HEAD pointed at after the operation. */
+  id: string;
+  /** What git recorded, e.g. `commit: Add a file`. */
+  message: string;
+  /** Seconds since the Unix epoch. */
+  time: number;
+  /** HEAD points at this commit now. */
+  current: boolean;
+}
+
+export interface UndoResult {
+  status: WorkingStatus;
+  /** What was undone, e.g. "the commit". */
+  undone: string;
+}
+
+export const listReflog = (repoId: string) => gitInvoke<ReflogEntry[]>("list_reflog", { repoId });
+
+export const restoreHead = (repoId: string, target: string) =>
+  gitInvoke<WorkingStatus>("restore_head", { repoId, target });
+
+export const undoLast = (repoId: string) => gitInvoke<UndoResult>("undo_last", { repoId });
 
 // ---------- merge and conflicts ----------
 

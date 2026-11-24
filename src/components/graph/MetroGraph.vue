@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { GraphMeta, GraphRow, Lane, RefInfo } from "@/lib/api";
+import type { PrBadge } from "@/lib/prStatus";
 import { draw, type PillRect, type Theme, type WipRow } from "@/lib/metro/draw";
 import { isOnStation, laneAt, rowAtY } from "@/lib/metro/geometry";
 import { type Density, graphContentWidth, metricsFor, rowTop } from "@/lib/metro/metrics";
@@ -37,6 +38,10 @@ const props = withDefaults(
     headRow?: number | null;
     /** The initials of the author in the stations (the stations are then bigger). */
     initials?: boolean;
+    /** The pull request badge of each branch, by branch name. */
+    prBadges?: ReadonlyMap<string, PrBadge>;
+    /** The author whose commits stay in full while the others fade (`personKey`). */
+    focusAuthor?: string | null;
   }>(),
   {
     density: "compact",
@@ -48,6 +53,8 @@ const props = withDefaults(
     wip: null,
     headRow: null,
     initials: true,
+    prBadges: undefined,
+    focusAuthor: null,
   },
 );
 
@@ -64,6 +71,8 @@ const emit = defineEmits<{
   select: [row: GraphRow];
   /** Double click on a ref label (`ref` set) or on a commit row. */
   activate: [target: { commit: GraphRow; ref: RefInfo | null }];
+  /** The pull request badge of a branch label was clicked. */
+  prClick: [id: number];
   /** The `+N` label of a commit was clicked: the branches it hides (positions are window coordinates). */
   moreRefs: [
     target: {
@@ -245,6 +254,8 @@ function render() {
     textX: textX.value,
     columns: columns.value,
     remoteIcon: graphSettings.remoteIcon,
+    prBadges: props.prBadges,
+    focusAuthor: props.focusAuthor,
     meta: props.meta,
     metrics: metrics.value,
     density: props.density,
@@ -316,7 +327,12 @@ function onPointerMove(event: PointerEvent) {
       (p) =>
         p.more && point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h,
     );
-    scroller.value.style.cursor = onLane || onMore ? "pointer" : "";
+    const onBadge = lastPills.find(
+      (p) =>
+        p.badge && point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h,
+    );
+    scroller.value.style.cursor = onLane || onMore || onBadge ? "pointer" : "";
+    scroller.value.title = onBadge?.badge?.title ?? "";
   }
   if (row !== hoverRow.value) {
     hoverRow.value = row;
@@ -355,6 +371,17 @@ function onClick(event: MouseEvent) {
   }
   const contentY = point.y - inset.value + scrollTop;
   const row = rowAtY(contentY, props.meta.total, m);
+
+  // The badge of a label opens its pull request.
+  const badge = lastPills.find(
+    (p) =>
+      p.badge && point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h,
+  );
+  if (badge?.badge) {
+    emit("laneClick", null);
+    emit("prClick", badge.badge.id);
+    return;
+  }
 
   // The `+N` label lists the branches it hides.
   const more = lastPills.find(
@@ -589,6 +616,8 @@ watch(
     textX.value,
     columns.value,
     graphSettings.remoteIcons.value,
+    props.prBadges,
+    props.focusAuthor,
   ],
   scheduleDraw,
 );

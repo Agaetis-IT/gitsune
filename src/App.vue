@@ -3,23 +3,30 @@ import {
   Archive,
   ArrowDown,
   ArrowUp,
+  Command,
   Crosshair,
   Lock,
   LockOpen,
+  History,
   RefreshCw,
   ScrollText,
   Search,
+  X,
 } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import BranchDialogs from "@/components/BranchDialogs.vue";
 import ContextMenu from "@/components/ContextMenu.vue";
+import { useGeneralSettings } from "@/composables/useGeneralSettings";
+import CommandPalette from "@/components/CommandPalette.vue";
 import ActivityPanel from "@/components/ActivityPanel.vue";
+import HistoryPanel from "@/components/HistoryPanel.vue";
 import CommitPanel from "@/components/CommitPanel.vue";
 import DiffView from "@/components/DiffView.vue";
 import IdentityDialog from "@/components/IdentityDialog.vue";
 import LanePopover from "@/components/LanePopover.vue";
 import SettingsButton from "@/components/SettingsButton.vue";
 import SettingsDialog from "@/components/SettingsDialog.vue";
+import DiagnosticsDialog from "@/components/DiagnosticsDialog.vue";
 import ConflictResolver from "@/components/ConflictResolver.vue";
 import HistoryDialogs from "@/components/HistoryDialogs.vue";
 import MergeDialogs from "@/components/MergeDialogs.vue";
@@ -29,6 +36,8 @@ import OperationBanner from "@/components/OperationBanner.vue";
 import RemoteDialogs from "@/components/RemoteDialogs.vue";
 import RemoteStatus from "@/components/RemoteStatus.vue";
 import MetroGraph, { type GraphContextTarget } from "@/components/graph/MetroGraph.vue";
+import WorktreeDialogs from "@/components/WorktreeDialogs.vue";
+import PullRequestDialog from "@/components/PullRequestDialog.vue";
 import RepoSidebar from "@/components/RepoSidebar.vue";
 import SearchBar from "@/components/SearchBar.vue";
 import TabBar from "@/components/TabBar.vue";
@@ -36,15 +45,31 @@ import { Button } from "@/components/ui/button";
 import WelcomeScreen from "@/components/WelcomeScreen.vue";
 import WorkingPanel from "@/components/WorkingPanel.vue";
 import { useGraphSettings } from "@/composables/useGraphSettings";
+import { useDiagnostics } from "@/composables/useDiagnostics";
 import { useFileMenu } from "@/composables/useFileMenu";
 import { useIntegrations } from "@/composables/useIntegrations";
+import { usePlatform } from "@/composables/usePlatform";
 import { type AppMenuState, buildMenuModel, parseMenuAction } from "@/lib/appMenu";
 import { revealInFinder } from "@/lib/api";
 import { hasNativeMenu, setNativeMenu } from "@/lib/nativeMenu";
 import { useSettings } from "@/composables/useSettings";
 import { useWorkspace } from "@/composables/useWorkspace";
-import type { FileChange, GraphRow, Lane, RefInfo, StashEntry, StatusEntry } from "@/lib/api";
-import { commitMenu, laneMenu, type MenuItem, refMenu } from "@/lib/menus";
+import type {
+  FileChange,
+  GraphRow,
+  Lane,
+  RefInfo,
+  StashEntry,
+  StatusEntry,
+  Worktree,
+} from "@/lib/api";
+import { commitMenu, laneMenu, type MenuItem, refMenu, worktreeMenu } from "@/lib/menus";
+import { personKey } from "@/lib/metro/people";
+import { describeUpdates } from "@/lib/autoFetch";
+import { paletteEntries, remember } from "@/lib/commandPalette";
+import { sendDesktopNotification } from "@/lib/desktopNotify";
+import { prBadges } from "@/lib/prStatus";
+import { ticketFromBranch } from "@/lib/tickets";
 import { refsOfBranch } from "@/lib/branchRefs";
 import { headSide as headSideOf, pickCheckoutRef } from "@/lib/navigation";
 import type { WipRow } from "@/lib/metro/draw";
@@ -122,8 +147,9 @@ const canHideLane = computed(() => {
 
 type MenuTarget =
   | { kind: "ref"; ref: RefInfo; commitId: string | null }
-  | { kind: "commit"; id: string }
-  | { kind: "lane"; lane: Lane };
+  | { kind: "commit"; id: string; author: string }
+  | { kind: "lane"; lane: Lane }
+  | { kind: "worktree"; tree: Worktree };
 const menu = ref<{ target: MenuTarget; items: MenuItem[]; x: number; y: number } | null>(null);
 
 function menuContext(canHighlight: boolean, highlighted: boolean, hidden: boolean) {
@@ -205,8 +231,12 @@ function onGraphMenu(target: GraphContextTarget) {
     openRefMenu(target.ref, x, y, target.commit?.id ?? null);
   } else if (target.kind === "commit") {
     menu.value = {
-      target: { kind: "commit", id: target.commit.id },
-      items: commitMenu(target.commit, menuContext(false, false, false)),
+      target: { kind: "commit", id: target.commit.id, author: target.commit.author },
+      items: commitMenu(target.commit, {
+        ...menuContext(false, false, false),
+        authorFocused:
+          tab.focusAuthor !== null && tab.focusAuthor === personKey(target.commit.author),
+      }),
       x,
       y,
     };
@@ -223,6 +253,22 @@ function onGraphMenu(target: GraphContextTarget) {
       y,
     };
   }
+}
+
+function openWorktreeMenu(tree: Worktree, x: number, y: number) {
+  const tab = active.value;
+  if (!tab) return;
+  menu.value = {
+    target: { kind: "worktree", tree },
+    items: worktreeMenu(tree, {
+      readOnly: tab.readOnly,
+      editorLabel: integrations.editorLabel(),
+      terminalLabel: integrations.terminalLabel(),
+      fileManager: platform.value.fileManager,
+    }),
+    x,
+    y,
+  };
 }
 
 function onStash(action: "apply" | "pop" | "drop", stash: StashEntry) {
@@ -252,7 +298,27 @@ function onMenuSelect(id: string) {
     else if (id === "reset") workspace.askReset(tab, { id: t.id, label: short });
     else if (id === "rebase") void workspace.askRebase(tab, t.id);
     else if (id === "rebaseInteractive") void workspace.askRebase(tab, t.id, true);
-    else if (id === "copyId") copy(t.id);
+    else if (id === "focusAuthor") {
+      workspace.setFocusAuthor(
+        tab,
+        tab.focusAuthor !== null && tab.focusAuthor === personKey(t.author) ? null : t.author,
+      );
+    } else if (id === "copyId") copy(t.id);
+  } else if (t.kind === "worktree") {
+    const tree = t.tree;
+    if (id === "open") void workspace.openWorktree(tree);
+    else if (id === "editor")
+      void workspace.openWorktreeIn(tree, "editor", integrations.editor.value);
+    else if (id === "terminal") {
+      void workspace.openWorktreeIn(tree, "terminal", integrations.terminal.value);
+    } else if (id === "reveal") {
+      void revealInFinder(tree.path).catch(() =>
+        workspace.notify("error", `Could not open ${platform.value.fileManager}.`),
+      );
+    } else if (id === "copyPath") copy(tree.path);
+    else if (id === "lock") void workspace.toggleLockWorktree(tab, tree);
+    else if (id === "prune") void workspace.pruneWorktrees(tab);
+    else if (id === "remove") workspace.askRemoveWorktree(tab, tree);
   } else if (t.kind === "lane") {
     if (id === "highlight") workspace.toggleHighlight(tab, t.lane.id);
     else if (id === "hide" && t.lane.name) void workspace.hideBranch(tab, t.lane.name);
@@ -275,9 +341,13 @@ function onMenuSelect(id: string) {
       if (lane !== null) workspace.toggleHighlight(tab, lane);
     } else if (id === "hide") workspace.toggleRef(tab, ref.fullName);
     else if (id === "copyName") copy(ref.name);
-    else if (id === "pullRequest") {
+    else if (id === "openTicket") {
+      const name = ref.kind === "remote" ? ref.name.slice(ref.name.indexOf("/") + 1) : ref.name;
+      const ticket = ticketFromBranch(name);
+      if (ticket) void workspace.openTicket(tab, ticket);
+    } else if (id === "pullRequest") {
       const slash = ref.name.indexOf("/");
-      void workspace.openPullRequest(
+      void workspace.pullRequestAction(
         tab,
         ref.kind === "remote" ? ref.name.slice(slash + 1) : ref.name,
       );
@@ -299,6 +369,21 @@ const visibleRows = ref<[number, number] | null>(null);
 watch(activeId, () => (visibleRows.value = null));
 const headSide = computed(() => headSideOf(headRow.value, visibleRows.value));
 const headLabel = computed(() => active.value?.headBranch ?? "detached HEAD");
+
+/** Leaves the diff and shows a commit (clicked in the blame) in the graph. */
+async function revealCommit(id: string) {
+  const tab = active.value;
+  if (!tab) return;
+  const row = await workspace.locateCommit(tab, id);
+  if (row === null) {
+    workspace.notify("error", "That commit is not in the graph (its branch may be hidden).");
+    return;
+  }
+  workspace.closeWorkDiff(tab);
+  workspace.openFile(tab, null);
+  await nextTick();
+  graph.value?.focusRow(row);
+}
 
 function goToHead() {
   if (headRow.value !== null) graph.value?.focusRow(headRow.value);
@@ -379,7 +464,21 @@ const workFile = (entry: StatusEntry): FileChange => ({
 
 function toggleActivity() {
   workspace.activityOpen.value = !workspace.activityOpen.value;
+  if (workspace.activityOpen.value) workspace.historyOpen.value = false;
 }
+
+function toggleHistory() {
+  workspace.historyOpen.value = !workspace.historyOpen.value;
+  if (workspace.historyOpen.value) workspace.activityOpen.value = false;
+}
+
+// The history is read when it is shown, and when another repository is shown.
+watch(
+  () => [workspace.historyOpen.value, activeId.value],
+  () => {
+    if (workspace.historyOpen.value && active.value) void workspace.loadReflog(active.value);
+  },
+);
 
 // The activity log is read when it is shown, and when another repository is shown.
 watch(
@@ -389,13 +488,72 @@ watch(
   },
 );
 
+const activePrBadges = computed(() =>
+  active.value ? prBadges(active.value.pullRequests, active.value.prStale) : undefined,
+);
+
+// The authors are read when a repository is shown, for the focus selector.
+watch(
+  activeId,
+  () => {
+    const tab = active.value;
+    if (tab && tab.authors.length === 0) void workspace.loadAuthors(tab);
+  },
+  { immediate: true },
+);
+
 const settings = useSettings();
+const diagnostics = useDiagnostics();
+const { ticketPrefill, autoFetchMinutes } = useGeneralSettings();
+
+// ---------- the fetch made in the background ----------
+
+async function autoFetchTick() {
+  // Only while the window is shown; a repository busy with something else waits.
+  if (document.visibilityState !== "visible") return;
+  for (const tab of workspace.autoFetchDue(autoFetchMinutes.value)) {
+    const result = await workspace.autoFetch(tab);
+    const news = result ? describeUpdates(tab.name, result.updates) : null;
+    if (news) void sendDesktopNotification(news.title, news.body);
+  }
+}
+let autoFetchTimer: ReturnType<typeof setInterval> | undefined;
+onMounted(() => {
+  autoFetchTimer = setInterval(() => void autoFetchTick(), 30_000);
+});
+onBeforeUnmount(() => clearInterval(autoFetchTimer));
+// Switching the option on fetches at once, not after the next beat.
+watch(autoFetchMinutes, (minutes, before) => {
+  if (minutes > 0 && before === 0) void autoFetchTick();
+});
+
+// The ticket of the branch starts an empty commit box; the hosting service says how to write it.
+watch(
+  ticketPrefill,
+  (on) => {
+    workspace.ticketPrefill.value = on;
+    if (active.value) workspace.prefillTicket(active.value);
+  },
+  { immediate: true },
+);
+watch(
+  () => [activeId.value, active.value?.headBranch, active.value?.hosted] as const,
+  async () => {
+    const tab = active.value;
+    if (!tab) return;
+    if (!tab.hosted) await workspace.loadHosted(tab);
+    workspace.prefillTicket(tab);
+    void workspace.loadPullRequests(tab);
+  },
+  { immediate: true },
+);
 const graphSettings = useGraphSettings();
 const density = graphSettings.density;
 
 // ---------- the menu bar (macOS) ----------
 
 const integrations = useIntegrations();
+const { info: platform } = usePlatform();
 const { fileMenu, closeFileMenu } = useFileMenu();
 
 const fileMenuItems = computed<MenuItem[]>(() => [
@@ -433,8 +591,10 @@ const menuState = computed<AppMenuState>(() => {
       .map((ref) => ({ name: ref.name, isHead: ref.isHead })),
     density: density.value,
     activityOpen: workspace.activityOpen.value,
+    historyOpen: workspace.historyOpen.value,
     editorLabel: integrations.editorLabel(),
     terminalLabel: integrations.terminalLabel(),
+    fileManager: platform.value.fileManager,
   };
 });
 
@@ -452,6 +612,12 @@ function onMenuAction(id: string) {
   switch (name) {
     case "settings":
       settings.openSettings();
+      return;
+    case "palette":
+      paletteOpen.value = true;
+      return;
+    case "diagnostics":
+      diagnostics.openDiagnostics();
       return;
     case "open":
       void workspace.pickAndOpen();
@@ -485,6 +651,7 @@ function onMenuAction(id: string) {
       break;
     case "refresh":
       void workspace.refreshGraph(tab);
+      void workspace.loadPullRequests(tab, true);
       break;
     case "readOnly":
       void workspace.setReadOnly(tab, !tab.readOnly);
@@ -496,11 +663,11 @@ function onMenuAction(id: string) {
       void workspace.openInTerminal(tab, integrations.terminal.value);
       break;
     case "pullRequest":
-      if (tab.headBranch) void workspace.openPullRequest(tab, tab.headBranch);
+      if (tab.headBranch) void workspace.pullRequestAction(tab, tab.headBranch);
       break;
     case "reveal":
       void revealInFinder(tab.path).catch(() =>
-        workspace.notify("error", "Could not open Finder."),
+        workspace.notify("error", `Could not open ${platform.value.fileManager}.`),
       );
       break;
     case "copyPath":
@@ -533,7 +700,29 @@ function onMenuAction(id: string) {
     case "activity":
       toggleActivity();
       break;
+    case "toggleRemotes":
+      void workspace.toggleKind(tab, "remote");
+      break;
+    case "history":
+      toggleHistory();
+      break;
+    case "undoLast":
+      void workspace.undoLast(tab);
+      break;
   }
+}
+
+// The command palette lists what the menu bar offers (and can run it), on every system.
+const paletteOpen = ref(false);
+const recentActions = ref<string[]>([]);
+const paletteItems = computed(() =>
+  paletteOpen.value ? paletteEntries(buildMenuModel(menuState.value)) : [],
+);
+
+function runFromPalette(id: string) {
+  paletteOpen.value = false;
+  recentActions.value = remember(recentActions.value, id);
+  onMenuAction(id);
 }
 
 if (hasNativeMenu()) {
@@ -552,6 +741,11 @@ function onKeydown(event: KeyboardEvent) {
     settings.openSettings();
     return;
   }
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    paletteOpen.value = true;
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && active.value) {
     event.preventDefault();
     openSearch();
@@ -563,6 +757,14 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
 
 <template>
   <div class="bg-background text-foreground flex h-screen flex-col">
+    <DiagnosticsDialog />
+    <CommandPalette
+      v-if="paletteOpen"
+      :entries="paletteItems"
+      :recent="recentActions"
+      @run="runFromPalette"
+      @close="paletteOpen = false"
+    />
     <TabBar
       :tabs="tabs"
       :active-id="activeId"
@@ -582,6 +784,10 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             @toggle-highlight="workspace.toggleHighlight(active, $event)"
             @jump="graph?.focusRow($event)"
             @ref-menu="(ref, x, y) => openRefMenu(ref, x, y, null)"
+            @open-pr="workspace.openPullRequestPage(active, $event)"
+            @open-worktree="workspace.openWorktree($event)"
+            @create-worktree="workspace.askCreateWorktree(active)"
+            @worktree-menu="openWorktreeMenu"
             @stash="onStash"
           />
         </div>
@@ -607,6 +813,16 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
           </button>
           <div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
             <Button
+              v-if="!platform.nativeMenu || !hasNativeMenu()"
+              size="sm"
+              variant="outline"
+              title="Every action of the application (Ctrl+K)"
+              @click="paletteOpen = true"
+            >
+              <Command class="size-3.5" />
+              Commands
+            </Button>
+            <Button
               size="sm"
               :variant="searchOpen ? 'default' : 'outline'"
               title="Search the commits (Cmd/Ctrl+F)"
@@ -617,6 +833,36 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
               <Search class="size-3.5" />
               Search
             </Button>
+            <div v-if="active.authors.length > 1" class="flex items-center gap-1">
+              <select
+                class="border-input bg-background h-8 max-w-40 rounded-md border px-2 text-xs"
+                :class="{ 'border-primary ring-primary/40 ring-1': active.focusAuthor !== null }"
+                :value="active.focusAuthor ?? ''"
+                title="Fade the commits of everyone else"
+                aria-label="Focus on an author"
+                @change="
+                  workspace.setFocusAuthor(active, ($event.target as HTMLSelectElement).value)
+                "
+              >
+                <option value="">All authors</option>
+                <option
+                  v-for="author in active.authors"
+                  :key="author.name"
+                  :value="personKey(author.name)"
+                >
+                  {{ author.name }} ({{ author.count }})
+                </option>
+              </select>
+              <button
+                v-if="active.focusAuthor !== null"
+                class="text-muted-foreground hover:text-foreground rounded p-1"
+                title="Remove the author focus"
+                aria-label="Remove the author focus"
+                @click="workspace.setFocusAuthor(active, null)"
+              >
+                <X class="size-3.5" />
+              </button>
+            </div>
             <Button
               size="sm"
               variant="outline"
@@ -705,6 +951,15 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             </Button>
             <Button
               size="sm"
+              :variant="workspace.historyOpen.value ? 'default' : 'outline'"
+              title="Where HEAD has been, and a way back"
+              @click="toggleHistory"
+            >
+              <History class="size-3.5" />
+              History
+            </Button>
+            <Button
+              size="sm"
               :variant="workspace.activityOpen.value ? 'default' : 'outline'"
               title="The git commands run by the app"
               @click="toggleActivity"
@@ -758,6 +1013,9 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             :wip="wipRow"
             :head-row="headRow"
             :initials="graphSettings.showInitials.value"
+            :pr-badges="activePrBadges"
+            :focus-author="active.focusAuthor"
+            @pr-click="workspace.openPullRequestPage(active, $event)"
             @update:density="graphSettings.setDensity"
             @wip-click="workspace.selectWip(active)"
             @lane-click="lanePopover = $event"
@@ -828,6 +1086,16 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
                   ? workspace.stageHunk(active!, active!.workDiff.entry.path, id)
                   : workspace.unstageHunk(active!, active!.workDiff!.entry.path, id),
             }"
+            :line-action="{
+              label: active.workDiff.area === 'unstaged' ? 'Stage lines' : 'Unstage lines',
+              disabled: active.busy || active.readOnly,
+              run: (id, lines) =>
+                active!.workDiff?.area === 'unstaged'
+                  ? workspace.stageLines(active!, active!.workDiff.entry.path, id, lines)
+                  : workspace.unstageLines(active!, active!.workDiff!.entry.path, id, lines),
+            }"
+            :blame="{ load: () => workspace.blame(active!, null, active!.workDiff!.entry.path) }"
+            @open-commit="revealCommit"
             @close="workspace.closeWorkDiff(active)"
           />
           <DiffView
@@ -838,6 +1106,11 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             :file="active.openFile"
             :commit-id="active.selectedCommit.id"
             :load="(force) => workspace.fileDiff(active!, force)"
+            :blame="{
+              load: () =>
+                workspace.blame(active!, active!.selectedCommit!.id, active!.openFile!.path),
+            }"
+            @open-commit="revealCommit"
             @close="workspace.openFile(active, null)"
           />
           <ConflictResolver
@@ -858,7 +1131,9 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
           :loading="active.detailLoading"
           :error="active.detailError"
           :open-path="active.openFile?.path ?? null"
+          :hosted="active.hosted"
           @open-file="workspace.openFile(active, $event)"
+          @open-ticket="workspace.openTicket(active, $event)"
         />
       </div>
 
@@ -867,9 +1142,16 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
         :tab="active"
         @close="workspace.activityOpen.value = false"
       />
+      <HistoryPanel
+        v-if="workspace.historyOpen.value"
+        :tab="active"
+        @close="workspace.historyOpen.value = false"
+      />
       <IdentityDialog :tab="active" />
       <BranchDialogs :tab="active" />
       <RemoteDialogs :tab="active" />
+      <PullRequestDialog :tab="active" />
+      <WorktreeDialogs :tab="active" />
       <HistoryDialogs :tab="active" />
       <MergeDialogs :tab="active" />
       <RebaseDialog :tab="active" />

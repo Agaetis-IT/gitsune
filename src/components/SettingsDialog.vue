@@ -16,7 +16,10 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useSettings } from "@/composables/useSettings";
+import { useDiagnostics } from "@/composables/useDiagnostics";
 import { useGeneralSettings } from "@/composables/useGeneralSettings";
+import { AUTO_FETCH_CHOICES } from "@/lib/autoFetch";
+import { ensureNotificationPermission } from "@/lib/desktopNotify";
 import { useGraphSettings } from "@/composables/useGraphSettings";
 import { useWorkspace } from "@/composables/useWorkspace";
 import { defaultRemoteIcon, REMOTE_ICON_CHOICES, type IconName } from "@/lib/metro/icons";
@@ -36,7 +39,23 @@ const {
   setRemoteIcon,
 } = useGraphSettings();
 const workspace = useWorkspace();
-const { restoreTabs, setRestoreTabs } = useGeneralSettings();
+const {
+  restoreTabs,
+  setRestoreTabs,
+  ticketPrefill,
+  setTicketPrefill,
+  autoFetchMinutes,
+  setAutoFetchMinutes,
+} = useGeneralSettings();
+/** The system refused notifications: only the badge on the tab tells about new commits. */
+const { openDiagnostics } = useDiagnostics();
+const notificationsDenied = ref(false);
+
+async function chooseAutoFetch(minutes: number) {
+  setAutoFetchMinutes(minutes);
+  // The system is asked once, when the user switches the option on.
+  notificationsDenied.value = minutes > 0 && !(await ensureNotificationPermission());
+}
 const {
   mode,
   setMode,
@@ -210,6 +229,63 @@ function onOpenChange(value: boolean) {
                 </span>
               </span>
             </label>
+            <div class="mt-4 text-sm">
+              <label class="flex items-center gap-2">
+                Fetch the remotes in the background
+                <select
+                  class="border-input bg-background h-8 rounded-md border px-2 text-sm"
+                  :value="autoFetchMinutes"
+                  aria-label="Automatic fetch"
+                  @change="chooseAutoFetch(Number(($event.target as HTMLSelectElement).value))"
+                >
+                  <option v-for="minutes in AUTO_FETCH_CHOICES" :key="minutes" :value="minutes">
+                    {{ minutes === 0 ? "Never" : `Every ${minutes} min` }}
+                  </option>
+                </select>
+              </label>
+              <span class="text-muted-foreground mt-1 block text-xs">
+                Every open repository, while the window is shown. It never asks for a password: a
+                fetch that needs one fails quietly and you fetch by hand. A notification tells when
+                a branch you follow received commits; a badge on the tab counts those waiting.
+              </span>
+              <span v-if="notificationsDenied" class="text-destructive mt-1 block text-xs">
+                Notifications are not allowed for this app in the system settings: only the badge on
+                the tab will show new commits.
+              </span>
+            </div>
+            <label class="mt-4 flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                class="mt-1"
+                :checked="ticketPrefill"
+                @change="setTicketPrefill(($event.target as HTMLInputElement).checked)"
+              />
+              <span>
+                Start commit messages with the ticket of the branch
+                <span class="text-muted-foreground block text-xs">
+                  A branch named like <code>feat/login/5310</code> fills an empty summary with
+                  <code>AB#5310</code> on Azure DevOps, or <code>#5310</code> elsewhere.
+                </span>
+              </span>
+            </label>
+            <div class="mt-6 border-t pt-4 text-sm">
+              <h3 class="font-medium">Something does not work as in your terminal?</h3>
+              <p class="text-muted-foreground mt-1 text-xs">
+                A report of the tools, the folders searched, the ssh agent and the sign-ins the
+                application sees, with nothing personal in it, to paste in a ticket.
+              </p>
+              <Button
+                class="mt-2"
+                size="sm"
+                variant="outline"
+                @click="
+                  closeSettings();
+                  openDiagnostics();
+                "
+              >
+                Diagnostics…
+              </Button>
+            </div>
           </template>
 
           <template v-else-if="section === 'appearance'">

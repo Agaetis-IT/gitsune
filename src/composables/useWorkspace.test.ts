@@ -10,6 +10,7 @@ import type {
   SearchResult,
   StatusEntry,
   WorkingStatus,
+  Worktree,
 } from "@/lib/api";
 import {
   type CheckoutResult,
@@ -47,6 +48,7 @@ const infoFor = (path: string): RepoInfo => ({
   name: path.split("/").pop() ?? path,
   headBranch: "main",
   isBare: false,
+  isLinked: false,
 });
 
 const emptyMeta = (total: number): GraphMeta => ({
@@ -147,12 +149,29 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
     openInEditor: vi.fn(async () => {}),
     openInTerminal: vi.fn(async () => {}),
     findPullRequest: vi.fn(async () => ({ state: "signedOut" as const })),
+    listPullRequests: vi.fn(async () => ({ state: "signedOut" as const })),
+    defaultBranch: vi.fn(async () => "main" as string | null),
+    createPullRequest: vi.fn(async () => 99),
+    worktrees: vi.fn(async () => [] as Worktree[]),
+    addWorktree: vi.fn(async () => {}),
+    removeWorktree: vi.fn(async () => {}),
+    lockWorktree: vi.fn(async () => {}),
+    pruneWorktrees: vi.fn(async () => {}),
+    autoFetch: vi.fn(async () => ({
+      behindTotal: 0,
+      updates: [] as Array<{ branch: string; upstream: string; newCommits: number }>,
+    })),
+    authors: vi.fn(async () => [] as Array<{ name: string; count: number }>),
+    commitsBetween: vi.fn(async () => [] as Array<{ id: string; summary: string }>),
     close: vi.fn(async () => {}),
     status: async () => cleanStatus(),
     workingDiff: async () => diffFor("wip", FILE, false),
     stage: async () => cleanStatus(),
     unstage: async () => cleanStatus(),
     stageHunk: async () => cleanStatus(),
+    stageLines: async () => cleanStatus(),
+    unstageLines: async () => cleanStatus(),
+    blame: async () => ({ commits: [], lines: [], truncated: false }),
     unstageHunk: async () => cleanStatus(),
     discard: async () => ({ snapshot: null, status: cleanStatus() }),
     snapshots: async () => [],
@@ -205,6 +224,9 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
       snapshot: null,
     }),
     undoReset: async () => ({ snapshot: null, status: cleanStatus() }),
+    reflog: async () => [],
+    restoreHead: async () => cleanStatus(),
+    undoLast: async () => ({ status: cleanStatus(), undone: "the commit" }),
     mergeInfo: async () => ({ upToDate: false, canFastForward: true, commits: 2 }),
     merge: async () => ({
       status: cleanStatus(),
@@ -2200,6 +2222,41 @@ describe("merge and conflicts", () => {
     expect(undoReplay).toHaveBeenCalledWith("/fake/a", "b".repeat(40), "a".repeat(40));
   });
 
+  it("undoes the last operation and offers a redo that runs the same undo again", async () => {
+    const undoLast = vi.fn(async () => ({ status: cleanStatus(), undone: "the commit" }));
+    const { workspace, tab } = await openWorktree(cleanStatus(), { undoLast });
+    await workspace.undoLast(tab);
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toBe("Undid the commit.");
+    expect(notice?.action?.label).toBe("Redo");
+    await notice?.action?.run();
+    expect(undoLast).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads the history and restores a position of it", async () => {
+    const entry = { id: "c".repeat(40), message: "commit: x", time: 1, current: false };
+    const restoreHead = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      reflog: async () => [entry],
+      restoreHead,
+    });
+    await workspace.loadReflog(tab);
+    expect(tab.reflog).toEqual([entry]);
+    await workspace.restoreHead(tab, entry);
+    expect(restoreHead).toHaveBeenCalledWith("/fake/a", entry.id);
+    expect(lastOf(workspace.notices.value)?.text).toContain("ccccccc");
+  });
+
+  it("reports an undo git refuses, and changes nothing", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      undoLast: async () => {
+        throw { kind: "other", message: "There is nothing to undo." };
+      },
+    });
+    await workspace.undoLast(tab);
+    expect(tab.writeError).toBeTruthy();
+  });
+
   it("a squash merge tells the user to commit, and an up-to-date merge says there is nothing to do", async () => {
     let outcome: MergeOutcome = "squashed";
     const { workspace, tab } = await openWorktree(cleanStatus(), {
@@ -2690,6 +2747,509 @@ describe("opening things outside the application", () => {
     await workspace.openPullRequest(workspace.active.value!, "topic");
     expect(backend.openExternal).not.toHaveBeenCalled();
     expect(lastOf(workspace.notices.value)?.text).toContain("GitHub or Azure DevOps");
+  });
+
+  it("opens the ticket of a branch on Azure DevOps, and says when the host is unknown", async () => {
+    const { workspace, backend } = setup();
+    await workspace.openPath("/fake/alpha");
+    await workspace.openTicket(workspace.active.value!, "5310");
+    expect(backend.openExternal).toHaveBeenCalledWith(
+      "https://dev.azure.com/acme/Demo/_workitems/edit/5310",
+    );
+
+    const other = setup({
+      remoteUrls: async () => [{ name: "origin", url: "https://bitbucket.org/a/b.git" }],
+    });
+    await other.workspace.openPath("/fake/alpha");
+    await other.workspace.openTicket(other.workspace.active.value!, "5310");
+    expect(other.backend.openExternal).not.toHaveBeenCalled();
+    expect(lastOf(other.workspace.notices.value)?.kind).toBe("error");
+  });
+
+  it("starts an empty commit box with the ticket, and never over the user's text", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/alpha");
+    const tab = workspace.active.value!;
+    await workspace.loadHosted(tab);
+
+    tab.headBranch = "feat/login/5310";
+    workspace.prefillTicket(tab);
+    expect(tab.draft.summary).toBe("AB#5310 ");
+
+    // Another branch replaces the text that was only the prefill.
+    tab.headBranch = "fix/other/77";
+    workspace.prefillTicket(tab);
+    expect(tab.draft.summary).toBe("AB#77 ");
+
+    // A branch without a ticket empties it again.
+    tab.headBranch = "main";
+    workspace.prefillTicket(tab);
+    expect(tab.draft.summary).toBe("");
+
+    // The user's own text is kept, and so is an amend.
+    tab.headBranch = "feat/login/5310";
+    workspace.updateDraft(tab, { summary: "Fix the login" });
+    workspace.prefillTicket(tab);
+    expect(tab.draft.summary).toBe("Fix the login");
+
+    workspace.ticketPrefill.value = false;
+    workspace.updateDraft(tab, { summary: "" });
+    workspace.prefillTicket(tab);
+    expect(tab.draft.summary).toBe("");
+  });
+
+  it("reads the pull requests once, and again when forced", async () => {
+    const item = {
+      branch: "feat/x",
+      id: 12,
+      title: "Add x",
+      draft: false,
+      review: "approved" as const,
+      checks: "success" as const,
+    };
+    const listPullRequests = vi.fn(async () => ({ state: "listed" as const, items: [item] }));
+    const { workspace } = setup({ listPullRequests });
+    await workspace.openPath("/fake/alpha");
+    const tab = workspace.active.value!;
+    await workspace.loadPullRequests(tab, true);
+    expect(tab.pullRequests).toEqual([item]);
+    await workspace.loadPullRequests(tab);
+    expect(listPullRequests).toHaveBeenCalledTimes(1);
+    await workspace.loadPullRequests(tab, true);
+    expect(listPullRequests).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows no pull request without a sign-in, and none for an unknown host", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/alpha");
+    const tab = workspace.active.value!;
+    await workspace.loadPullRequests(tab, true);
+    expect(tab.pullRequests).toEqual([]);
+
+    const other = setup({
+      remoteUrls: async () => [{ name: "origin", url: "https://bitbucket.org/a/b.git" }],
+      listPullRequests: vi.fn(async () => ({ state: "listed" as const, items: [] })),
+    });
+    await other.workspace.openPath("/fake/alpha");
+    await other.workspace.loadPullRequests(other.workspace.active.value!, true);
+    expect(other.backend.listPullRequests).not.toHaveBeenCalled();
+  });
+
+  it("keeps the badges, marked out of date, when a refresh fails, with one notice only", async () => {
+    let fail = false;
+    const item = {
+      branch: "feat/x",
+      id: 12,
+      title: "Add x",
+      draft: false,
+      review: "none" as const,
+      checks: "none" as const,
+    };
+    const { workspace } = setup({
+      listPullRequests: async () => {
+        if (fail) throw new Error("Could not reach dev.azure.com.");
+        return { state: "listed" as const, items: [item] };
+      },
+    });
+    await workspace.openPath("/fake/alpha");
+    const tab = workspace.active.value!;
+    await workspace.loadPullRequests(tab, true);
+    fail = true;
+    await workspace.loadPullRequests(tab, true);
+    expect(tab.pullRequests).toEqual([item]);
+    expect(tab.prStale).toBe(true);
+    const errors = () => workspace.notices.value.filter((n) => n.kind === "error").length;
+    expect(errors()).toBe(1);
+    await workspace.loadPullRequests(tab, true);
+    expect(errors()).toBe(1);
+  });
+
+  it("opens a pull request from its number", async () => {
+    const { workspace, backend } = setup();
+    await workspace.openPath("/fake/alpha");
+    const tab = workspace.active.value!;
+    await workspace.loadHosted(tab);
+    await workspace.openPullRequestPage(tab, 12);
+    expect(backend.openExternal).toHaveBeenCalledWith(
+      "https://dev.azure.com/acme/Demo/_git/repo/pullrequest/12",
+    );
+  });
+
+  describe("creating a pull request", () => {
+    const ref = (name: string, kind: "local" | "remote", target: string) => ({
+      name,
+      fullName: `${kind === "local" ? "refs/heads" : "refs/remotes"}/${name}`,
+      kind,
+      target,
+      isHead: false,
+    });
+    const signedIn = {
+      listPullRequests: vi.fn(async () => ({ state: "listed" as const, items: [] })),
+    };
+
+    async function ready(overrides: Parameters<typeof setup>[0] = {}) {
+      const made = setup({ ...signedIn, ...overrides });
+      await made.workspace.openPath("/fake/alpha");
+      const tab = made.workspace.active.value!;
+      tab.refs = [
+        ref("feat/login/5310", "local", "a".repeat(40)),
+        ref("origin/main", "remote", "c".repeat(40)),
+        ref("origin/develop", "remote", "d".repeat(40)),
+      ];
+      return { ...made, tab };
+    }
+
+    it("opens the existing pull request instead of asking for a new one", async () => {
+      const { workspace, backend, tab } = await ready({
+        listPullRequests: vi.fn(async () => ({
+          state: "listed" as const,
+          items: [
+            {
+              branch: "feat/login/5310",
+              id: 7,
+              title: "x",
+              draft: false,
+              review: "none" as const,
+              checks: "none" as const,
+            },
+          ],
+        })),
+      });
+      await workspace.pullRequestAction(tab, "feat/login/5310");
+      expect(tab.dialog).toBeNull();
+      expect(backend.openExternal).toHaveBeenCalledWith(
+        "https://dev.azure.com/acme/Demo/_git/repo/pullrequest/7",
+      );
+    });
+
+    it("falls back to the page of the host when the user is not signed in", async () => {
+      const { workspace, backend, tab } = await ready({
+        listPullRequests: vi.fn(async () => ({ state: "signedOut" as const })),
+      });
+      await workspace.pullRequestAction(tab, "feat/login/5310");
+      expect(tab.dialog).toBeNull();
+      expect(backend.openExternal).toHaveBeenCalledWith(
+        expect.stringContaining("pullrequestcreate"),
+      );
+    });
+
+    it("fills the dialog with the target, the title and the commits", async () => {
+      const { workspace, tab } = await ready({
+        defaultBranch: vi.fn(async () => "develop" as string | null),
+        commitsBetween: vi.fn(async () => [
+          { id: "1", summary: "Add the form" },
+          { id: "2", summary: "Style the form" },
+        ]),
+      });
+      await workspace.pullRequestAction(tab, "feat/login/5310");
+      expect(tab.dialog).toMatchObject({
+        type: "createPullRequest",
+        branch: "feat/login/5310",
+        remote: "origin",
+        target: "develop",
+        title: "AB#5310 Login",
+        description: "AB#5310\n\n- Add the form\n- Style the form",
+        needsPush: true,
+        newOnRemote: true,
+      });
+    });
+
+    it("pushes first, creates the pull request and opens it", async () => {
+      const push = vi.fn(async () => ({ status: cleanStatus(), summary: "" }));
+      const { workspace, backend, tab } = await ready({ push });
+      await workspace.pullRequestAction(tab, "feat/login/5310");
+      await workspace.createPullRequest(tab, {
+        target: "main",
+        title: " AB#5310 Login ",
+        description: "Body",
+        draft: true,
+        push: true,
+      });
+      expect(push).toHaveBeenCalledWith(
+        "/fake/alpha",
+        expect.any(String),
+        expect.objectContaining({ remote: "origin", branch: "feat/login/5310", setUpstream: true }),
+      );
+      expect(backend.createPullRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "azure" }),
+        {
+          source: "feat/login/5310",
+          target: "main",
+          title: "AB#5310 Login",
+          description: "Body",
+          draft: true,
+        },
+      );
+      expect(tab.dialog).toBeNull();
+      expect(lastOf(workspace.notices.value)?.text).toBe("Created pull request 99.");
+      expect(backend.openExternal).toHaveBeenCalledWith(
+        "https://dev.azure.com/acme/Demo/_git/repo/pullrequest/99",
+      );
+    });
+
+    it("keeps the dialog and its text when the host refuses", async () => {
+      const { workspace, tab } = await ready({
+        createPullRequest: vi.fn(async () => {
+          throw new Error("dev.azure.com refused it: a pull request already exists.");
+        }),
+      });
+      await workspace.pullRequestAction(tab, "feat/login/5310");
+      await workspace.createPullRequest(tab, {
+        target: "main",
+        title: "T",
+        description: "",
+        draft: false,
+        push: false,
+      });
+      expect(tab.dialog).toMatchObject({
+        type: "createPullRequest",
+        error: expect.stringContaining("already exists"),
+      });
+    });
+  });
+
+  it("loads the authors and focuses on one of them, whatever the spelling", async () => {
+    const { workspace } = setup({
+      authors: async () => [
+        { name: "Éloïse Martin", count: 5 },
+        { name: "Sam Sample", count: 2 },
+      ],
+    });
+    await workspace.openPath("/fake/alpha");
+    const tab = workspace.active.value!;
+    await workspace.loadAuthors(tab);
+    expect(tab.authors).toHaveLength(2);
+    workspace.setFocusAuthor(tab, "ÉLOÏSE  martin");
+    expect(tab.focusAuthor).toBe("eloise martin");
+    workspace.setFocusAuthor(tab, null);
+    expect(tab.focusAuthor).toBeNull();
+    workspace.setFocusAuthor(tab, "");
+    expect(tab.focusAuthor).toBeNull();
+  });
+
+  describe("the fetch made in the background", () => {
+    it("records what is waiting, refreshes when branches moved, and returns the news", async () => {
+      const autoFetch = vi.fn(async () => ({
+        behindTotal: 3,
+        updates: [{ branch: "main", upstream: "origin/main", newCommits: 3 }],
+      }));
+      const { workspace } = setup({ autoFetch });
+      await workspace.openPath("/fake/alpha");
+      const tab = workspace.active.value!;
+      const result = await workspace.autoFetch(tab);
+      expect(result?.updates).toHaveLength(1);
+      expect(tab.incoming).toBe(3);
+      expect(tab.autoFetchFailed).toBe(false);
+      expect(tab.autoFetchedAt).toBeGreaterThan(0);
+      expect(tab.autoFetching).toBe(false);
+    });
+
+    it("only marks the tab when it fails, without any notice", async () => {
+      const { workspace } = setup({
+        autoFetch: async () => {
+          throw new Error("Permission denied (publickey).");
+        },
+      });
+      await workspace.openPath("/fake/alpha");
+      const tab = workspace.active.value!;
+      const before = workspace.notices.value.length;
+      expect(await workspace.autoFetch(tab)).toBeNull();
+      expect(tab.autoFetchFailed).toBe(true);
+      expect(workspace.notices.value).toHaveLength(before);
+    });
+
+    it("is due after the interval, and not while the repository is fetching by hand", async () => {
+      const { workspace } = setup();
+      await workspace.openPath("/fake/alpha");
+      const tab = workspace.active.value!;
+      expect(workspace.autoFetchDue(0)).toEqual([]);
+      expect(workspace.autoFetchDue(5)).toEqual([tab]);
+      tab.autoFetchedAt = Date.now();
+      expect(workspace.autoFetchDue(5)).toEqual([]);
+      tab.autoFetchedAt = Date.now() - 6 * 60_000;
+      expect(workspace.autoFetchDue(5)).toEqual([tab]);
+      tab.remote = {
+        id: "x",
+        kind: "fetch",
+        label: "",
+        line: "",
+        percent: null,
+        prompt: null,
+        cancelling: false,
+      };
+      expect(workspace.autoFetchDue(5)).toEqual([]);
+      expect(await workspace.autoFetch(tab)).toBeNull();
+    });
+  });
+
+  describe("working trees", () => {
+    const tree = (
+      path: string,
+      branch: string | null,
+      isMain = false,
+      dirty = false,
+    ): Worktree => ({
+      path,
+      head: "a".repeat(40),
+      branch,
+      detached: branch === null,
+      bare: false,
+      isMain,
+      locked: null,
+      prunable: null,
+      dirty,
+    });
+
+    it("loads them and asks for a new one with only the free branches", async () => {
+      const { workspace } = setup({
+        worktrees: async () => [tree("/fake/alpha", "main", true), tree("/work/x", "feature/x")],
+      });
+      await workspace.openPath("/fake/alpha");
+      const tab = workspace.active.value!;
+      await workspace.loadWorktrees(tab);
+      expect(tab.worktrees).toHaveLength(2);
+      workspace.askCreateWorktree(tab);
+      const dialog = tab.dialog;
+      expect(dialog?.type).toBe("createWorktree");
+      if (dialog?.type === "createWorktree") {
+        expect(dialog.branches).not.toContain("main");
+        expect(dialog.branches).not.toContain("feature/x");
+      }
+    });
+
+    it("creates one, closes the dialog and opens it in a tab", async () => {
+      const addWorktree = vi.fn(async () => {});
+      const { workspace } = setup({ addWorktree });
+      await workspace.openPath("/fake/alpha");
+      const tab = workspace.active.value!;
+      workspace.askCreateWorktree(tab);
+      await workspace.createWorktree(tab, {
+        path: " /work/alpha-topic ",
+        branch: "topic",
+        newBranch: true,
+        start: " main ",
+        open: true,
+      });
+      expect(addWorktree).toHaveBeenCalledWith(
+        "/fake/alpha",
+        "/work/alpha-topic",
+        "topic",
+        true,
+        "main",
+      );
+      expect(tab.dialog).toBeNull();
+      expect(workspace.tabs.value.some((t) => t.path === "/work/alpha-topic")).toBe(true);
+    });
+
+    it("keeps the dialog and git's reason when creation is refused", async () => {
+      const { workspace } = setup({
+        addWorktree: async () => {
+          throw new Error("fatal: 'topic' is already checked out at '/work/x'");
+        },
+      });
+      await workspace.openPath("/fake/alpha");
+      const tab = workspace.active.value!;
+      workspace.askCreateWorktree(tab, "topic");
+      await workspace.createWorktree(tab, {
+        path: "/work/y",
+        branch: "topic",
+        newBranch: false,
+        start: "",
+        open: false,
+      });
+      expect(tab.dialog).toMatchObject({
+        type: "createWorktree",
+        error: expect.stringContaining("already checked out"),
+      });
+    });
+
+    it("refuses to remove the main one, and keeps the dialog when git refuses", async () => {
+      const removeWorktree = vi.fn(async (_id: string, _path: string, force: boolean) => {
+        if (!force) throw new Error("contains modified or untracked files, use --force");
+      });
+      const { workspace } = setup({ removeWorktree });
+      await workspace.openPath("/fake/alpha");
+      const tab = workspace.active.value!;
+      workspace.askRemoveWorktree(tab, tree("/fake/alpha", "main", true));
+      expect(tab.dialog).toBeNull();
+
+      const linked = tree("/work/x", "feature/x", false, true);
+      workspace.askRemoveWorktree(tab, linked);
+      await workspace.removeWorktree(tab, linked, false);
+      expect(tab.dialog).toMatchObject({
+        type: "removeWorktree",
+        error: expect.stringContaining("--force"),
+      });
+      await workspace.removeWorktree(tab, linked, true);
+      expect(removeWorktree).toHaveBeenLastCalledWith("/fake/alpha", "/work/x", true);
+      expect(tab.dialog).toBeNull();
+    });
+
+    it("says which working tree holds a branch git will not check out", async () => {
+      const { workspace } = setup({
+        checkout: async () => {
+          throw {
+            kind: "other",
+            message: "fatal: 'feature/x' is already used by worktree at '/work/alpha-x'",
+          };
+        },
+      });
+      await workspace.openPath("/fake/alpha");
+      const tab = workspace.active.value!;
+      await workspace.checkout(tab, { kind: "branch", name: "feature/x" });
+      const notice = lastOf(workspace.notices.value);
+      expect(notice?.kind).toBe("error");
+      expect(notice?.text).toContain("another working tree (alpha-x)");
+      expect(notice?.action?.label).toBe("Open it");
+      expect(tab.writeError).toBeNull();
+    });
+  });
+
+  describe("single lines and blame", () => {
+    it("stages and unstages the ticked lines of a hunk", async () => {
+      const stageLines = vi.fn(async () => cleanStatus());
+      const unstageLines = vi.fn(async () => cleanStatus());
+      const { workspace } = setup({ stageLines, unstageLines });
+      await workspace.openPath("/fake/alpha");
+      const tab = workspace.active.value!;
+      await workspace.stageLines(tab, "src/a.ts", "h1", [2, 5]);
+      expect(stageLines).toHaveBeenCalledWith("/fake/alpha", "src/a.ts", "h1", [2, 5]);
+      await workspace.unstageLines(tab, "src/a.ts", "h2", [1]);
+      expect(unstageLines).toHaveBeenCalledWith("/fake/alpha", "src/a.ts", "h2", [1]);
+    });
+
+    it("reports a hunk that went stale as an error and changes nothing", async () => {
+      const { workspace } = setup({
+        stageLines: async () => {
+          throw { kind: "staleHunk", message: "The file changed since this hunk was shown." };
+        },
+      });
+      await workspace.openPath("/fake/alpha");
+      const tab = workspace.active.value!;
+      await workspace.stageLines(tab, "src/a.ts", "old", [1]);
+      expect(tab.writeError?.kind).toBe("staleHunk");
+    });
+
+    it("asks for the blame of a commit, or of the working tree", async () => {
+      const blame = vi.fn(async () => ({ commits: [], lines: [], truncated: false }));
+      const { workspace } = setup({ blame });
+      await workspace.openPath("/fake/alpha");
+      const tab = workspace.active.value!;
+      await workspace.blame(tab, "c".repeat(40), "src/a.ts");
+      expect(blame).toHaveBeenCalledWith("/fake/alpha", "c".repeat(40), "src/a.ts");
+      await workspace.blame(tab, null, "src/a.ts");
+      expect(blame).toHaveBeenLastCalledWith("/fake/alpha", null, "src/a.ts");
+    });
+
+    it("finds the row of a commit, or nothing when it is not drawn", async () => {
+      const { workspace } = setup({
+        locate: async (_id: string, ids: string[]) => ids.map((id) => (id === "x" ? 7 : null)),
+      });
+      await workspace.openPath("/fake/alpha");
+      const tab = workspace.active.value!;
+      expect(await workspace.locateCommit(tab, "x")).toBe(7);
+      expect(await workspace.locateCommit(tab, "y")).toBeNull();
+    });
   });
 
   it("reports a failure to open the editor or the terminal as a notice", async () => {

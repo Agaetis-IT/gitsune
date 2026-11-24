@@ -1,9 +1,10 @@
 import type { GraphMeta, GraphRow, RefInfo } from "@/lib/api";
 import { connectorPath, laneVerticalRange, visibleRows } from "./geometry";
+import type { PrBadge } from "../prStatus";
 import { drawIcon, type IconName } from "./icons";
 import { colX, type Density, type Metrics, rowCenterY, rowTop } from "./metrics";
 import { contrastText, laneColor, type Palette } from "./palette";
-import { initialsOf, isDarkBackground, personColor } from "./people";
+import { initialsOf, isDarkBackground, personColor, personKey } from "./people";
 import { groupRefs, type RefGroup } from "./refGroups";
 
 export interface Theme {
@@ -38,6 +39,8 @@ export interface DrawInput {
 
   /** Lane drawn in full while the others fade; `null` for no highlight. */
   highlightLane: number | null;
+  /** The author whose commits stay in full while the others fade (`personKey`), or `null`. */
+  focusAuthor?: string | null;
   /** Rows matching the current search, tinted. */
   matchRows: ReadonlySet<number>;
   /** Height of the pinned working tree row at the top; the graph scrolls below it. */
@@ -50,8 +53,16 @@ export interface DrawInput {
   columns: { author: boolean; date: boolean; sha: boolean };
   /** The icon of a remote, by name. */
   remoteIcon: (remote: string) => IconName;
+  /** The pull request badge of each branch, by branch name. */
+  prBadges?: ReadonlyMap<string, PrBadge>;
   /** Receives the position of every ref label drawn (for right-click hit testing). */
   pills?: PillRect[];
+}
+
+/** Whether a commit is in full: on the highlighted lane and by the focused author. */
+function inFocus(input: DrawInput, data: GraphRow): boolean {
+  if (input.highlightLane !== null && data.lane !== input.highlightLane) return false;
+  return !input.focusAuthor || personKey(data.author) === input.focusAuthor;
 }
 
 /** Where a ref label was drawn (screen position), so it can be clicked. */
@@ -62,6 +73,8 @@ export interface PillRect {
   h: number;
   ref: RefInfo;
   row: number;
+  /** For the pull request badge of a label: the pull request it opens when clicked. */
+  badge?: { id: number; title: string };
   /** For the `+N` label: the labels it stands for, to list them when it is clicked. */
   more?: Array<{ label: string; ref: RefInfo }>;
 }
@@ -86,6 +99,8 @@ export interface WipRow {
 
 /** Opacity of what is not highlighted. */
 const FADED_LANE = 0.18;
+/** Lines while an author is in focus. */
+const FOCUS_LANE = 0.45;
 const FADED_TEXT = 0.35;
 const MATCH_TINT = "#facc15";
 
@@ -194,7 +209,7 @@ function drawBands(input: DrawInput, range: Range): void {
     const data = input.getRow(row);
     const lane = data ? input.meta.lanes[data.lane] : undefined;
     if (!lane) continue;
-    const faded = input.highlightLane !== null && data?.lane !== input.highlightLane;
+    const faded = data !== undefined && !inFocus(input, data);
     ctx.globalAlpha = faded ? 0.02 : 0.07;
     ctx.fillStyle = laneColor(theme.palette, lane.color);
     ctx.fillRect(0, rowTop(row, m) - scrollTop, width, m.rowH);
@@ -255,7 +270,10 @@ function drawLanes(input: DrawInput, range: Range): void {
   const passes = highlight === null ? [true] : [false, true];
   const inPass = (laneId: number, focusedPass: boolean) =>
     highlight === null || (laneId === highlight) === focusedPass;
-  const alphaOf = (laneId: number) => (highlight === null || laneId === highlight ? 1 : FADED_LANE);
+  // With an author in focus the lines are pale: only their commits tell where that author worked.
+  const lineAlpha = input.focusAuthor ? FOCUS_LANE : 1;
+  const alphaOf = (laneId: number) =>
+    highlight === null || laneId === highlight ? lineAlpha : FADED_LANE;
 
   for (const focusedPass of passes) {
     // Straight vertical parts of the lanes.
@@ -303,7 +321,7 @@ function drawLanes(input: DrawInput, range: Range): void {
     const x = colX(data.col, m);
     if (x < minX || x > maxX) continue;
     const lane = meta.lanes[data.lane];
-    ctx.globalAlpha = alphaOf(data.lane);
+    ctx.globalAlpha = inFocus(input, data) ? 1 : FADED_LANE;
     drawStation(
       ctx,
       x,
@@ -417,8 +435,7 @@ function drawText(input: DrawInput, range: Range): void {
       ctx.globalAlpha = 1;
       continue;
     }
-    ctx.globalAlpha =
-      input.highlightLane === null || data.lane === input.highlightLane ? 1 : FADED_TEXT;
+    ctx.globalAlpha = inFocus(input, data) ? 1 : FADED_TEXT;
     const summaryY = detailed ? centerY - 8 : centerY;
 
     // The optional columns, right-aligned: author, date, id (the id is the rightmost).
@@ -489,8 +506,7 @@ function drawRefs(input: DrawInput, range: Range): void {
     const y = rowCenterY(row, m) - input.scrollTop;
     const groups = groupRefs(data.refs);
     if (groups.length === 0) continue;
-    ctx.globalAlpha =
-      input.highlightLane === null || data.lane === input.highlightLane ? 1 : FADED_TEXT;
+    ctx.globalAlpha = inFocus(input, data) ? 1 : FADED_TEXT;
 
     const height = Math.min(24, Math.round(m.rowH * 0.64));
     const left = 8;
@@ -503,6 +519,18 @@ function drawRefs(input: DrawInput, range: Range): void {
       const label = pillLayout(ctx, group, room - (x - left) - reserve, input);
       if (shown > 0 && label.width > room - (x - left) - reserve) break;
       drawPill(ctx, group, label, x, y, height, color, input);
+      if (label.badge) {
+        // Before the label itself, so a click on the badge finds it first.
+        input.pills?.push({
+          x: x + label.width - 4 - BADGE_W,
+          y: y - height / 2 + input.topInset,
+          w: BADGE_W,
+          h: height,
+          ref: group.primary,
+          row,
+          badge: { id: label.badge.id, title: label.badge.title },
+        });
+      }
       input.pills?.push({
         x,
         y: y - height / 2 + input.topInset,
@@ -523,8 +551,7 @@ function drawRefs(input: DrawInput, range: Range): void {
       ctx.fillStyle = theme.muted;
       ctx.globalAlpha *= 0.25;
       ctx.fill();
-      ctx.globalAlpha =
-        input.highlightLane === null || data.lane === input.highlightLane ? 1 : FADED_TEXT;
+      ctx.globalAlpha = inFocus(input, data) ? 1 : FADED_TEXT;
       ctx.fillStyle = theme.foreground;
       ctx.fillText(text, x + 6, y + 0.5);
       input.pills?.push({
@@ -557,11 +584,14 @@ function drawRefs(input: DrawInput, range: Range): void {
 
 const ICON = 12;
 const ICON_STEP = 15;
+/** Room of the pull request badge at the end of a label. */
+const BADGE_W = 16;
 
 interface PillLayout {
   text: string;
   width: number;
   icons: IconName[];
+  badge: PrBadge | null;
 }
 
 /** What a label shows and how wide it is, with its name shortened to fit `maxWidth`. */
@@ -583,10 +613,12 @@ function pillLayout(
     }
   }
   const check = group.isHead ? ICON_STEP : 0;
-  const fixed = 7 + check + (icons.length > 0 ? 4 + icons.length * ICON_STEP : 0) + 4;
+  const badge = group.tag ? null : (input.prBadges?.get(group.name) ?? null);
+  const fixed =
+    7 + check + (icons.length > 0 ? 4 + icons.length * ICON_STEP : 0) + (badge ? BADGE_W : 0) + 4;
   ctx.font = `${group.isHead ? "700" : "600"} 11px ${FONT}`;
   const text = fitText(ctx, group.name, Math.max(30, maxWidth - fixed));
-  return { text, width: fixed + ctx.measureText(text).width, icons };
+  return { text, width: fixed + ctx.measureText(text).width, icons, badge };
 }
 
 function drawPill(
@@ -637,6 +669,15 @@ function drawPill(
   for (const icon of layout.icons) {
     drawIcon(ctx, icon, cursor + ICON / 2, y, ICON, ink);
     cursor += ICON_STEP;
+  }
+  if (layout.badge) {
+    // A round plate keeps the colored icon readable on any label.
+    const cx = x + layout.width - 4 - BADGE_W / 2;
+    ctx.beginPath();
+    ctx.arc(cx, y, 7, 0, Math.PI * 2);
+    ctx.fillStyle = theme.background;
+    ctx.fill();
+    drawIcon(ctx, layout.badge.icon, cx, y, 10, layout.badge.color);
   }
 }
 

@@ -3,6 +3,8 @@ import { Check, Copy, Loader } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { useFileMenu } from "@/composables/useFileMenu";
 import type { ChangeStatus, CommitDetail, FileChange, GraphRow } from "@/lib/api";
+import type { HostedRepo } from "@/lib/remoteUrl";
+import { splitTickets } from "@/lib/tickets";
 
 const props = defineProps<{
   commit: GraphRow | null;
@@ -11,8 +13,10 @@ const props = defineProps<{
   error: string;
   /** Path of the file whose diff is open. */
   openPath: string | null;
+  /** The hosting service of the repository; without it, ticket references stay plain text. */
+  hosted: HostedRepo | null;
 }>();
-const emit = defineEmits<{ openFile: [file: FileChange] }>();
+const emit = defineEmits<{ openFile: [file: FileChange]; openTicket: [ticket: string] }>();
 
 const { openFileMenu } = useFileMenu();
 const copied = ref(false);
@@ -36,6 +40,9 @@ async function copyId() {
     // Clipboard unavailable: nothing to do.
   }
 }
+
+const titleParts = computed(() => splitTickets(props.commit?.summary ?? ""));
+const bodyParts = computed(() => splitTickets(body.value));
 
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "short" });
 
@@ -76,9 +83,31 @@ function split(path: string): { dir: string; name: string } {
       </p>
     </div>
     <template v-else>
-      <h2 class="text-base leading-snug font-semibold break-words">{{ commit.summary }}</h2>
+      <h2 class="text-base leading-snug font-semibold break-words">
+        <template v-for="(part, index) in titleParts" :key="index">
+          <button
+            v-if="part.ticket && hosted"
+            class="text-primary underline-offset-2 hover:underline"
+            :title="`Open ticket ${part.ticket}`"
+            @click="emit('openTicket', part.ticket)"
+          >
+            {{ part.text }}
+          </button>
+          <template v-else>{{ part.text }}</template>
+        </template>
+      </h2>
       <p v-if="body" class="text-muted-foreground mt-2 text-xs break-words whitespace-pre-wrap">
-        {{ body }}
+        <template v-for="(part, index) in bodyParts" :key="index">
+          <button
+            v-if="part.ticket && hosted"
+            class="text-primary underline-offset-2 hover:underline"
+            :title="`Open ticket ${part.ticket}`"
+            @click="emit('openTicket', part.ticket)"
+          >
+            {{ part.text }}
+          </button>
+          <template v-else>{{ part.text }}</template>
+        </template>
       </p>
 
       <dl class="mt-4 space-y-3">

@@ -1,6 +1,7 @@
 import { createApp } from "vue";
 import App from "./App.vue";
 import { useGeneralSettings } from "@/composables/useGeneralSettings";
+import { usePlatform } from "@/composables/usePlatform";
 import { useWorkspace } from "@/composables/useWorkspace";
 import { isTauri, tauriBackend } from "@/lib/backend";
 import "./assets/main.css";
@@ -11,6 +12,8 @@ async function start() {
   const backend = demo
     ? await import("@/dev/fixtureBackend").then((m) => m.createFixtureBackend())
     : tauriBackend;
+  // The editors, the terminals and the names the system gives things are known before anything shows.
+  if (!demo) await usePlatform().load();
   const workspace = useWorkspace(backend);
   void workspace.watchRepos();
   createApp(App).mount("#app");

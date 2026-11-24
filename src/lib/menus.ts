@@ -1,4 +1,5 @@
-import type { RefInfo } from "@/lib/api";
+import type { RefInfo, Worktree } from "@/lib/api";
+import { ticketFromBranch } from "@/lib/tickets";
 
 /** One line of a context menu. A disabled item says why (shown as a tooltip and in the menu). */
 export interface MenuItem {
@@ -23,6 +24,8 @@ export interface MenuContext {
   highlighted?: boolean;
   /** The ref is hidden from the graph. */
   hidden?: boolean;
+  /** The graph is focused on the author of the commit the menu is about. */
+  authorFocused?: boolean;
 }
 
 const READ_ONLY = "Read-only mode is on.";
@@ -31,7 +34,7 @@ const write = (ctx: MenuContext, item: MenuItem): MenuItem =>
   ctx.readOnly && !item.disabled ? { ...item, disabled: READ_ONLY } : item;
 
 /** Actions on a commit of the graph. */
-export function commitMenu(commit: { id: string }, ctx: MenuContext): MenuItem[] {
+export function commitMenu(commit: { id: string; author: string }, ctx: MenuContext): MenuItem[] {
   const atHead = ctx.headId === commit.id;
   return [
     write(ctx, {
@@ -60,7 +63,12 @@ export function commitMenu(commit: { id: string }, ctx: MenuContext): MenuItem[]
       label: "Rebase interactively from this commit…",
       disabled: atHead ? "This commit is already the current one." : undefined,
     }),
-    { id: "copyId", label: "Copy the commit id", separatorBefore: true },
+    {
+      id: "focusAuthor",
+      label: ctx.authorFocused ? "Remove the author focus" : `Focus on ${commit.author}`,
+      separatorBefore: true,
+    },
+    { id: "copyId", label: "Copy the commit id" },
   ];
 }
 
@@ -81,6 +89,11 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
       separatorBefore: !ctx.canHighlight,
     });
   }
+  const branchName = ref.kind === "remote" ? ref.name.slice(ref.name.indexOf("/") + 1) : ref.name;
+  const ticket = ref.kind === "tag" ? null : ticketFromBranch(branchName);
+  const openTicket: MenuItem[] = ticket
+    ? [{ id: "openTicket", label: `Open ticket ${ticket}` }]
+    : [];
   const copy: MenuItem = {
     id: "copyName",
     label: "Copy the name",
@@ -108,6 +121,7 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
         disabled: ref.isHead ? "This is the current branch." : undefined,
       }),
       { id: "pullRequest", label: "Open or create a pull request", separatorBefore: true },
+      ...openTicket,
       write(ctx, {
         id: "delete",
         label: "Delete…",
@@ -124,6 +138,7 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
       write(ctx, { id: "merge", label: `Merge ${ref.name} into the current branch…` }),
       write(ctx, { id: "rebase", label: `Rebase the current branch onto ${ref.name}…` }),
       { id: "pullRequest", label: "Open or create a pull request", separatorBefore: true },
+      ...openTicket,
       write(ctx, {
         id: "deleteRemote",
         label: "Delete on the remote…",
@@ -150,5 +165,56 @@ export function laneMenu(ctx: MenuContext & { canHide: boolean }): MenuItem[] {
     },
   ];
   if (ctx.canHide) items.push({ id: "hide", label: "Hide this branch" });
+  return items;
+}
+
+/** Actions on a working tree of the sidebar. */
+export function worktreeMenu(
+  tree: Worktree,
+  ctx: { readOnly: boolean; editorLabel: string; terminalLabel: string; fileManager?: string },
+): MenuItem[] {
+  const gone = tree.prunable !== null;
+  const items: MenuItem[] = [
+    { id: "open", label: "Open in a tab", disabled: gone ? "The folder is gone." : undefined },
+    {
+      id: "editor",
+      label: `Open in ${ctx.editorLabel}`,
+      disabled: gone ? "The folder is gone." : undefined,
+    },
+    {
+      id: "terminal",
+      label: `Open in ${ctx.terminalLabel}`,
+      disabled: gone ? "The folder is gone." : undefined,
+    },
+    {
+      id: "reveal",
+      label: `Reveal in ${ctx.fileManager ?? "Finder"}`,
+      disabled: gone ? "The folder is gone." : undefined,
+    },
+    { id: "copyPath", label: "Copy the path" },
+  ];
+  if (!tree.isMain) {
+    items.push({
+      id: "lock",
+      label: tree.locked === null ? "Lock" : "Unlock",
+      separatorBefore: true,
+      disabled: ctx.readOnly ? READ_ONLY : undefined,
+    });
+  }
+  if (gone) {
+    items.push({
+      id: "prune",
+      label: "Prune the working trees whose folder is gone",
+      disabled: ctx.readOnly ? READ_ONLY : undefined,
+    });
+  }
+  if (!tree.isMain) {
+    items.push({
+      id: "remove",
+      label: "Remove the working tree…",
+      danger: true,
+      disabled: ctx.readOnly ? READ_ONLY : undefined,
+    });
+  }
   return items;
 }

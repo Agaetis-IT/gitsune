@@ -8,14 +8,20 @@ import {
   EyeOff,
   Focus,
   Folder,
+  FolderGit2,
   FolderOpen,
   GitBranch,
+  Lock,
+  Plus,
   Tag,
 } from "@lucide/vue";
 import { computed, ref } from "vue";
 import type { RepoTab } from "@/composables/useWorkspace";
-import type { RefInfo, RefKind, StashEntry } from "@/lib/api";
+import type { RefInfo, RefKind, StashEntry, Worktree } from "@/lib/api";
+import { prBadges } from "@/lib/prStatus";
 import { buildRows, folderPaths } from "@/lib/refTree";
+import { checkedOutElsewhere, folderName, samePath } from "@/lib/worktrees";
+import { ICON_PATHS } from "@/lib/metro/iconPaths";
 
 const props = defineProps<{ tab: RepoTab }>();
 const emit = defineEmits<{
@@ -27,10 +33,32 @@ const emit = defineEmits<{
   /** Right click on a ref (window coordinates). */
   refMenu: [ref: RefInfo, x: number, y: number];
   jump: [row: number];
+  /** The pull request badge of a branch was clicked. */
+  openPr: [id: number];
+  openWorktree: [tree: Worktree];
+  createWorktree: [];
+  /** Right click on a working tree (window coordinates). */
+  worktreeMenu: [tree: Worktree, x: number, y: number];
   stash: [action: "apply" | "pop" | "drop", stash: StashEntry];
 }>();
 
 const stashesCollapsed = ref(false);
+const worktreesCollapsed = ref(false);
+
+/** The other working tree that has this local branch checked out, if any. */
+function elsewhereOf(ref: RefInfo): Worktree | undefined {
+  return ref.kind === "local"
+    ? checkedOutElsewhere(props.tab.worktrees, props.tab.path, ref.name)
+    : undefined;
+}
+
+const badges = computed(() => prBadges(props.tab.pullRequests, props.tab.prStale));
+/** The pull request badge of a branch row (local or remote); tags have none. */
+function badgeOf(ref: RefInfo) {
+  if (ref.kind === "tag") return undefined;
+  const name = ref.kind === "remote" ? ref.name.slice(ref.name.indexOf("/") + 1) : ref.name;
+  return badges.value.get(name);
+}
 
 const GROUPS: Array<{ kind: RefKind; title: string; icon: typeof GitBranch }> = [
   { kind: "local", title: "Local branches", icon: GitBranch },
@@ -231,6 +259,30 @@ function onRefClick(ref: RefInfo) {
               >
                 HEAD
               </span>
+              <FolderGit2
+                v-if="elsewhereOf(row.ref)"
+                class="text-muted-foreground size-3.5 shrink-0"
+                :title="`Checked out in ${elsewhereOf(row.ref)?.path}`"
+              />
+            </button>
+            <button
+              v-if="badgeOf(row.ref)"
+              class="shrink-0 rounded p-1"
+              :title="badgeOf(row.ref)?.title"
+              :aria-label="badgeOf(row.ref)?.title"
+              @click="emit('openPr', badgeOf(row.ref)!.id)"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                class="size-3.5"
+                fill="none"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                :stroke="badgeOf(row.ref)!.color"
+              >
+                <path :d="ICON_PATHS[badgeOf(row.ref)!.icon]" />
+              </svg>
             </button>
             <button
               v-if="laneOf.has(row.ref.fullName)"
@@ -262,6 +314,75 @@ function onRefClick(ref: RefInfo) {
         </li>
       </ul>
       <p v-else-if="!group.refs.length" class="text-muted-foreground px-7 py-1 text-xs">None</p>
+    </section>
+    <section v-if="tab.worktrees.length > 1" class="border-b py-1">
+      <div class="flex items-center">
+        <button
+          class="hover:bg-accent flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1.5 text-left font-medium"
+          :aria-expanded="!worktreesCollapsed"
+          @click="worktreesCollapsed = !worktreesCollapsed"
+        >
+          <component :is="worktreesCollapsed ? ChevronRight : ChevronDown" class="size-3.5" />
+          <FolderGit2 class="text-muted-foreground size-3.5" />
+          Worktrees
+          <span class="text-muted-foreground ml-auto text-xs font-normal">
+            {{ tab.worktrees.length }}
+          </span>
+        </button>
+        <button
+          class="text-muted-foreground hover:text-foreground mr-1 rounded p-1 disabled:opacity-50"
+          :disabled="tab.readOnly"
+          title="New working tree"
+          aria-label="New working tree"
+          @click="emit('createWorktree')"
+        >
+          <Plus class="size-3.5" />
+        </button>
+      </div>
+      <ul v-if="!worktreesCollapsed" class="pb-1">
+        <li
+          v-for="tree in tab.worktrees"
+          :key="tree.path"
+          @contextmenu.prevent="emit('worktreeMenu', tree, $event.clientX, $event.clientY)"
+        >
+          <button
+            class="hover:bg-accent flex w-full items-center gap-1.5 rounded py-1 pr-2 pl-7 text-left"
+            :class="{ 'opacity-60': tree.prunable !== null }"
+            :title="tree.path"
+            :disabled="tree.prunable !== null"
+            @click="emit('openWorktree', tree)"
+          >
+            <span class="min-w-0 flex-1">
+              <span
+                class="block truncate"
+                :class="{ 'font-semibold': samePath(tree.path, tab.path) }"
+              >
+                {{ folderName(tree.path) }}
+              </span>
+              <span class="text-muted-foreground block truncate text-xs">
+                {{ tree.branch ?? (tree.detached ? "detached HEAD" : "bare") }}
+                <template v-if="tree.prunable !== null"> · folder gone</template>
+              </span>
+            </span>
+            <span
+              v-if="tree.isMain"
+              class="bg-muted text-muted-foreground rounded px-1 text-[10px] leading-4"
+            >
+              main
+            </span>
+            <Lock
+              v-if="tree.locked !== null"
+              class="text-muted-foreground size-3"
+              :title="tree.locked ? `Locked: ${tree.locked}` : 'Locked'"
+            />
+            <span
+              v-if="tree.dirty"
+              class="size-1.5 shrink-0 rounded-full bg-amber-500"
+              title="Uncommitted changes"
+            />
+          </button>
+        </li>
+      </ul>
     </section>
     <section v-if="tab.stashes.length" class="border-b py-1">
       <button

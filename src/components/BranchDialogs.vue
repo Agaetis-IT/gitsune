@@ -57,6 +57,7 @@ const REMOTE_TYPES = [
   "reset",
   "merge",
   "abortOperation",
+  "createPullRequest",
 ];
 const open = computed(() => dialog.value !== null && !REMOTE_TYPES.includes(dialog.value.type));
 

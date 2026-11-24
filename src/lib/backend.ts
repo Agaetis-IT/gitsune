@@ -26,11 +26,16 @@ import {
   resolveConflictSide,
   type CommitOpResult,
   type DroppedStash,
+  type ReflogEntry,
   type ResetMode,
+  type UndoResult,
   type ResetResult,
   type StashEntry,
   cherryPick,
+  listReflog,
   listStashes,
+  restoreHead,
+  undoLast,
   resetTo,
   revertCommit,
   stashApply,
@@ -62,6 +67,24 @@ import {
   openInEditor,
   openInTerminal,
   findPullRequest,
+  listPullRequests,
+  defaultBranch,
+  createPullRequest,
+  commitsBetween,
+  listAuthors,
+  autoFetch,
+  listWorktrees,
+  addWorktree,
+  removeWorktree,
+  lockWorktree,
+  pruneWorktrees,
+  type AuthorCount,
+  type Blame,
+  type AutoFetchResult,
+  type NewPullRequest,
+  type PullRequestList,
+  type RangeCommit,
+  type Worktree,
   type PullRequestLookup,
   type RemoteUrl,
   cancelOperation,
@@ -92,9 +115,12 @@ import {
   setIdentity,
   setReadOnly,
   stageHunk,
+  stageLines,
   stagePaths,
   undoCommit,
   unstageHunk,
+  unstageLines,
+  blameFile,
   unstagePaths,
   getCommitDetail,
   getFileDiff,
@@ -147,6 +173,16 @@ export interface RepoBackend {
   stage(repoId: string, paths: string[]): Promise<WorkingStatus>;
   unstage(repoId: string, paths: string[]): Promise<WorkingStatus>;
   stageHunk(repoId: string, path: string, hunkId: string): Promise<WorkingStatus>;
+  /** Stages some lines of a hunk (indices into its lines). */
+  stageLines(repoId: string, path: string, hunkId: string, lines: number[]): Promise<WorkingStatus>;
+  unstageLines(
+    repoId: string,
+    path: string,
+    hunkId: string,
+    lines: number[],
+  ): Promise<WorkingStatus>;
+  /** Who wrote each line of a file, as of a commit (`null`: the working tree). */
+  blame(repoId: string, commit: string | null, path: string): Promise<Blame>;
   unstageHunk(repoId: string, path: string, hunkId: string): Promise<WorkingStatus>;
   /** Throws away unstaged changes after saving a snapshot that brings them back. */
   discard(repoId: string, paths: string[]): Promise<DiscardResult>;
@@ -218,6 +254,12 @@ export interface RepoBackend {
   revert(repoId: string, commit: string): Promise<CommitOpResult>;
   undoReplay(repoId: string, before: string, after: string): Promise<WorkingStatus>;
   reset(repoId: string, target: string, mode: ResetMode): Promise<ResetResult>;
+  /** The positions HEAD went through, newest first. */
+  reflog(repoId: string): Promise<ReflogEntry[]>;
+  /** Moves the branch back to a commit of the reflog; local changes in the way make it fail. */
+  restoreHead(repoId: string, target: string): Promise<WorkingStatus>;
+  /** Takes back the last operation that moved HEAD; doing it again is a redo. */
+  undoLast(repoId: string): Promise<UndoResult>;
   undoReset(
     repoId: string,
     before: string,
@@ -266,6 +308,33 @@ export interface RepoBackend {
   openInTerminal(repoId: string, terminal: string): Promise<void>;
   /** The open pull request of a branch (needs the token of the host). */
   findPullRequest(repo: HostedRepo, branch: string): Promise<PullRequestLookup>;
+  /** Every open pull request of the repository, with review and build state. */
+  listPullRequests(repo: HostedRepo): Promise<PullRequestList>;
+  /** The default branch of the repository on its host; `null` when not signed in. */
+  defaultBranch(repo: HostedRepo): Promise<string | null>;
+  /** Creates a pull request and returns its number. */
+  createPullRequest(repo: HostedRepo, request: NewPullRequest): Promise<number>;
+  /** The commits `head` has beyond `base`, oldest first. */
+  commitsBetween(repoId: string, base: string, head: string): Promise<RangeCommit[]>;
+  /** The authors of the repository, the most active first. */
+  authors(repoId: string): Promise<AuthorCount[]>;
+  /** Fetches every remote in the background, never asking a question; fails quietly. */
+  autoFetch(repoId: string): Promise<AutoFetchResult>;
+  /** The working trees of the repository, the main one first. */
+  worktrees(repoId: string): Promise<Worktree[]>;
+  /** Checks a branch out in a new folder (created from `start` when `newBranch`). */
+  addWorktree(
+    repoId: string,
+    path: string,
+    branch: string,
+    newBranch: boolean,
+    start: string | null,
+  ): Promise<void>;
+  /** Removes a linked working tree; one with changes is refused unless `force`. */
+  removeWorktree(repoId: string, path: string, force: boolean): Promise<void>;
+  lockWorktree(repoId: string, path: string, lock: boolean): Promise<void>;
+  /** Forgets the working trees whose folder is gone. */
+  pruneWorktrees(repoId: string): Promise<void>;
   /** Downloads new commits and refs (`remote` null: every remote). */
   fetch(repoId: string, opId: string, remote: string | null, prune: boolean): Promise<RemoteResult>;
   /** Fetches and integrates the upstream; `divergedBranches` means a strategy is needed. */
@@ -317,7 +386,10 @@ export const tauriBackend: RepoBackend = {
   stage: stagePaths,
   unstage: unstagePaths,
   stageHunk,
+  stageLines,
   unstageHunk,
+  unstageLines,
+  blame: blameFile,
   discard: discardPaths,
   snapshots: listSnapshots,
   restoreSnapshot,
@@ -339,6 +411,17 @@ export const tauriBackend: RepoBackend = {
   openInEditor,
   openInTerminal,
   findPullRequest,
+  listPullRequests,
+  defaultBranch,
+  createPullRequest,
+  commitsBetween,
+  authors: listAuthors,
+  autoFetch,
+  worktrees: listWorktrees,
+  addWorktree,
+  removeWorktree,
+  lockWorktree,
+  pruneWorktrees,
   statusHint: getStatusHint,
   speedUpStatus,
   rebasePlan: rebasePreview,
@@ -361,6 +444,9 @@ export const tauriBackend: RepoBackend = {
   revert: revertCommit,
   undoReplay,
   reset: resetTo,
+  reflog: listReflog,
+  restoreHead,
+  undoLast,
   undoReset,
   fetch: fetchRemote,
   pull: pullBranch,

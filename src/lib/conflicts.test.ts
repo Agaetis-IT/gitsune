@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   type Choice,
   compose,
+  resultLineOf,
+  sideText,
   conflictsOf,
   hasMarkers,
   parseConflicts,
@@ -109,5 +111,33 @@ describe("building the result", () => {
     choices[1] = "theirs";
     expect(unresolvedCount(two, choices)).toBe(0);
     expect(hasMarkers(compose(two, choices))).toBe(false);
+  });
+});
+
+describe("following a conflict in the result", () => {
+  const text =
+    "a\nb\n<<<<<<< HEAD\nx\ny\n=======\nz\n>>>>>>> side\nc\n<<<<<<< HEAD\nm\n=======\nn\n>>>>>>> side\n";
+
+  it("tells the line where each block starts, whatever was chosen before it", () => {
+    const segments = parseConflicts(text);
+    expect(resultLineOf(segments, {}, 0)).toBe(2);
+    expect(resultLineOf(segments, {}, 1)).toBe(2 + 6 + 1);
+    // The first block settled with its two lines of ours: the second starts earlier.
+    expect(resultLineOf(segments, { 0: "ours" }, 1)).toBe(2 + 2 + 1);
+    expect(resultLineOf(segments, { 0: "theirs" }, 1)).toBe(2 + 1 + 1);
+  });
+
+  it("is 0 at the top of the file and null for a block that does not exist", () => {
+    const segments = parseConflicts("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> side\n");
+    expect(resultLineOf(segments, {}, 0)).toBe(0);
+    expect(resultLineOf(segments, {}, 7)).toBeNull();
+  });
+});
+
+describe("a whole side of the file", () => {
+  it("keeps the plain text and takes one side of every block", () => {
+    const segments = parseConflicts(TWO_SIDES);
+    expect(sideText(segments, "ours")).toBe("top\nmain line\nbottom\n");
+    expect(sideText(segments, "theirs")).toBe("top\nside line\nbottom\n");
   });
 });

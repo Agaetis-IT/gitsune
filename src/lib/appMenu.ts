@@ -17,9 +17,12 @@ export interface AppMenuState {
   branches: ReadonlyArray<{ name: string; isHead: boolean }>;
   density: "compact" | "detailed";
   activityOpen: boolean;
+  historyOpen: boolean;
   /** The names of the editor and the terminal chosen in the settings. */
   editorLabel: string;
   terminalLabel: string;
+  /** What the program that shows folders is called (Finder, Explorer...). */
+  fileManager: string;
 }
 
 export type PredefinedItem =
@@ -117,6 +120,7 @@ export function buildMenuModel(state: AppMenuState): MenuNode[] {
         predefined("About"),
         separator,
         item("settings", "Settings…", true, "CmdOrCtrl+,"),
+        item("diagnostics", "Diagnostics…", true),
         separator,
         predefined("Services"),
         separator,
@@ -160,12 +164,13 @@ export function buildMenuModel(state: AppMenuState): MenuNode[] {
         item("pull", "Pull", remote && state.canWrite, "CmdOrCtrl+Shift+L"),
         item("push", "Push", remote && state.canWrite, "CmdOrCtrl+Shift+P"),
         separator,
+        item("undoLast", "Undo Last Operation", write, "CmdOrCtrl+Alt+Z"),
         item("refresh", "Refresh", repo, "CmdOrCtrl+R"),
         item("readOnly", "Read-only Mode", repo, undefined, state.readOnly),
         separator,
         item("openEditor", `Open in ${state.editorLabel}`, repo, "CmdOrCtrl+Shift+E"),
         item("openTerminal", `Open in ${state.terminalLabel}`, repo, "CmdOrCtrl+Shift+T"),
-        item("reveal", "Reveal in Finder", repo),
+        item("reveal", `Reveal in ${state.fileManager}`, repo),
         item("copyPath", "Copy the Path", repo),
       ],
     },
@@ -186,11 +191,14 @@ export function buildMenuModel(state: AppMenuState): MenuNode[] {
       kind: "submenu",
       label: "View",
       items: [
+        item("palette", "Command Palette…", true, "CmdOrCtrl+K"),
         item("search", "Search the Commits", repo, "CmdOrCtrl+F"),
         item("goToHead", "Go to HEAD", repo && state.hasHead, "CmdOrCtrl+Shift+H"),
         separator,
         item("density:compact", "Compact Rows", repo, undefined, state.density === "compact"),
         item("density:detailed", "Detailed Rows", repo, undefined, state.density === "detailed"),
+        item("toggleRemotes", "Hide or Show Remote Branches", repo),
+        item("history", "History of Positions", repo, "CmdOrCtrl+Shift+Y", state.historyOpen),
         item("activity", "Activity Log", repo, "CmdOrCtrl+Shift+A", state.activityOpen),
         separator,
         predefined("Fullscreen"),

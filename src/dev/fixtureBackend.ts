@@ -39,6 +39,7 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
     name: "demo-repo",
     headBranch: "main",
     isBare: false,
+    isLinked: false,
   };
 
   /** A new commit on top of the current branch: every row moves down by one. */
@@ -210,6 +211,20 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
     stage: (_repoId, paths) => worktree.stage(paths),
     unstage: (_repoId, paths) => worktree.unstage(paths),
     stageHunk: (_repoId, path, hunkId) => worktree.stageHunk(path, hunkId),
+    // The demo has no lines to pick apart: a selection stages the whole hunk.
+    stageLines: (_repoId, path, hunkId) => worktree.stageHunk(path, hunkId),
+    unstageLines: (_repoId, path, hunkId) => worktree.unstageHunk(path, hunkId),
+    blame: async (_repoId, _commit, path) => ({
+      commits: [
+        { id: "a".repeat(40), author: "Dan Testuser", time: 1_700_000_000, summary: "Start the file", uncommitted: false },
+        { id: "b".repeat(40), author: "Eve Example", time: 1_700_500_000, summary: `Rework ${path}`, uncommitted: false },
+      ],
+      lines: Array.from({ length: 12 }, (_, i) => ({
+        commit: i < 4 || i > 8 ? 0 : 1,
+        text: `line ${i + 1} of ${path}`,
+      })),
+      truncated: false,
+    }),
     unstageHunk: (_repoId, path, hunkId) => worktree.unstageHunk(path, hunkId),
     discard: (_repoId, paths) => worktree.discard(paths),
     snapshots: worktree.snapshots,

@@ -23,7 +23,9 @@ const STATE: AppMenuState = {
   ],
   density: "compact",
   activityOpen: false,
+  historyOpen: false,
   editorLabel: "Zed",
+  fileManager: "Finder",
   terminalLabel: "Terminal",
 };
 

@@ -22,7 +22,7 @@ const find = (items: ReturnType<typeof refMenu>, id: string) => items.find((i) =
 
 describe("commit menu", () => {
   it("offers to check out, branch, tag and copy", () => {
-    const items = commitMenu({ id: "c1" }, ctx());
+    const items = commitMenu({ id: "c1", author: "Ada" }, ctx());
     expect(ids(items)).toEqual([
       "checkoutCommit",
       "createBranch",
@@ -32,20 +32,31 @@ describe("commit menu", () => {
       "reset",
       "rebase",
       "rebaseInteractive",
+      "focusAuthor",
       "copyId",
     ]);
     expect(items.every((i) => !i.disabled)).toBe(true);
   });
 
+  it("offers to focus on the author, or to remove the focus", () => {
+    const commit = { id: "c1", author: "Ada Lovelace" };
+    const label = (authorFocused: boolean) =>
+      find(commitMenu(commit, ctx({ authorFocused })), "focusAuthor")?.label;
+    expect(label(false)).toBe("Focus on Ada Lovelace");
+    expect(label(true)).toBe("Remove the author focus");
+  });
+
   it("explains why a commit cannot be checked out when HEAD is already detached there", () => {
-    const items = commitMenu({ id: "head" }, ctx({ detached: true }));
+    const items = commitMenu({ id: "head", author: "Ada" }, ctx({ detached: true }));
     expect(items[0].disabled).toContain("already");
     // On a branch whose tip is that commit, detaching is allowed.
-    expect(commitMenu({ id: "head" }, ctx({ detached: false }))[0].disabled).toBeUndefined();
+    expect(
+      commitMenu({ id: "head", author: "Ada" }, ctx({ detached: false }))[0].disabled,
+    ).toBeUndefined();
   });
 
   it("greys out the writes in read-only mode but still allows copying", () => {
-    const items = commitMenu({ id: "c1" }, ctx({ readOnly: true }));
+    const items = commitMenu({ id: "c1", author: "Ada" }, ctx({ readOnly: true }));
     expect(items.filter((i) => i.disabled).map((i) => i.id)).toEqual([
       "checkoutCommit",
       "createBranch",
@@ -63,15 +74,16 @@ describe("commit menu", () => {
 
 describe("commit menu, history rewriting", () => {
   it("cherry-picking the current commit onto itself is refused with a reason", () => {
-    const items = commitMenu({ id: "head" }, ctx({ headId: "head" }));
+    const items = commitMenu({ id: "head", author: "Ada" }, ctx({ headId: "head" }));
     expect(find(items, "cherryPick")?.disabled).toContain("already");
     expect(
-      find(commitMenu({ id: "other" }, ctx({ headId: "head" })), "cherryPick")?.disabled,
+      find(commitMenu({ id: "other", author: "Ada" }, ctx({ headId: "head" })), "cherryPick")
+        ?.disabled,
     ).toBeUndefined();
   });
 
   it("a reset is shown as a destructive action", () => {
-    expect(find(commitMenu({ id: "c1" }, ctx()), "reset")?.danger).toBe(true);
+    expect(find(commitMenu({ id: "c1", author: "Ada" }, ctx()), "reset")?.danger).toBe(true);
   });
 });
 
@@ -173,5 +185,13 @@ describe("lane menu", () => {
     expect(laneMenu({ ...ctx(), canHide: false, highlighted: true })[0].label).toBe(
       "Remove the highlight",
     );
+  });
+
+  it("offers to open the ticket named in the branch, local or remote", () => {
+    const local = refMenu(ref("feat/login/5310", "local"), ctx());
+    expect(find(local, "openTicket")?.label).toBe("Open ticket 5310");
+    const remote = refMenu(ref("origin/feat/login/5310", "remote"), ctx());
+    expect(find(remote, "openTicket")?.label).toBe("Open ticket 5310");
+    expect(find(refMenu(ref("main", "local"), ctx()), "openTicket")).toBeUndefined();
   });
 });

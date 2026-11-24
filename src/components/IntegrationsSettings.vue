@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { Button } from "@/components/ui/button";
-import { EDITORS, TERMINALS, useIntegrations } from "@/composables/useIntegrations";
+import { useIntegrations } from "@/composables/useIntegrations";
 import { azureSignIn, type HostStatus, hostStatuses } from "@/lib/api";
 import { isTauri } from "@/lib/backend";
 
-const { editor, setEditor, terminal, setTerminal } = useIntegrations();
+const { editor, setEditor, terminal, setTerminal, editors, terminals } = useIntegrations();
 
 const HOSTS = [
   {
@@ -106,7 +106,7 @@ onMounted(refresh);
           :value="editor"
           @change="setEditor(($event.target as HTMLSelectElement).value)"
         >
-          <option v-for="e in EDITORS" :key="e.id" :value="e.id">{{ e.label }}</option>
+          <option v-for="e in editors" :key="e.id" :value="e.id">{{ e.label }}</option>
         </select>
       </label>
       <label class="flex items-center gap-2 text-sm">
@@ -116,7 +116,7 @@ onMounted(refresh);
           :value="terminal"
           @change="setTerminal(($event.target as HTMLSelectElement).value)"
         >
-          <option v-for="t in TERMINALS" :key="t.id" :value="t.id">{{ t.label }}</option>
+          <option v-for="t in terminals" :key="t.id" :value="t.id">{{ t.label }}</option>
         </select>
       </label>
     </div>
