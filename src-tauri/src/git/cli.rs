@@ -187,6 +187,9 @@ impl Runner<'_> {
             command.env("GIT_OPTIONAL_LOCKS", "0");
         }
         command.env("PATH", tool_path());
+        if let Some(socket) = ssh_agent_socket() {
+            command.env("SSH_AUTH_SOCK", socket);
+        }
         for (key, value) in self.env {
             command.env(key, value);
         }
@@ -552,6 +555,53 @@ pub fn with_common_tool_dirs(path: &str) -> String {
         }
     }
     parts.join(":")
+}
+
+/// The `IdentityAgent` of an ssh configuration (the first one), with `~` expanded and the quotes
+/// removed. `ssh` reads it by itself, but `ssh-keygen`, which signs commits, only looks at
+/// `SSH_AUTH_SOCK`.
+pub fn identity_agent(config: &str, home: &str) -> Option<String> {
+    config.lines().find_map(|line| {
+        let line = line.trim();
+        let (key, value) = line.split_once(|c: char| c.is_whitespace() || c == '=')?;
+        if !key.eq_ignore_ascii_case("IdentityAgent") {
+            return None;
+        }
+        let value = value.trim_start_matches(|c: char| c.is_whitespace() || c == '=');
+        let value = value.trim().trim_matches('"');
+        if value.is_empty() || value.eq_ignore_ascii_case("none") || value == "SSH_AUTH_SOCK" {
+            return None;
+        }
+        Some(match value.strip_prefix("~/") {
+            Some(rest) => format!("{}/{rest}", home.trim_end_matches('/')),
+            None => value.to_string(),
+        })
+    })
+}
+
+/// The ssh agent to give git: an application started from the Finder gets the system agent,
+/// which has none of the user's keys, so signing commits (every commit a rebase replays) fails
+/// with "Couldn't find key in agent". The agent the user's ssh configuration names (for example
+/// the one of 1Password) is used then. `None` leaves the environment as it is.
+fn ssh_agent_socket() -> Option<&'static str> {
+    static SOCKET: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    SOCKET
+        .get_or_init(|| {
+            let current = std::env::var("SSH_AUTH_SOCK").unwrap_or_default();
+            if !current.is_empty() && !current.contains("com.apple.launchd") {
+                return None;
+            }
+            let home = std::env::var("HOME").ok()?;
+            let config = std::fs::read_to_string(format!("{home}/.ssh/config")).unwrap_or_default();
+            let named = identity_agent(&config, &home);
+            let onepassword =
+                format!("{home}/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock");
+            named
+                .into_iter()
+                .chain(std::iter::once(onepassword))
+                .find(|path| std::path::Path::new(path).exists())
+        })
+        .as_deref()
 }
 
 fn tool_path() -> &'static str {

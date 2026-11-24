@@ -692,3 +692,19 @@ fn the_toolchain_folders_of_the_home_directory_are_added() {
     let bun = format!("{}/.bun/bin", home.trim_end_matches('/'));
     assert!(extended.split(':').any(|p| p == bun), "{extended}");
 }
+
+#[test]
+fn the_identity_agent_of_an_ssh_config_is_found() {
+    use super::cli::identity_agent;
+    let config = "Host *\n\tIdentityAgent \"~/Library/Group Containers/x/agent.sock\"\n";
+    assert_eq!(
+        identity_agent(config, "/Users/me/").as_deref(),
+        Some("/Users/me/Library/Group Containers/x/agent.sock")
+    );
+    assert_eq!(
+        identity_agent("identityagent = /tmp/a.sock", "/h").as_deref(),
+        Some("/tmp/a.sock")
+    );
+    assert_eq!(identity_agent("IdentityAgent none", "/h"), None);
+    assert_eq!(identity_agent("Host a\n  User git", "/h"), None);
+}
