@@ -664,6 +664,7 @@ fn a_lock_held_by_another_process_stops_a_checkout_without_being_removed() {
     assert_eq!(current(dir), "main");
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn the_usual_tool_folders_are_added_to_a_short_path() {
     let short = "/usr/bin:/bin";
@@ -683,6 +684,7 @@ fn the_usual_tool_folders_are_added_to_a_short_path() {
     assert!(with_common_tool_dirs("").starts_with("/opt/homebrew/bin"));
 }
 
+#[cfg(unix)]
 #[test]
 fn the_toolchain_folders_of_the_home_directory_are_added() {
     let Ok(home) = std::env::var("HOME") else {

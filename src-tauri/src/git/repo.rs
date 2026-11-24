@@ -13,6 +13,8 @@ pub struct RepoInfo {
     /// Short name of the checked-out branch, `None` when HEAD is detached or unborn.
     pub head_branch: Option<String>,
     pub is_bare: bool,
+    /// A linked working tree (made by `git worktree add`), not the main one.
+    pub is_linked: bool,
 }
 
 /// Opens the repository containing `path` and returns it with its summary.
@@ -40,6 +42,7 @@ pub fn open_repository(path: &Path) -> Result<(ThreadSafeRepository, RepoInfo), 
         name,
         head_branch,
         is_bare: local.is_bare(),
+        is_linked: local.git_dir() != local.common_dir(),
     };
     Ok((repo, info))
 }

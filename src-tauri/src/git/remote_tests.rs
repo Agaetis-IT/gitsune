@@ -579,3 +579,60 @@ fn parse_remote_urls_ignores_push_lines_and_noise() {
         ["origin", "up"]
     );
 }
+
+// ---------- the fetch made in the background ----------
+
+#[test]
+fn auto_fetch_tells_which_tracked_branch_received_commits() {
+    use super::autofetch::auto_fetch;
+    let (tmp, remote) = with_remote();
+    let stores = RepoStores::default();
+
+    let nothing = auto_fetch(&ctx(&tmp, &stores)).unwrap();
+    assert!(nothing.updates.is_empty());
+    assert_eq!(nothing.behind_total, 0);
+
+    let bob = colleague(&remote);
+    commit_file(bob.path(), "b.txt", "2\n", "Bob one");
+    commit_file(bob.path(), "c.txt", "3\n", "Bob two");
+    git(bob.path(), &["push", "-q", "origin", "main"]);
+
+    let found = auto_fetch(&ctx(&tmp, &stores)).unwrap();
+    assert_eq!(found.behind_total, 2);
+    assert_eq!(found.updates.len(), 1);
+    assert_eq!(found.updates[0].branch, "main");
+    assert_eq!(found.updates[0].upstream, "origin/main");
+    assert_eq!(found.updates[0].new_commits, 2);
+
+    // Nothing new since: the commits still wait, but they are not news.
+    let again = auto_fetch(&ctx(&tmp, &stores)).unwrap();
+    assert_eq!(again.behind_total, 2);
+    assert!(again.updates.is_empty());
+}
+
+#[test]
+fn auto_fetch_leaves_a_repository_without_remote_alone() {
+    use super::autofetch::auto_fetch;
+    let tmp = repo_with(&[("a.txt", "one\n")]);
+    let stores = RepoStores::default();
+    let result = auto_fetch(&ctx(&tmp, &stores)).unwrap();
+    assert_eq!(result.behind_total, 0);
+    assert!(result.updates.is_empty());
+}
+
+#[test]
+fn auto_fetch_fails_instead_of_asking_when_the_remote_is_unreachable() {
+    use super::autofetch::auto_fetch;
+    let tmp = repo_with(&[("a.txt", "one\n")]);
+    git(
+        tmp.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "/nonexistent/path/for/a/test.git",
+        ],
+    );
+    let stores = RepoStores::default();
+    assert!(auto_fetch(&ctx(&tmp, &stores)).is_err());
+}

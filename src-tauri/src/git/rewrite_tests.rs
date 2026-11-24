@@ -179,6 +179,9 @@ fn cherry_picks_a_commit_and_can_take_it_back() {
     let dir = tmp.path();
     let stores = RepoStores::default();
     let ctx = ctx(&tmp, &stores);
+    // Main moves on, so the copy has another parent: without it, a cherry-pick made in the same
+    // second as the original would be the very same commit.
+    commit_file(dir, "main.txt", "main\n", "main moves on");
     let before = text(dir, &["rev-parse", "HEAD"]);
 
     let result = cherry_pick(&ctx, &side).unwrap();

@@ -92,6 +92,18 @@ fn run_cli(path: &str, program: &str, args: &[&str], limit: Duration) -> Result<
     })
 }
 
+/// The first line a tool prints (stdout, else stderr: `ssh -V` writes there), `None` when it is
+/// missing, fails to start or does not answer in time. Used to read versions.
+pub(crate) fn tool_line(program: &str, args: &[&str], limit: Duration) -> Option<String> {
+    let output = run_cli(crate::git::tool_path(), program, args, limit).ok()?;
+    [output.stdout.as_str(), output.stderr.as_str()]
+        .into_iter()
+        .flat_map(str::lines)
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
 /// The first line of what a tool said, for a message (never the token: only stderr is quoted).
 fn first_line(text: &str) -> String {
     text.lines()
@@ -263,7 +275,7 @@ fn gitlab_token(path: &str, host: &str) -> Result<AccessToken, CliError> {
 static AZURE_CACHE: Mutex<Option<AccessToken>> = Mutex::new(None);
 
 /// A token for `host`: the cached one while it has more than five minutes left, or a new one.
-fn token_for(host: &str, path: &str) -> Result<AccessToken, CliError> {
+pub(crate) fn token_for(host: &str, path: &str) -> Result<AccessToken, CliError> {
     match host {
         "github.com" => github_token(path),
         "dev.azure.com" => {
@@ -473,7 +485,7 @@ pub fn first_pull_request(repo: &HostedRepo, answer: &Value) -> PullRequestLooku
 }
 
 /// A readable message for a failed request.
-fn describe(host: &str, error: &ureq::Error) -> String {
+pub(crate) fn describe(host: &str, error: &ureq::Error) -> String {
     match error {
         ureq::Error::StatusCode(401) | ureq::Error::StatusCode(403) => {
             format!(
@@ -627,10 +639,12 @@ mod tests {
     }
 
     /// A directory with fake `az` and `gh` scripts, used as the whole `PATH`.
+    #[cfg(unix)]
     fn fake_tools(az: &str, gh: &str) -> tempfile::TempDir {
         fake_tools_with_glab(az, gh, "exit 1")
     }
 
+    #[cfg(unix)]
     fn fake_tools_with_glab(az: &str, gh: &str, glab: &str) -> tempfile::TempDir {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::TempDir::new().unwrap();
@@ -642,6 +656,7 @@ mod tests {
         dir
     }
 
+    #[cfg(unix)]
     fn path_of(dir: &tempfile::TempDir) -> String {
         // `sh` and `cat` etc. are still needed by the scripts.
         format!("{}:/bin:/usr/bin", dir.path().display())
@@ -670,6 +685,7 @@ mod tests {
         assert!(parse_az_token("not json", Instant::now()).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_token_is_asked_of_the_tools_the_user_signed_in_with() {
         let dir = fake_tools(r#"echo '{"accessToken":"azure-token"}'"#, "echo gh-token");
@@ -678,6 +694,7 @@ mod tests {
         assert_eq!(github_token(&path).unwrap().token, "gh-token");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_missing_tool_and_a_signed_out_user_are_told_apart() {
         let empty = tempfile::TempDir::new().unwrap();
@@ -694,6 +711,7 @@ mod tests {
         assert_eq!(github_token(&path).unwrap_err(), CliError::SignedOut);
     }
 
+    #[cfg(unix)]
     #[test]
     fn another_failure_says_what_the_tool_said_but_never_a_token() {
         let dir = fake_tools(
@@ -708,6 +726,7 @@ mod tests {
         assert!(!message.contains("secret-on-stdout"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_tool_that_hangs_is_stopped() {
         let dir = fake_tools("sleep 5", "sleep 5");
@@ -717,6 +736,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(3));
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_state_of_each_host_is_told() {
         let dir = fake_tools(r#"echo "user@example.com""#, "exit 0");
@@ -787,6 +807,7 @@ mod tests {
         assert_eq!(parse_glab_token("nothing here"), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_gitlab_token_is_asked_of_glab_for_the_host() {
         let dir = fake_tools_with_glab(
@@ -821,6 +842,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_glab_that_shows_no_token_is_reported_as_changed() {
         let dir = fake_tools_with_glab("exit 1", "exit 1", "echo 'Logged in' >&2");
@@ -831,6 +853,7 @@ mod tests {
         assert!(message.contains("glab did not show a token"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn host_names_are_checked_and_the_gitlab_status_is_told() {
         assert!(valid_host("gitlab.example.fr"));

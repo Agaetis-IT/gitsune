@@ -1,7 +1,7 @@
-//! Opening things outside the application: web pages, an editor, a terminal.
+//! Opening things outside the application: web pages, an editor, a terminal. How each is started
+//! on each system is in [`crate::platform`]; this module checks what is asked.
 
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 /// An address the application may open: `https` only, without spaces or control characters, so a
 /// crafted value cannot pass an option to `open` or reach a local file or another program.
@@ -16,20 +16,6 @@ pub fn check_web_url(url: &str) -> Result<(), String> {
         return Err("the address is not valid".to_string());
     }
     Ok(())
-}
-
-/// The macOS application behind a known editor or terminal id.
-pub fn app_name(kind: &str, id: &str) -> Result<&'static str, String> {
-    let name = match (kind, id) {
-        ("editor", "zed") => "Zed",
-        ("editor", "vscode") => "Visual Studio Code",
-        ("editor", "cursor") => "Cursor",
-        ("terminal", "terminal") => "Terminal",
-        ("terminal", "iterm") => "iTerm",
-        ("terminal", "ghostty") => "Ghostty",
-        _ => return Err(format!("unknown {kind}: {id}")),
-    };
-    Ok(name)
 }
 
 /// A path inside the working directory: relative, without `..`, and existing (what is opened
@@ -51,22 +37,10 @@ pub fn inside_workdir(workdir: &Path, relative: &str) -> Result<PathBuf, String>
 
 pub fn open_url(url: &str) -> Result<(), String> {
     check_web_url(url)?;
-    Command::new("open")
-        .arg(url)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| error.to_string())
-}
-
-/// Opens `path` with an application (`open -a`).
-pub fn open_with(app: &str, path: &Path) -> Result<(), String> {
-    Command::new("open")
-        .arg("-a")
-        .arg(app)
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("could not open {app}: {error}"))
+    crate::platform::launch(&crate::platform::open_url(
+        crate::platform::Os::current(),
+        url,
+    ))
 }
 
 #[cfg(test)]
@@ -88,14 +62,6 @@ mod tests {
         ] {
             assert!(check_web_url(bad).is_err(), "{bad}");
         }
-    }
-
-    #[test]
-    fn only_known_apps_are_launched() {
-        assert_eq!(app_name("editor", "zed").unwrap(), "Zed");
-        assert_eq!(app_name("terminal", "iterm").unwrap(), "iTerm");
-        assert!(app_name("editor", "iterm").is_err());
-        assert!(app_name("editor", "rm -rf").is_err());
     }
 
     #[test]

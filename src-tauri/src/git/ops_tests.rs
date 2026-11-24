@@ -8,11 +8,15 @@ use tempfile::TempDir;
 
 use super::cli::ErrorKind;
 use super::commit_detail::ChangeStatus;
-use super::ops::{Area, OpCtx, stage_hunk, stage_paths, unstage_hunk, unstage_paths, working_diff};
+use super::ops::{
+    Area, OpCtx, stage_hunk, stage_lines, stage_paths, unstage_hunk, unstage_lines, unstage_paths,
+    working_diff,
+};
 use super::status::FileState;
 use super::status_tests::{init_repo, write};
 use super::store::RepoStores;
 use super::tests::git;
+use super::text_diff::LineKind;
 
 pub(super) fn numbered(count: usize) -> String {
     (1..=count).map(|n| format!("line {n}\n")).collect()
@@ -519,4 +523,168 @@ fn writes_of_the_app_run_one_at_a_time() {
             pair[1].command
         );
     }
+}
+
+// ---------- single lines ----------
+
+/// Indices, in the first hunk of a file, of the lines of a kind whose text is `text`.
+fn line_index(ctx: &OpCtx, path: &str, area: Area, kind: LineKind, text: &str) -> (String, usize) {
+    let diff = working_diff(ctx, path, None, area, false).unwrap();
+    let hunk = &diff.hunks[0];
+    let at = hunk
+        .lines
+        .iter()
+        .position(|l| l.kind == kind && l.text == text)
+        .unwrap_or_else(|| panic!("no {kind:?} line {text:?}"));
+    (hunk.id.clone(), at)
+}
+
+fn index_text(dir: &Path, path: &str) -> String {
+    text_out(dir, &["show", &format!(":{path}")])
+}
+
+#[test]
+fn stages_only_the_added_line_and_keeps_the_removed_one() {
+    let original = numbered(10);
+    let tmp = repo_with(&[("f.txt", &original)]);
+    let dir = tmp.path();
+    // Line 6 is replaced: one line removed, one added, in the same hunk.
+    write(dir, "f.txt", replace_line(&original, 6, "six"));
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+
+    let (id, add) = line_index(&ctx, "f.txt", Area::Unstaged, LineKind::Add, "six");
+    stage_lines(&ctx, "f.txt", &id, &[add]).unwrap();
+
+    let expected = original.replace("line 6\n", "line 6\nsix\n");
+    assert_eq!(index_text(dir, "f.txt"), expected);
+    assert_eq!(
+        fs::read_to_string(dir.join("f.txt")).unwrap(),
+        replace_line(&original, 6, "six"),
+        "the working tree is untouched"
+    );
+}
+
+#[test]
+fn stages_only_the_removed_line() {
+    let original = numbered(10);
+    let tmp = repo_with(&[("f.txt", &original)]);
+    let dir = tmp.path();
+    write(dir, "f.txt", replace_line(&original, 6, "six"));
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+
+    let (id, delete) = line_index(&ctx, "f.txt", Area::Unstaged, LineKind::Delete, "line 6");
+    stage_lines(&ctx, "f.txt", &id, &[delete]).unwrap();
+
+    assert_eq!(index_text(dir, "f.txt"), original.replace("line 6\n", ""));
+}
+
+#[test]
+fn staging_the_two_halves_one_after_the_other_gives_the_whole_change() {
+    let original = numbered(10);
+    let tmp = repo_with(&[("f.txt", &original)]);
+    let dir = tmp.path();
+    let edited = replace_line(&original, 6, "six");
+    write(dir, "f.txt", &edited);
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+
+    let (id, add) = line_index(&ctx, "f.txt", Area::Unstaged, LineKind::Add, "six");
+    stage_lines(&ctx, "f.txt", &id, &[add]).unwrap();
+    let (id, delete) = line_index(&ctx, "f.txt", Area::Unstaged, LineKind::Delete, "line 6");
+    stage_lines(&ctx, "f.txt", &id, &[delete]).unwrap();
+
+    assert_eq!(index_text(dir, "f.txt"), edited);
+    assert!(
+        text_out(dir, &["diff"]).is_empty(),
+        "nothing is left unstaged"
+    );
+}
+
+#[test]
+fn stages_some_lines_among_several_changes() {
+    let original = numbered(12);
+    let tmp = repo_with(&[("f.txt", &original)]);
+    let dir = tmp.path();
+    // Two added lines and one removed one, close enough to share a hunk.
+    let edited = original
+        .replace("line 3\n", "line 3\nnew A\n")
+        .replace("line 5\n", "")
+        .replace("line 7\n", "line 7\nnew B\n");
+    write(dir, "f.txt", &edited);
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+
+    let (id, b) = line_index(&ctx, "f.txt", Area::Unstaged, LineKind::Add, "new B");
+    let (_, five) = line_index(&ctx, "f.txt", Area::Unstaged, LineKind::Delete, "line 5");
+    stage_lines(&ctx, "f.txt", &id, &[b, five]).unwrap();
+
+    let expected = original
+        .replace("line 5\n", "")
+        .replace("line 7\n", "line 7\nnew B\n");
+    assert_eq!(index_text(dir, "f.txt"), expected);
+}
+
+#[test]
+fn unstages_only_the_chosen_lines() {
+    let original = numbered(10);
+    let tmp = repo_with(&[("f.txt", &original)]);
+    let dir = tmp.path();
+    write(dir, "f.txt", replace_line(&original, 6, "six"));
+    git(dir, &["add", "f.txt"]);
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+
+    // Put the removed line back in the index: the added one stays staged.
+    let (id, delete) = line_index(&ctx, "f.txt", Area::Staged, LineKind::Delete, "line 6");
+    unstage_lines(&ctx, "f.txt", &id, &[delete]).unwrap();
+    assert_eq!(
+        index_text(dir, "f.txt"),
+        original.replace("line 6\n", "line 6\nsix\n")
+    );
+
+    // And now the added one: the index is the committed file again.
+    let (id, add) = line_index(&ctx, "f.txt", Area::Staged, LineKind::Add, "six");
+    unstage_lines(&ctx, "f.txt", &id, &[add]).unwrap();
+    assert_eq!(index_text(dir, "f.txt"), original);
+}
+
+#[test]
+fn a_bad_selection_or_a_stale_hunk_changes_nothing() {
+    let original = numbered(10);
+    let tmp = repo_with(&[("f.txt", &original)]);
+    let dir = tmp.path();
+    write(dir, "f.txt", replace_line(&original, 6, "six"));
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+    let (id, add) = line_index(&ctx, "f.txt", Area::Unstaged, LineKind::Add, "six");
+
+    assert!(
+        stage_lines(&ctx, "f.txt", &id, &[]).is_err(),
+        "nothing selected"
+    );
+    assert!(
+        stage_lines(&ctx, "f.txt", &id, &[0]).is_err(),
+        "a context line"
+    );
+    assert!(
+        stage_lines(&ctx, "f.txt", &id, &[999]).is_err(),
+        "out of range"
+    );
+    write(dir, "f.txt", replace_line(&original, 6, "six again"));
+    let error = stage_lines(&ctx, "f.txt", &id, &[add]).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::StaleHunk);
+    assert_eq!(index_text(dir, "f.txt"), original);
+}
+
+#[test]
+fn a_hunk_with_a_line_without_ending_is_refused_for_lines() {
+    let tmp = repo_with(&[("f.txt", "a\nb\nc")]);
+    let dir = tmp.path();
+    write(dir, "f.txt", "a\nb\nc\nd");
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+    let (id, add) = line_index(&ctx, "f.txt", Area::Unstaged, LineKind::Add, "d");
+    assert!(stage_lines(&ctx, "f.txt", &id, &[add]).is_err());
 }

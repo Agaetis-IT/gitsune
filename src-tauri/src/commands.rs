@@ -144,29 +144,24 @@ impl RepoRegistry {
     }
 }
 
-/// Shows a folder in the Finder (macOS), selecting it in its parent.
+/// Shows a folder in the file manager of the system (the Finder, Explorer...).
 #[tauri::command]
 pub fn reveal_in_finder(path: String) -> Result<(), String> {
     let path = PathBuf::from(path);
     if !path.is_dir() {
         return Err(format!("{} is not a folder", path.display()));
     }
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = std::process::Command::new("open");
-        command.arg("-R").arg(&path);
-        command
-    };
-    #[cfg(not(target_os = "macos"))]
-    let mut command = {
-        let mut command = std::process::Command::new("xdg-open");
-        command.arg(&path);
-        command
-    };
-    command
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    crate::platform::launch(&crate::platform::reveal_folder(
+        crate::platform::Os::current(),
+        &path,
+    ))
+}
+
+/// What the interface needs to know about the system: the editors and terminals it offers,
+/// what the file manager is called, whether there is a native menu bar.
+#[tauri::command]
+pub fn platform_info() -> crate::platform::PlatformInfo {
+    crate::platform::info(crate::platform::Os::current())
 }
 
 #[tauri::command]
@@ -379,6 +374,47 @@ pub async fn stage_hunk(
 ) -> Result<WorkingStatus, GitError> {
     with_ctx(&registry, &repo_id, |ctx| {
         git::stage_hunk(ctx, &path, &hunk_id)
+    })
+}
+
+/// Who wrote each line of a file, as of a commit or (without one) of the working tree.
+#[tauri::command]
+pub async fn blame_file(
+    repo_id: String,
+    commit: Option<String>,
+    path: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<git::Blame, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::blame_file(ctx, commit.as_deref(), &path)
+    })
+}
+
+/// Adds some lines of one hunk (indices into its lines) of the unstaged changes to the index.
+#[tauri::command]
+pub async fn stage_lines(
+    repo_id: String,
+    path: String,
+    hunk_id: String,
+    lines: Vec<usize>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::stage_lines(ctx, &path, &hunk_id, &lines)
+    })
+}
+
+/// Takes some lines of one hunk of the staged changes out of the index.
+#[tauri::command]
+pub async fn unstage_lines(
+    repo_id: String,
+    path: String,
+    hunk_id: String,
+    lines: Vec<usize>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::unstage_lines(ctx, &path, &hunk_id, &lines)
     })
 }
 
@@ -830,7 +866,7 @@ pub async fn open_in_editor(
     path: Option<String>,
     registry: State<'_, RepoRegistry>,
 ) -> Result<(), GitError> {
-    let app = crate::external::app_name("editor", &editor).map_err(GitError::other)?;
+    let os = crate::platform::Os::current();
     with_ctx(&registry, &repo_id, |ctx| {
         let target = match path.as_deref() {
             Some(relative) => {
@@ -838,7 +874,8 @@ pub async fn open_in_editor(
             }
             None => ctx.workdir.to_path_buf(),
         };
-        crate::external::open_with(app, &target).map_err(GitError::other)
+        let launch = crate::platform::open_editor(os, &editor, &target).map_err(GitError::other)?;
+        crate::platform::launch(&launch).map_err(GitError::other)
     })
 }
 
@@ -849,9 +886,11 @@ pub async fn open_in_terminal(
     terminal: String,
     registry: State<'_, RepoRegistry>,
 ) -> Result<(), GitError> {
-    let app = crate::external::app_name("terminal", &terminal).map_err(GitError::other)?;
+    let os = crate::platform::Os::current();
     with_ctx(&registry, &repo_id, |ctx| {
-        crate::external::open_with(app, ctx.workdir).map_err(GitError::other)
+        let launch =
+            crate::platform::open_terminal(os, &terminal, ctx.workdir).map_err(GitError::other)?;
+        crate::platform::launch(&launch).map_err(GitError::other)
     })
 }
 
@@ -880,6 +919,135 @@ pub async fn find_pull_request(
     tauri::async_runtime::spawn_blocking(move || crate::hosting::find_pull_request(&repo, &branch))
         .await
         .map_err(|error| error.to_string())?
+}
+
+/// The open pull requests of a repository with their review and build state.
+#[tauri::command]
+pub async fn list_pull_requests(
+    repo: crate::hosting::HostedRepo,
+) -> Result<crate::hosting_status::PullRequestList, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::hosting_status::list_pull_requests(&repo))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// The default branch of the repository on its host (`None` when not signed in).
+#[tauri::command]
+pub async fn default_branch(repo: crate::hosting::HostedRepo) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::hosting_create::default_branch(&repo))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// Creates a pull request on the host and returns its number.
+#[tauri::command]
+pub async fn create_pull_request(
+    repo: crate::hosting::HostedRepo,
+    request: crate::hosting_create::NewPullRequest,
+) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::hosting_create::create_pull_request(&repo, &request)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// The commits `head` has beyond `base`, oldest first.
+#[tauri::command]
+pub async fn commits_between(
+    repo_id: String,
+    base: String,
+    head: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<git::RangeCommit>, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::commits_between(ctx, &base, &head)
+    })
+}
+
+/// The authors of the repository, the most active first.
+#[tauri::command]
+pub async fn list_authors(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<git::AuthorCount>, GitError> {
+    with_ctx(&registry, &repo_id, git::list_authors)
+}
+
+/// Fetches every remote in the background, without ever asking the user anything.
+#[tauri::command]
+pub async fn auto_fetch(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<git::AutoFetchResult, GitError> {
+    with_ctx(&registry, &repo_id, git::auto_fetch)
+}
+
+/// The working trees of the repository (the main one first).
+#[tauri::command]
+pub async fn list_worktrees(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<git::Worktree>, GitError> {
+    with_ctx(&registry, &repo_id, git::list_worktrees)
+}
+
+/// Checks a branch out in a new folder.
+#[tauri::command]
+pub async fn add_worktree(
+    repo_id: String,
+    path: String,
+    branch: String,
+    new_branch: bool,
+    start: Option<String>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<(), GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::add_worktree(ctx, &path, &branch, new_branch, start.as_deref())
+    })
+}
+
+/// Removes a linked working tree; without `force` one with changes is refused.
+#[tauri::command]
+pub async fn remove_worktree(
+    repo_id: String,
+    path: String,
+    force: bool,
+    registry: State<'_, RepoRegistry>,
+) -> Result<(), GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::remove_worktree(ctx, &path, force)
+    })
+}
+
+#[tauri::command]
+pub async fn lock_worktree(
+    repo_id: String,
+    path: String,
+    lock: bool,
+    registry: State<'_, RepoRegistry>,
+) -> Result<(), GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::lock_worktree(ctx, &path, lock)
+    })
+}
+
+/// Forgets the working trees whose folder is gone.
+#[tauri::command]
+pub async fn prune_worktrees(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<(), GitError> {
+    with_ctx(&registry, &repo_id, git::prune_worktrees)
+}
+
+/// What the application can tell about its surroundings (paths, tools, ssh agent), without
+/// anything personal, for a diagnostic report.
+#[tauri::command]
+pub async fn get_diagnostics() -> Result<crate::diagnostics::Diagnostics, String> {
+    tauri::async_runtime::spawn_blocking(crate::diagnostics::collect)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Stops a running fetch, pull or push.
@@ -1033,6 +1201,34 @@ pub async fn undo_reset(
     with_ctx(&registry, &repo_id, |ctx| {
         git::undo_reset(ctx, &before, &after, snapshot.as_deref())
     })
+}
+
+/// The positions HEAD went through, newest first.
+#[tauri::command]
+pub async fn list_reflog(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<git::ReflogEntry>, GitError> {
+    with_ctx(&registry, &repo_id, git::list_reflog)
+}
+
+/// Moves the current branch back to a commit of the reflog.
+#[tauri::command]
+pub async fn restore_head(
+    repo_id: String,
+    target: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::restore_head(ctx, &target))
+}
+
+/// Takes back the last operation that moved HEAD.
+#[tauri::command]
+pub async fn undo_last(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<git::UndoResult, GitError> {
+    with_ctx(&registry, &repo_id, git::undo_last)
 }
 
 // ---------- merge and conflicts ----------

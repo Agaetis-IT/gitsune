@@ -15,7 +15,7 @@ use super::commit_detail::{
 };
 use super::status::{WorkingStatus, read_status};
 use super::store::RepoStores;
-use super::text_diff::{hunk_patch, is_binary, text_diff};
+use super::text_diff::{LineMode, LinePatchError, hunk_patch, is_binary, line_patch, text_diff};
 
 /// What the operations need to know about an open repository.
 pub struct OpCtx<'a> {
@@ -167,6 +167,67 @@ pub fn unstage_hunk(ctx: &OpCtx, path: &str, hunk_id: &str) -> Result<WorkingSta
         ));
     }
     let patch = hunk_patch(path, &committed, &staged, hunk_id).ok_or_else(stale)?;
+    apply_patch(ctx, patch, true)?;
+    ctx.status()
+}
+
+fn line_error(error: LinePatchError) -> GitError {
+    match error {
+        LinePatchError::Stale => stale(),
+        LinePatchError::BadSelection => {
+            GitError::other("Select at least one added or removed line.")
+        }
+        LinePatchError::NoEol => GitError::other(
+            "A line of this hunk has no line ending: stage or unstage the whole hunk instead.",
+        ),
+    }
+}
+
+/// Adds some lines (indices into the lines of a hunk) of the unstaged changes to the index.
+pub fn stage_lines(
+    ctx: &OpCtx,
+    path: &str,
+    hunk_id: &str,
+    lines: &[usize],
+) -> Result<WorkingStatus, GitError> {
+    check_paths(&[path.to_string()])?;
+    let _write = ctx.stores.begin_write()?;
+    let old = ctx.blob(&format!(":0:{path}"))?.ok_or_else(|| {
+        GitError::other("This file is not tracked yet: stage the whole file instead.")
+    })?;
+    let new = worktree_file(ctx, path)?
+        .ok_or_else(|| GitError::other("The file no longer exists: stage its deletion instead."))?;
+    if is_binary(&old) || is_binary(&new) {
+        return Err(GitError::other(
+            "Binary files can only be staged as a whole.",
+        ));
+    }
+    let patch =
+        line_patch(path, &old, &new, hunk_id, lines, LineMode::Stage).map_err(line_error)?;
+    apply_patch(ctx, patch, false)?;
+    ctx.status()
+}
+
+/// Takes some lines of the staged changes of a file out of the index.
+pub fn unstage_lines(
+    ctx: &OpCtx,
+    path: &str,
+    hunk_id: &str,
+    lines: &[usize],
+) -> Result<WorkingStatus, GitError> {
+    check_paths(&[path.to_string()])?;
+    let _write = ctx.stores.begin_write()?;
+    let staged = ctx
+        .blob(&format!(":0:{path}"))?
+        .ok_or_else(|| GitError::other("The file is not in the index."))?;
+    let committed = ctx.blob(&format!("HEAD:{path}"))?.unwrap_or_default();
+    if is_binary(&committed) || is_binary(&staged) {
+        return Err(GitError::other(
+            "Binary files can only be unstaged as a whole.",
+        ));
+    }
+    let patch = line_patch(path, &committed, &staged, hunk_id, lines, LineMode::Unstage)
+        .map_err(line_error)?;
     apply_patch(ctx, patch, true)?;
     ctx.status()
 }
