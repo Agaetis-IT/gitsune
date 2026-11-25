@@ -1,5 +1,5 @@
 import { computed, ref, shallowReactive, shallowRef } from "vue";
-import type { GraphRow, RefInfo, RefKind } from "@/lib/api";
+import type { CommitDetail, FileChange, FileDiff, GraphRow, RefInfo, RefKind } from "@/lib/api";
 import { type GraphSource, type RepoBackend } from "@/lib/backend";
 import type { Density } from "@/lib/metro/metrics";
 import { createRecentStore, type RecentRepo, type RecentStore } from "@/lib/recents";
@@ -23,7 +23,16 @@ export interface RepoTab {
   scrollTop: number;
   /** Incremented for each graph request so late answers can be ignored. */
   request: number;
+  /** Message and files of the selected commit. */
+  detail: CommitDetail | null;
+  detailLoading: boolean;
+  detailError: string;
+  detailRequest: number;
+  /** File whose diff is shown in place of the graph. */
+  openFile: FileChange | null;
 }
+
+export type DiffMode = "unified" | "split";
 
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -32,6 +41,7 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
   const tabs = shallowRef<RepoTab[]>([]);
   const activeId = ref<string | null>(null);
   const density = ref<Density>("compact");
+  const diffMode = ref<DiffMode>("unified");
   const recentRepos = ref<RecentRepo[]>(recents.list());
   /** Last error of an open attempt that did not produce a tab. */
   const openError = ref("");
@@ -47,8 +57,7 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
       const source = await backend.graph(tab.id, [...tab.hidden]);
       if (request !== tab.request) return;
       tab.source = source;
-      tab.selected = null;
-      tab.selectedCommit = null;
+      clearSelection(tab);
       tab.scrollTop = 0;
     } catch (error) {
       if (request !== tab.request) return;
@@ -84,6 +93,11 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
         selectedCommit: null,
         scrollTop: 0,
         request: 0,
+        detail: null,
+        detailLoading: false,
+        detailError: "",
+        detailRequest: 0,
+        openFile: null,
       });
       tabs.value = [...tabs.value, tab];
       activeId.value = tab.id;
@@ -144,9 +158,55 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
     return setHidden(tab, names, !allHidden);
   }
 
+  function clearSelection(tab: RepoTab): void {
+    tab.selected = null;
+    tab.selectedCommit = null;
+    tab.detail = null;
+    tab.detailLoading = false;
+    tab.detailError = "";
+    tab.detailRequest++;
+    tab.openFile = null;
+  }
+
+  async function loadDetail(tab: RepoTab, commitId: string): Promise<void> {
+    const request = ++tab.detailRequest;
+    tab.detail = null;
+    tab.detailLoading = true;
+    tab.detailError = "";
+    try {
+      const detail = await backend.commitDetail(tab.id, commitId);
+      if (request === tab.detailRequest) tab.detail = detail;
+    } catch (error) {
+      if (request === tab.detailRequest) tab.detailError = message(error);
+    } finally {
+      if (request === tab.detailRequest) tab.detailLoading = false;
+    }
+  }
+
+  /**
+   * Selects a row. The commit may arrive in a second call once its row is loaded; the details
+   * (message, files) are then fetched. Selecting another commit closes the open diff.
+   */
   function select(tab: RepoTab, row: number | null, commit: GraphRow | null = null): void {
-    tab.selected = row;
-    tab.selectedCommit = row === null ? null : commit;
+    if (row === null) return clearSelection(tab);
+    if (row !== tab.selected) {
+      clearSelection(tab);
+      tab.selected = row;
+    }
+    if (commit && tab.selectedCommit?.id !== commit.id) {
+      tab.selectedCommit = commit;
+      void loadDetail(tab, commit.id);
+    }
+  }
+
+  const openFile = (tab: RepoTab, file: FileChange | null): void => {
+    tab.openFile = file;
+  };
+
+  /** Diff of the open file of the selected commit. */
+  function fileDiff(tab: RepoTab, force = false): Promise<FileDiff> {
+    if (!tab.selectedCommit || !tab.openFile) return Promise.reject(new Error("no file selected"));
+    return backend.fileDiff(tab.id, tab.selectedCommit.id, tab.openFile, force);
   }
 
   function forgetRecent(path: string): void {
@@ -158,6 +218,7 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
     activeId,
     active,
     density,
+    diffMode,
     recentRepos,
     openError,
     opening,
@@ -168,6 +229,8 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
     toggleRef,
     toggleKind,
     select,
+    openFile,
+    fileDiff,
     forgetRecent,
   };
 }

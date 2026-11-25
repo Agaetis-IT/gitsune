@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import type { GraphMeta, RefInfo, RepoInfo } from "@/lib/api";
+import type {
+  CommitDetail,
+  FileChange,
+  FileDiff,
+  GraphMeta,
+  GraphRow,
+  RefInfo,
+  RepoInfo,
+} from "@/lib/api";
 import type { GraphSource, RepoBackend } from "@/lib/backend";
 import { createRecentStore } from "@/lib/recents";
 import { createWorkspace } from "./useWorkspace";
@@ -37,6 +45,55 @@ const emptyMeta = (total: number): GraphMeta => ({
   layoutMs: 0,
 });
 
+const detailFor = (id: string): CommitDetail => ({
+  id,
+  parents: [],
+  authorName: "Alice Fakename",
+  authorEmail: "alice@example.invalid",
+  authorTime: 1_577_836_800,
+  message: `message of ${id}`,
+  files: [FILE],
+  filesTruncated: false,
+});
+
+const diffFor = (_id: string, file: FileChange, force: boolean): FileDiff => ({
+  path: file.path,
+  oldPath: file.oldPath,
+  status: file.status,
+  binary: false,
+  submodule: false,
+  tooLarge: !force,
+  canForce: true,
+  truncated: false,
+  oldSize: null,
+  newSize: null,
+  additions: 0,
+  deletions: 0,
+  hunks: [],
+});
+
+const FILE: FileChange = {
+  path: "src/a.ts",
+  oldPath: null,
+  status: "modified",
+  additions: 1,
+  deletions: 1,
+  binary: false,
+};
+
+const commitRow = (row: number): GraphRow => ({
+  row,
+  id: `id-${row}`,
+  parents: [],
+  summary: `commit ${row}`,
+  author: "Alice Fakename",
+  time: 1_577_836_800,
+  col: 0,
+  lane: 0,
+  edges: [],
+  refs: [],
+});
+
 const lastOf = <T>(items: T[]): T | undefined => items[items.length - 1];
 
 function fakeBackend(overrides: Partial<RepoBackend> = {}) {
@@ -45,6 +102,8 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
     pickFolder: async () => null,
     open: async (path) => ({ info: infoFor(path), refs: REFS }),
     close: vi.fn(async () => {}),
+    commitDetail: async (_repoId, id) => detailFor(id),
+    fileDiff: async (_repoId, id, file, force) => diffFor(id, file, force),
     graph: async (id, hidden) => {
       graphCalls.push({ id, hidden });
       const source: GraphSource = {
@@ -251,5 +310,119 @@ describe("hiding refs", () => {
 
     expect(tab.source?.meta.total).toBe(98);
     expect(tab.loading).toBe(false);
+  });
+});
+
+describe("commit details and open file", () => {
+  it("loads the details of the selected commit", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+
+    workspace.select(tab, 3); // the row is selected before its commit is known
+    expect(tab.detail).toBeNull();
+    workspace.select(tab, 3, commitRow(3));
+    expect(tab.detailLoading).toBe(true);
+    await vi.waitFor(() => expect(tab.detail?.id).toBe("id-3"));
+    expect(tab.detail?.message).toBe("message of id-3");
+    expect(tab.detailLoading).toBe(false);
+    expect(tab.detailError).toBe("");
+  });
+
+  it("does not reload when the same commit is selected again", async () => {
+    const commitDetail = vi.fn(async (_repoId: string, id: string) => detailFor(id));
+    const { workspace } = setup({ commitDetail });
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+
+    workspace.select(tab, 3, commitRow(3));
+    await vi.waitFor(() => expect(tab.detail).not.toBeNull());
+    workspace.openFile(tab, FILE);
+    workspace.select(tab, 3); // same row, no commit: nothing changes
+    workspace.select(tab, 3, commitRow(3));
+    expect(commitDetail).toHaveBeenCalledTimes(1);
+    expect(tab.openFile).toEqual(FILE);
+  });
+
+  it("clears the details and closes the diff when another commit is selected", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+    workspace.select(tab, 3, commitRow(3));
+    await vi.waitFor(() => expect(tab.detail).not.toBeNull());
+    workspace.openFile(tab, FILE);
+
+    workspace.select(tab, 4);
+    expect(tab.detail).toBeNull();
+    expect(tab.openFile).toBeNull();
+    expect(tab.selectedCommit).toBeNull();
+
+    workspace.select(tab, null);
+    expect(tab.selected).toBeNull();
+  });
+
+  it("ignores details that arrive after another commit was selected", async () => {
+    const answers = new Map<string, (detail: CommitDetail) => void>();
+    const { workspace } = setup({
+      commitDetail: (_repoId, id) => new Promise((resolve) => answers.set(id, resolve)),
+    });
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+
+    workspace.select(tab, 1, commitRow(1));
+    workspace.select(tab, 2, commitRow(2));
+    answers.get("id-2")?.(detailFor("id-2"));
+    await vi.waitFor(() => expect(tab.detail?.id).toBe("id-2"));
+    answers.get("id-1")?.(detailFor("id-1")); // late answer for the first commit
+    await Promise.resolve();
+    expect(tab.detail?.id).toBe("id-2");
+    expect(tab.detailLoading).toBe(false);
+  });
+
+  it("reports a failure to read the details", async () => {
+    const { workspace } = setup({
+      commitDetail: async () => {
+        throw new Error("cannot read commit");
+      },
+    });
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+    workspace.select(tab, 1, commitRow(1));
+    await vi.waitFor(() => expect(tab.detailError).toBe("cannot read commit"));
+    expect(tab.detail).toBeNull();
+    expect(tab.detailLoading).toBe(false);
+  });
+
+  it("asks the backend for the diff of the open file, and only when there is one", async () => {
+    const fileDiff = vi.fn(async (_r: string, id: string, file: FileChange, force: boolean) =>
+      diffFor(id, file, force),
+    );
+    const { workspace } = setup({ fileDiff });
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+
+    await expect(workspace.fileDiff(tab)).rejects.toThrow("no file selected");
+    workspace.select(tab, 5, commitRow(5));
+    workspace.openFile(tab, FILE);
+    const diff = await workspace.fileDiff(tab, true);
+    expect(diff.tooLarge).toBe(false);
+    expect(fileDiff).toHaveBeenCalledWith("/fake/a", "id-5", FILE, true);
+
+    workspace.openFile(tab, null);
+    expect(tab.openFile).toBeNull();
+  });
+
+  it("drops the selection when the graph is rebuilt", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+    workspace.select(tab, 3, commitRow(3));
+    await vi.waitFor(() => expect(tab.detail).not.toBeNull());
+    workspace.openFile(tab, FILE);
+
+    await workspace.toggleRef(tab, "refs/heads/feature/x");
+    expect(tab.selected).toBeNull();
+    expect(tab.detail).toBeNull();
+    expect(tab.openFile).toBeNull();
   });
 });

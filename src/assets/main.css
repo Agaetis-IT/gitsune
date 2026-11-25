@@ -125,3 +125,90 @@
     @apply font-sans;
   }
 }
+
+/* Syntax highlighting inside diffs (highlight.js classes). */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-section {
+  color: oklch(0.52 0.2 300);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+  color: oklch(0.5 0.13 150);
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-variable.constant_ {
+  color: oklch(0.55 0.15 50);
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: oklch(0.5 0.15 255);
+}
+.hljs-type,
+.hljs-built_in,
+.hljs-title.class_,
+.hljs-attr,
+.hljs-property {
+  color: oklch(0.52 0.12 200);
+}
+.hljs-comment,
+.hljs-quote,
+.hljs-meta {
+  color: oklch(0.55 0 0);
+  font-style: italic;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 700;
+}
+.dark .hljs-keyword,
+.dark .hljs-selector-tag,
+.dark .hljs-literal,
+.dark .hljs-doctag,
+.dark .hljs-section {
+  color: oklch(0.75 0.14 300);
+}
+.dark .hljs-string,
+.dark .hljs-regexp,
+.dark .hljs-addition,
+.dark .hljs-attribute,
+.dark .hljs-meta .hljs-string {
+  color: oklch(0.78 0.13 150);
+}
+.dark .hljs-number,
+.dark .hljs-symbol,
+.dark .hljs-bullet,
+.dark .hljs-variable.constant_ {
+  color: oklch(0.8 0.12 60);
+}
+.dark .hljs-title,
+.dark .hljs-title.function_,
+.dark .hljs-name,
+.dark .hljs-selector-id,
+.dark .hljs-selector-class {
+  color: oklch(0.78 0.12 250);
+}
+.dark .hljs-type,
+.dark .hljs-built_in,
+.dark .hljs-title.class_,
+.dark .hljs-attr,
+.dark .hljs-property {
+  color: oklch(0.8 0.1 195);
+}
+.dark .hljs-comment,
+.dark .hljs-quote,
+.dark .hljs-meta {
+  color: oklch(0.65 0 0);
+}

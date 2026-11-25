@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import CommitPanel from "@/components/CommitPanel.vue";
+import DiffView from "@/components/DiffView.vue";
 import MetroGraph from "@/components/graph/MetroGraph.vue";
 import RepoSidebar from "@/components/RepoSidebar.vue";
 import TabBar from "@/components/TabBar.vue";
@@ -10,7 +11,7 @@ import { useWorkspace } from "@/composables/useWorkspace";
 import type { Density } from "@/lib/metro/metrics";
 
 const workspace = useWorkspace();
-const { tabs, active, activeId, density, recentRepos, openError, opening } = workspace;
+const { tabs, active, activeId, density, diffMode, recentRepos, openError, opening } = workspace;
 
 const graph = ref<InstanceType<typeof MetroGraph>>();
 const densities: Density[] = ["compact", "detailed"];
@@ -87,11 +88,28 @@ const densities: Density[] = ["compact", "detailed"];
                   : "The graph is not available."
             }}
           </p>
+          <DiffView
+            v-if="active.openFile && active.selectedCommit"
+            :key="`${active.selectedCommit.id}:${active.openFile.path}`"
+            v-model:mode="diffMode"
+            class="absolute inset-0 z-20"
+            :file="active.openFile"
+            :commit-id="active.selectedCommit.id"
+            :load="(force) => workspace.fileDiff(active!, force)"
+            @close="workspace.openFile(active, null)"
+          />
         </div>
       </main>
 
       <div class="w-80 shrink-0 border-l">
-        <CommitPanel :commit="active.selectedCommit" />
+        <CommitPanel
+          :commit="active.selectedCommit"
+          :detail="active.detail"
+          :loading="active.detailLoading"
+          :error="active.detailError"
+          :open-path="active.openFile?.path ?? null"
+          @open-file="workspace.openFile(active, $event)"
+        />
       </div>
     </div>
 
