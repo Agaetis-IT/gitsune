@@ -172,6 +172,8 @@ export const MAX_PAGE_SIZE = 1000;
 export interface RemoteUrl {
   name: string;
   url: string;
+  /** The real host of the address, with an SSH alias replaced by its HostName. */
+  host?: string | null;
 }
 
 /** What the lookup of the pull request of a branch found. */

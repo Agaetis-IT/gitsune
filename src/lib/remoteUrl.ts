@@ -26,9 +26,10 @@ const clean = (parts: string[]): string[] => parts.map(decode).filter((p) => p.l
 
 /**
  * Reads the URL of a remote, in any of the shapes git accepts (https, `git@host:path`,
- * `ssh://`). Returns `null` for a host the app does not know.
+ * `ssh://`). `resolvedHost` is the host the address really points to when the URL uses an SSH
+ * alias. Returns `null` for a host the app does not know.
  */
-export function parseRemoteUrl(url: string): HostedRepo | null {
+export function parseRemoteUrl(url: string, resolvedHost?: string | null): HostedRepo | null {
   const text = url.trim();
   let host: string;
   let path: string;
@@ -47,6 +48,7 @@ export function parseRemoteUrl(url: string): HostedRepo | null {
     host = parsed.hostname.toLowerCase();
     path = parsed.pathname;
   }
+  if (resolvedHost) host = resolvedHost.toLowerCase();
   const parts = clean(path.split("/"));
 
   if (host === "github.com" || host === "www.github.com") {
@@ -112,13 +114,13 @@ export function pullRequestUrl(repo: HostedRepo, id: number): string {
 
 /** The repository of the first remote with a known host, preferring `origin`. */
 export function pickHostedRepo(
-  remotes: ReadonlyArray<{ name: string; url: string }>,
+  remotes: ReadonlyArray<{ name: string; url: string; host?: string | null }>,
 ): { remote: string; repo: HostedRepo } | null {
   const ordered = [...remotes].sort(
     (a, b) => Number(b.name === "origin") - Number(a.name === "origin"),
   );
   for (const remote of ordered) {
-    const repo = parseRemoteUrl(remote.url);
+    const repo = parseRemoteUrl(remote.url, remote.host);
     if (repo) return { remote: remote.name, repo };
   }
   return null;

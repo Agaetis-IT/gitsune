@@ -568,6 +568,33 @@ fn remote_urls_lists_each_remote_once_with_its_fetch_address() {
     assert_eq!(urls[0].url, "git@ssh.dev.azure.com:v3/o/p/r");
     assert_eq!(urls[1].name, "origin");
     assert_eq!(urls[1].url, remote.path().to_string_lossy());
+    assert_eq!(urls[0].host.as_deref(), Some("ssh.dev.azure.com"));
+}
+
+#[test]
+fn host_of_url_reads_every_shape_of_address() {
+    assert_eq!(
+        host_of_url("git@work-github:team/tool.git").as_deref(),
+        Some("work-github")
+    );
+    assert_eq!(
+        host_of_url("ssh://git@Host.Example:2222/team/app.git").as_deref(),
+        Some("host.example")
+    );
+    assert_eq!(
+        host_of_url("https://user@github.com/acme/tool").as_deref(),
+        Some("github.com")
+    );
+    assert_eq!(host_of_url("/local/path/repo"), None);
+    assert_eq!(host_of_url("file:///tmp/repo"), None);
+    assert_eq!(host_of_url("git@host:path://odd"), Some("host".to_string()));
+}
+
+#[test]
+fn an_ssh_alias_that_is_not_valid_is_returned_untouched() {
+    // Never handed to ssh: a name starting with a dash would be read as an option.
+    assert_eq!(resolve_ssh_host("-oProxyCommand=x"), "-oProxyCommand=x");
+    assert_eq!(resolve_ssh_host(""), "");
 }
 
 #[test]

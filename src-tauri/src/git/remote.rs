@@ -71,6 +71,9 @@ pub fn list_remotes(ctx: &OpCtx) -> Result<Vec<String>, GitError> {
 pub struct RemoteUrl {
     pub name: String,
     pub url: String,
+    /// The host the address points to. An SSH alias (`git@work-github:…`) is replaced by the
+    /// host its configuration names, so the hosting service can be found. `None` for a local path.
+    pub host: Option<String>,
 }
 
 /// The remotes and their fetch addresses.
@@ -78,7 +81,13 @@ pub fn remote_urls(ctx: &OpCtx) -> Result<Vec<RemoteUrl>, GitError> {
     let output = ctx
         .runner()
         .run(ctx.workdir, &["remote", "-v"], RunOptions::background())?;
-    Ok(parse_remote_urls(&output.stdout_text()))
+    let mut urls = parse_remote_urls(&output.stdout_text());
+    for remote in &mut urls {
+        if !is_web_address(&remote.url) {
+            remote.host = remote.host.as_deref().map(resolve_ssh_host);
+        }
+    }
+    Ok(urls)
 }
 
 /// Reads `git remote -v`: `name<TAB>url (fetch)` lines (the push lines are the same address
@@ -93,13 +102,67 @@ pub fn parse_remote_urls(text: &str) -> Vec<RemoteUrl> {
             continue;
         };
         if !urls.iter().any(|known| known.name == name) {
+            let url = url.trim().to_string();
             urls.push(RemoteUrl {
                 name: name.to_string(),
-                url: url.trim().to_string(),
+                host: host_of_url(&url),
+                url,
             });
         }
     }
     urls
+}
+
+fn is_web_address(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// The host an address points to: `https://host/…`, `ssh://user@host:port/…` or `user@host:path`.
+/// `None` for a local path.
+pub fn host_of_url(url: &str) -> Option<String> {
+    let host = match url.split_once("://") {
+        Some((scheme, rest)) if !scheme.contains(['/', ':', '@']) => {
+            let authority = rest.split('/').next()?;
+            let host_port = authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host);
+            host_port.split(':').next()?
+        }
+        _ => {
+            let (before, _) = url.split_once(':')?;
+            if before.contains('/') {
+                return None;
+            }
+            before.rsplit_once('@').map_or(before, |(_, host)| host)
+        }
+    };
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+/// The host name `ssh` uses for an alias, read from the configuration without connecting.
+/// The alias itself when it cannot be read.
+pub fn resolve_ssh_host(alias: &str) -> String {
+    if !crate::hosting::valid_host(alias) {
+        return alias.to_string();
+    }
+    let output = std::process::Command::new("ssh")
+        .args(["-G", alias])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let Ok(output) = output else {
+        return alias.to_string();
+    };
+    if !output.status.success() {
+        return alias.to_string();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("hostname "))
+        .map(|host| host.trim().to_ascii_lowercase())
+        .filter(|host| !host.is_empty())
+        .unwrap_or_else(|| alias.to_string())
 }
 
 fn finish(ctx: &OpCtx, output: RunOutput) -> Result<RemoteResult, GitError> {
