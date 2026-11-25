@@ -4,7 +4,7 @@
 //! cheap slices of that layout, completed with commit details read on demand. Because
 //! every page comes from the same layout, lanes and columns are consistent across pages.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use gix::ObjectId;
@@ -23,9 +23,19 @@ pub struct GraphCache {
     graph: CommitGraph,
     layout: Layout,
     refs_by_row: HashMap<usize, Vec<RefInfo>>,
-    refs: Vec<RefInfo>,
+    /// Visible refs with the row they point at.
+    refs: Vec<GraphRef>,
     load_ms: u128,
     layout_ms: u128,
+}
+
+/// A visible ref and the row of the commit it points at.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphRef {
+    #[serde(flatten)]
+    pub info: RefInfo,
+    pub row: usize,
 }
 
 /// What the frontend needs once, before asking for pages.
@@ -36,7 +46,8 @@ pub struct GraphMeta {
     pub total: usize,
     pub max_cols: u32,
     pub lanes: Vec<Lane>,
-    pub refs: Vec<RefInfo>,
+    /// Refs that seed the graph (hidden refs are left out).
+    pub refs: Vec<GraphRef>,
     pub load_ms: u128,
     pub layout_ms: u128,
 }
@@ -69,9 +80,18 @@ pub struct GraphPage {
     pub total: usize,
 }
 
-/// Reads and lays out the whole graph of a repository.
-pub fn build_graph_cache(repo: &ThreadSafeRepository) -> Result<GraphCache, String> {
-    let refs = list_refs(repo)?;
+/// Reads and lays out the graph of everything reachable from the refs that are not hidden.
+///
+/// `hidden` holds full ref names (`refs/heads/main`). Commits only reachable from hidden refs
+/// are left out of the graph.
+pub fn build_graph_cache(
+    repo: &ThreadSafeRepository,
+    hidden: &HashSet<String>,
+) -> Result<GraphCache, String> {
+    let refs: Vec<RefInfo> = list_refs(repo)?
+        .into_iter()
+        .filter(|r| !hidden.contains(&r.full_name))
+        .collect();
 
     let started = Instant::now();
     let graph = load_graph(repo, &refs)?;
@@ -88,12 +108,17 @@ pub fn build_graph_cache(repo: &ThreadSafeRepository) -> Result<GraphCache, Stri
         .map(|(row, id)| (*id, row))
         .collect();
     let mut refs_by_row: HashMap<usize, Vec<RefInfo>> = HashMap::new();
-    for reference in &refs {
+    let mut graph_refs = Vec::with_capacity(refs.len());
+    for reference in refs {
         let Ok(id) = ObjectId::from_hex(reference.target.as_bytes()) else {
             continue;
         };
         if let Some(&row) = row_of.get(&id) {
             refs_by_row.entry(row).or_default().push(reference.clone());
+            graph_refs.push(GraphRef {
+                info: reference,
+                row,
+            });
         }
     }
 
@@ -101,7 +126,7 @@ pub fn build_graph_cache(repo: &ThreadSafeRepository) -> Result<GraphCache, Stri
         graph,
         layout,
         refs_by_row,
-        refs,
+        refs: graph_refs,
         load_ms,
         layout_ms,
     })
