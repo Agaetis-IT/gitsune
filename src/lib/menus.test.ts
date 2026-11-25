@@ -128,7 +128,6 @@ describe("ref menu", () => {
       "merge",
       "rebase",
       "pullRequestInto",
-      "pullRequest",
       "delete",
       "highlight",
       "hide",
@@ -152,20 +151,48 @@ describe("ref menu", () => {
     expect(remote?.disabled).toBeUndefined();
   });
 
-  it("does not offer a pull request of a branch into itself, or without a branch", () => {
-    const current = refMenu(ref("feat/x", "local", true), ctx({ headBranch: "feat/x" }));
-    expect(find(current, "pullRequestInto")?.disabled).toBe("This is the current branch.");
-    const sameOnRemote = refMenu(ref("origin/feat/x", "remote"), ctx({ headBranch: "feat/x" }));
-    expect(find(sameOnRemote, "pullRequestInto")?.disabled).toBe("This is the current branch.");
+  it("does not offer a pull request into a branch without a checked-out branch", () => {
     const detached = refMenu(ref("develop", "local"), ctx({ detached: true, headBranch: null }));
     expect(find(detached, "pullRequestInto")?.disabled).toMatch(/detached/);
   });
 
-  it("a pull request can be opened from a branch even in read-only mode", () => {
-    const local = refMenu(ref("topic", "local"), ctx({ readOnly: true }));
-    expect(find(local, "pullRequest")?.disabled).toBeUndefined();
-    const remote = refMenu(ref("origin/topic", "remote"), ctx({ readOnly: true }));
-    expect(find(remote, "pullRequest")?.disabled).toBeUndefined();
+  it("the current branch has one pull request entry: open it when it exists, else create", () => {
+    const create = refMenu(ref("main", "local", true), ctx({ headBranch: "main" }));
+    expect(ids(create).filter((id) => id.startsWith("pullRequest"))).toEqual(["pullRequest"]);
+    expect(find(create, "pullRequest")?.label).toBe("Create a pull request…");
+    const open = refMenu(
+      ref("main", "local", true),
+      ctx({ headBranch: "main", hasPullRequest: true }),
+    );
+    expect(ids(open).filter((id) => id.startsWith("pullRequest"))).toEqual(["pullRequest"]);
+    expect(find(open, "pullRequest")?.label).toBe("Open the pull request");
+  });
+
+  it("another branch offers to start a pull request into it, and to open its own when it has one", () => {
+    const without = refMenu(ref("develop", "local"), ctx({ headBranch: "feat/x" }));
+    expect(ids(without).filter((id) => id.startsWith("pullRequest"))).toEqual(["pullRequestInto"]);
+    const withOne = refMenu(
+      ref("origin/develop", "remote"),
+      ctx({ headBranch: "feat/x", hasPullRequest: true }),
+    );
+    expect(ids(withOne).filter((id) => id.startsWith("pullRequest"))).toEqual([
+      "pullRequestInto",
+      "pullRequest",
+    ]);
+    expect(find(withOne, "pullRequest")?.label).toBe("Open the pull request of develop");
+  });
+
+  it("a pull request can be started or opened even in read-only mode", () => {
+    const current = refMenu(
+      ref("main", "local", true),
+      ctx({ readOnly: true, headBranch: "main" }),
+    );
+    expect(find(current, "pullRequest")?.disabled).toBeUndefined();
+    const other = refMenu(
+      ref("origin/topic", "remote"),
+      ctx({ readOnly: true, headBranch: "main" }),
+    );
+    expect(find(other, "pullRequestInto")?.disabled).toBeUndefined();
   });
 
   it("the checked-out branch cannot be merged into itself", () => {
@@ -189,7 +216,6 @@ describe("ref menu", () => {
       "merge",
       "rebase",
       "pullRequestInto",
-      "pullRequest",
       "deleteRemote",
       "hide",
       "copyName",

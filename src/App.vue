@@ -181,20 +181,24 @@ function laneOfRef(ref: RefInfo): number | null {
   return found ? found.lane : null;
 }
 
+/** The branch a pull request of this ref is made from (a remote branch without its remote). */
+const pullRequestBranchOf = (ref: RefInfo): string =>
+  ref.kind === "remote" ? ref.name.slice(ref.name.indexOf("/") + 1) : ref.name;
+
 function openRefMenu(ref: RefInfo, x: number, y: number, commitId: string | null) {
   const tab = active.value;
   if (!tab) return;
   const lane = laneOfRef(ref);
   menu.value = {
     target: { kind: "ref", ref, commitId },
-    items: refMenu(
-      ref,
-      menuContext(
+    items: refMenu(ref, {
+      ...menuContext(
         lane !== null,
         lane !== null && tab.highlightLane === lane,
         tab.hidden.has(ref.fullName),
       ),
-    ),
+      hasPullRequest: tab.pullRequests.some((pr) => pr.branch === pullRequestBranchOf(ref)),
+    }),
     x,
     y,
   };

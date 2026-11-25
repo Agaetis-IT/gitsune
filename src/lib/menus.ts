@@ -30,6 +30,8 @@ export interface MenuContext {
   pullRequestTarget?: string | null;
   /** The checked-out branch, the source of a pull request made from a menu. */
   headBranch?: string | null;
+  /** The branch the menu is about already has a pull request. */
+  hasPullRequest?: boolean;
 }
 
 /**
@@ -122,20 +124,32 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
   const openTicket: MenuItem[] = ticket
     ? [{ id: "openTicket", label: `Open ticket ${ticket}` }]
     : [];
-  // A pull request from the current branch into the branch that was clicked.
+  // On the current branch there is one entry: open its pull request, or start one. On another
+  // branch a pull request can be started from the current branch into it, and its own pull
+  // request, when it has one, can be opened.
   const isCurrent =
     (ref.kind === "local" && ref.isHead) ||
     (ctx.headBranch != null && ctx.headBranch === branchName);
-  const pullRequestInto: MenuItem = {
-    id: "pullRequestInto",
-    label: `Create a pull request into ${branchName}…`,
-    separatorBefore: true,
-    disabled: ctx.detached
-      ? "HEAD is detached: check out a branch first."
-      : isCurrent
-        ? "This is the current branch."
-        : undefined,
-  };
+  const hasPullRequest = ctx.hasPullRequest === true;
+  const pullRequestItems: MenuItem[] = isCurrent
+    ? [
+        {
+          id: "pullRequest",
+          label: hasPullRequest ? "Open the pull request" : "Create a pull request…",
+          separatorBefore: true,
+        },
+      ]
+    : [
+        {
+          id: "pullRequestInto",
+          label: `Create a pull request into ${branchName}…`,
+          separatorBefore: true,
+          disabled: ctx.detached ? "HEAD is detached: check out a branch first." : undefined,
+        },
+        ...(hasPullRequest
+          ? [{ id: "pullRequest", label: `Open the pull request of ${branchName}` }]
+          : []),
+      ];
   const copy: MenuItem = {
     id: "copyName",
     label: "Copy the name",
@@ -162,8 +176,7 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
         label: `Rebase the current branch onto ${ref.name}…`,
         disabled: ref.isHead ? "This is the current branch." : undefined,
       }),
-      pullRequestInto,
-      { id: "pullRequest", label: `Open or create a pull request from ${branchName}` },
+      ...pullRequestItems,
       ...openTicket,
       write(ctx, {
         id: "delete",
@@ -180,8 +193,7 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
       write(ctx, { id: "checkout", label: "Checkout as a local branch" }),
       write(ctx, { id: "merge", label: `Merge ${ref.name} into the current branch…` }),
       write(ctx, { id: "rebase", label: `Rebase the current branch onto ${ref.name}…` }),
-      pullRequestInto,
-      { id: "pullRequest", label: `Open or create a pull request from ${branchName}` },
+      ...pullRequestItems,
       ...openTicket,
       write(ctx, {
         id: "deleteRemote",
