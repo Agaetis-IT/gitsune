@@ -1,6 +1,15 @@
 <script setup lang="ts">
-import { Archive, ArrowDown, ArrowUp, Lock, LockOpen, RefreshCw, ScrollText } from "@lucide/vue";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  Archive,
+  ArrowDown,
+  ArrowUp,
+  Crosshair,
+  Lock,
+  LockOpen,
+  RefreshCw,
+  ScrollText,
+} from "@lucide/vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import BranchDialogs from "@/components/BranchDialogs.vue";
 import ContextMenu from "@/components/ContextMenu.vue";
 import ActivityPanel from "@/components/ActivityPanel.vue";
@@ -27,9 +36,10 @@ import WelcomeScreen from "@/components/WelcomeScreen.vue";
 import WorkingPanel from "@/components/WorkingPanel.vue";
 import { useSettings } from "@/composables/useSettings";
 import { useWorkspace } from "@/composables/useWorkspace";
-import type { FileChange, Lane, RefInfo, StashEntry, StatusEntry } from "@/lib/api";
+import type { FileChange, GraphRow, Lane, RefInfo, StashEntry, StatusEntry } from "@/lib/api";
 import { commitMenu, laneMenu, type MenuItem, refMenu } from "@/lib/menus";
 import { refsOfBranch } from "@/lib/branchRefs";
+import { headSide as headSideOf, pickCheckoutRef } from "@/lib/navigation";
 import type { Density } from "@/lib/metro/metrics";
 import type { WipRow } from "@/lib/metro/draw";
 
@@ -211,6 +221,53 @@ function onMenuSelect(id: string) {
 // A menu belongs to one repository.
 watch(activeId, () => (menu.value = null));
 
+// ---------- where HEAD is ----------
+
+/** The ref HEAD points at (the checked-out branch, or the detached position). */
+const headRef = computed(() => active.value?.source?.meta.refs.find((ref) => ref.isHead) ?? null);
+const headRow = computed(() => headRef.value?.row ?? null);
+
+/** The rows in view, to tell whether HEAD is above or below. */
+const visibleRows = ref<[number, number] | null>(null);
+watch(activeId, () => (visibleRows.value = null));
+const headSide = computed(() => headSideOf(headRow.value, visibleRows.value));
+const headLabel = computed(() => active.value?.headBranch ?? "detached HEAD");
+
+function goToHead() {
+  if (headRow.value !== null) graph.value?.focusRow(headRow.value);
+}
+
+// The graph goes to HEAD when a repository is opened and whenever HEAD moves (a checkout, a
+// commit, a pull, a rebase); a refresh that only adds commits elsewhere leaves the view alone.
+const centeredOn = new Map<string, string>();
+watch(
+  () => [activeId.value, headRef.value?.target ?? null, headRow.value] as const,
+  async ([id, target, row]) => {
+    if (id === null || target === null || row === null) return;
+    if (centeredOn.get(id) === target) return;
+    centeredOn.set(id, target);
+    await nextTick();
+    graph.value?.focusRow(row);
+  },
+  { flush: "post" },
+);
+
+/** Double click: the last commit of a branch (or its label) becomes the checked-out branch. */
+function onActivate(target: { commit: GraphRow; ref: RefInfo | null }) {
+  const tab = active.value;
+  if (!tab) return;
+  const choice = pickCheckoutRef(target.ref ? [target.ref] : target.commit.refs);
+  if (!choice) return;
+  if (choice.kind === "local" && choice.isHead) {
+    workspace.notify("info", `You are already on ${choice.name}.`);
+    return;
+  }
+  void workspace.checkout(tab, {
+    kind: choice.kind === "local" ? "branch" : "remote",
+    name: choice.name,
+  });
+}
+
 /** The working tree row pinned above the graph. */
 const wipRow = computed<WipRow | null>(() => {
   const tab = active.value;
@@ -340,6 +397,16 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
               @step="stepMatch"
               @clear="workspace.clearSearch(active)"
             />
+            <Button
+              size="sm"
+              variant="outline"
+              :disabled="headRow === null"
+              :title="`Scroll the graph to where you are (${headLabel})`"
+              @click="goToHead"
+            >
+              <Crosshair class="size-3.5" />
+              Go to HEAD
+            </Button>
             <div class="flex gap-1" role="group" aria-label="Remotes">
               <Button
                 size="sm"
@@ -465,15 +532,27 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             :highlight-lane="active.highlightLane"
             :matches="active.search.rows"
             :wip="wipRow"
+            :head-row="headRow"
             @wip-click="workspace.selectWip(active)"
             @lane-click="lanePopover = $event"
             @context-menu="onGraphMenu"
+            @activate="onActivate"
+            @range="(first, last) => (visibleRows = [first, last])"
             @update:selected="workspace.select(active, $event)"
             @update:scroll-top="active.scrollTop = $event"
             @update:top-commit="active.topAnchor = $event"
             @select="workspace.select(active, $event.row, $event)"
             @error="active.error = $event"
           />
+          <button
+            v-if="headSide"
+            class="bg-primary text-primary-foreground absolute left-1/2 z-10 -translate-x-1/2 rounded-full px-3 py-1 text-xs shadow-md"
+            :class="headSide === 'above' ? 'top-12' : 'bottom-3'"
+            :title="`You are on ${headLabel}: click to go there`"
+            @click="goToHead"
+          >
+            {{ headSide === "above" ? "↑" : "↓" }} HEAD · {{ headLabel }}
+          </button>
           <LanePopover
             v-if="lanePopover && active.source"
             :lane="lanePopover.lane"

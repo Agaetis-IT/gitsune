@@ -139,9 +139,10 @@ pub fn rebase_plan(ctx: &OpCtx, onto: &str) -> Result<RebasePlan, GitError> {
         })
         .collect();
     let merges = count(ctx, &["--merges", &range])?;
-    let upstream = ctx.status()?.upstream;
-    let pushed = match upstream {
-        Some(upstream) if !commits.is_empty() => {
+    // The upstream may be gone (its branch was deleted on the server after a merged pull
+    // request): then nothing can be said to be on it, and that must not stop the rebase.
+    let pushed = match ctx.status()?.upstream {
+        Some(upstream) if !commits.is_empty() && resolve(ctx, &upstream).is_ok() => {
             let total = count(ctx, &["--no-merges", &range])?;
             let unpushed = count(ctx, &["--no-merges", &range, "--not", &upstream])?;
             total.saturating_sub(unpushed)

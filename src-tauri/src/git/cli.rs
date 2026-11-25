@@ -186,6 +186,7 @@ impl Runner<'_> {
         if options.background {
             command.env("GIT_OPTIONAL_LOCKS", "0");
         }
+        command.env("PATH", tool_path());
         for (key, value) in self.env {
             command.env(key, value);
         }
@@ -505,6 +506,33 @@ impl Runner<'_> {
         }
         Err(error_from(&output))
     }
+}
+
+/// Folders where the tools git calls (hooks, `gpg`, `ssh`, `node`...) usually are on a Mac.
+const COMMON_TOOL_DIRS: [&str; 4] = [
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+];
+
+/// `path` with the usual tool folders added at the end when they are missing. An application
+/// started from the Finder gets a short `PATH` without them, so hooks and commit signing that
+/// work in a terminal would fail from the app (a rebase replays every commit, hooks and
+/// signing included).
+pub fn with_common_tool_dirs(path: &str) -> String {
+    let mut parts: Vec<&str> = path.split(':').filter(|p| !p.is_empty()).collect();
+    for dir in COMMON_TOOL_DIRS {
+        if !parts.contains(&dir) {
+            parts.push(dir);
+        }
+    }
+    parts.join(":")
+}
+
+fn tool_path() -> &'static str {
+    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| with_common_tool_dirs(&std::env::var("PATH").unwrap_or_default()))
 }
 
 /// The command as it would be typed.

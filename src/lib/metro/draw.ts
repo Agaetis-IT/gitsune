@@ -28,6 +28,9 @@ export interface DrawInput {
   getRow: (row: number) => GraphRow | undefined;
   selectedRow: number | null;
   hoverRow: number | null;
+  /** The commit HEAD points at: its row is tinted so the current position is always visible. */
+  headRow: number | null;
+
   /** Lane drawn in full while the others fade; `null` for no highlight. */
   highlightLane: number | null;
   /** Rows matching the current search, tinted. */
@@ -172,6 +175,20 @@ function drawBands(input: DrawInput, range: Range): void {
   }
   band(input.hoverRow, 0.05);
   band(input.selectedRow, 0.1);
+
+  // Where the user is: a tinted row with a bar in the color of its branch.
+  if (input.headRow !== null && input.headRow >= range.first && input.headRow <= range.last) {
+    const row = input.getRow(input.headRow);
+    const lane = row ? input.meta.lanes[row.lane] : undefined;
+    const color = lane ? laneColor(theme.palette, lane.color) : theme.foreground;
+    const y = rowTop(input.headRow, m) - scrollTop;
+    ctx.globalAlpha = 0.14;
+    ctx.fillStyle = color;
+    ctx.fillRect(0, y, width, m.rowH);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = color;
+    ctx.fillRect(0, y, 5, m.rowH);
+  }
 
   if (
     input.selectedRow !== null &&

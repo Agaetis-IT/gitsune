@@ -471,3 +471,144 @@ fn a_list_that_does_not_match_the_commits_is_refused_before_git_runs() {
             .all(|e| !e.command.contains("rebase"))
     );
 }
+
+// ---------- branches shaped like a team repository (pull request merges) ----------
+
+/// develop with merged pull requests; `feature` branched from an older develop and merged
+/// develop into itself once, as people do.
+fn team_repo() -> TempDir {
+    let tmp = repo_with(&[("a.txt", "base\n")]);
+    let dir = tmp.path();
+    git(dir, &["branch", "-m", "develop"]);
+    for n in 1..=3 {
+        git(dir, &["switch", "-q", "-c", &format!("pr/{n}")]);
+        commit_file(dir, &format!("pr{n}.txt"), "x\n", &format!("PR {n} work"));
+        git(dir, &["switch", "-q", "develop"]);
+        git(
+            dir,
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "-m",
+                &format!("Merged PR {n}"),
+                &format!("pr/{n}"),
+            ],
+        );
+    }
+    git(dir, &["switch", "-q", "-c", "feature", "HEAD~3"]);
+    commit_file(dir, "feature1.txt", "f1\n", "feature one");
+    git(
+        dir,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            "Merge develop into feature",
+            "develop",
+        ],
+    );
+    commit_file(dir, "feature2.txt", "f2\n", "feature two");
+    git(dir, &["switch", "-q", "develop"]);
+    commit_file(dir, "later.txt", "l\n", "later on develop");
+    git(dir, &["switch", "-q", "feature"]);
+    tmp
+}
+
+#[test]
+fn rebases_a_branch_that_contains_merges_onto_its_base_branch() {
+    let tmp = team_repo();
+    let dir = tmp.path();
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+
+    let plan = rebase_plan(&ctx, "develop").unwrap();
+    assert_eq!(plan.merges, 1);
+    let result = rebase(&ctx, "develop", None, false).unwrap();
+    assert_eq!(
+        result.outcome,
+        RebaseOutcome::Done,
+        "{:?}",
+        result.status.operation
+    );
+    assert!(dir.join("later.txt").exists());
+    assert_eq!(
+        subjects(dir, "develop..HEAD"),
+        vec!["feature one", "feature two"]
+    );
+}
+
+#[test]
+fn interactive_rebase_works_on_such_a_branch_too() {
+    let tmp = team_repo();
+    let dir = tmp.path();
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+    let ids = plan_items(&tmp, &stores, "develop");
+    let items = vec![
+        item(TodoAction::Pick, &ids[0], None),
+        item(TodoAction::Reword, &ids[1], Some("feature two, reworded")),
+    ];
+    let result = rebase(&ctx, "develop", Some(&items), false).unwrap();
+    assert_eq!(result.outcome, RebaseOutcome::Done);
+    assert_eq!(
+        subjects(dir, "develop..HEAD"),
+        vec!["feature one", "feature two, reworded"]
+    );
+}
+
+#[test]
+fn rebasing_onto_a_remote_tracking_branch_and_onto_a_commit_id_works() {
+    let tmp = team_repo();
+    let dir = tmp.path();
+    let remote = TempDir::new().unwrap();
+    git(remote.path(), &["init", "-q", "--bare", "-b", "develop"]);
+    git(
+        dir,
+        &["remote", "add", "origin", &remote.path().to_string_lossy()],
+    );
+    git(dir, &["push", "-q", "origin", "develop"]);
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+
+    let result = rebase(&ctx, "origin/develop", None, false).unwrap();
+    assert_eq!(result.outcome, RebaseOutcome::Done);
+    undo_replay(&ctx, &result.before, &result.after).unwrap();
+
+    let id = text(dir, &["rev-parse", "develop"]);
+    let result = rebase(&ctx, &id, None, false).unwrap();
+    assert_eq!(result.outcome, RebaseOutcome::Done);
+}
+
+#[test]
+fn a_branch_whose_upstream_was_deleted_on_the_remote_can_still_be_rebased() {
+    let (tmp, _ids) = diverged();
+    let dir = tmp.path();
+    let remote = TempDir::new().unwrap();
+    git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+    git(
+        dir,
+        &["remote", "add", "origin", &remote.path().to_string_lossy()],
+    );
+    git(dir, &["push", "-q", "-u", "origin", "topic"]);
+    // The pull request was merged and the branch deleted on the server; a fetch with prune
+    // removes `origin/topic` but the local branch still names it as its upstream.
+    git(remote.path(), &["branch", "-q", "-D", "topic"]);
+    git(dir, &["fetch", "-q", "--prune", "origin"]);
+    assert!(
+        text(dir, &["status", "--porcelain=v2", "--branch"])
+            .contains("branch.upstream origin/topic")
+    );
+
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+    let plan = rebase_plan(&ctx, "main").unwrap();
+    assert_eq!(plan.commits.len(), 3);
+    assert_eq!(
+        plan.pushed, 0,
+        "nothing can be said to be on a remote that is gone"
+    );
+    let result = rebase(&ctx, "main", None, false).unwrap();
+    assert_eq!(result.outcome, RebaseOutcome::Done);
+}

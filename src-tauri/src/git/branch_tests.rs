@@ -6,7 +6,7 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use super::branches::*;
-use super::cli::{ErrorKind, classify, indented_lines};
+use super::cli::{ErrorKind, classify, indented_lines, with_common_tool_dirs};
 use super::ops::{OpCtx, restore_snapshot};
 use super::ops_tests::{git_out, numbered, replace_line, repo_with};
 use super::status::FileState;
@@ -662,4 +662,23 @@ fn a_lock_held_by_another_process_stops_a_checkout_without_being_removed() {
     assert_eq!(error.kind, ErrorKind::Locked, "{error}");
     assert!(lock.exists());
     assert_eq!(current(dir), "main");
+}
+
+#[test]
+fn the_usual_tool_folders_are_added_to_a_short_path() {
+    let short = "/usr/bin:/bin";
+    let extended = with_common_tool_dirs(short);
+    assert!(extended.starts_with("/usr/bin:/bin:"), "{extended}");
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        assert!(extended.split(':').any(|p| p == dir), "{dir}");
+    }
+    // Nothing is added twice, and the order of what was there is kept.
+    assert_eq!(with_common_tool_dirs(&extended), extended);
+    assert_eq!(
+        with_common_tool_dirs("/opt/homebrew/bin:/usr/bin")
+            .matches("/opt/homebrew/bin")
+            .count(),
+        1
+    );
+    assert!(with_common_tool_dirs("").starts_with("/opt/homebrew/bin"));
 }
