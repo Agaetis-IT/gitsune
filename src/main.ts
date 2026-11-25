@@ -1,5 +1,24 @@
 import { createApp } from "vue";
 import App from "./App.vue";
+import { useGeneralSettings } from "@/composables/useGeneralSettings";
+import { usePlatform } from "@/composables/usePlatform";
+import { useWorkspace } from "@/composables/useWorkspace";
+import { isTauri, tauriBackend } from "@/lib/backend";
 import "./assets/main.css";
 
-createApp(App).mount("#app");
+async function start() {
+  // In a plain browser during development there is no Tauri backend: use recorded demo data.
+  const demo = import.meta.env.DEV && !isTauri();
+  const backend = demo
+    ? await import("@/dev/fixtureBackend").then((m) => m.createFixtureBackend())
+    : tauriBackend;
+  // The editors, the terminals and the names the system gives things are known before anything shows.
+  if (!demo) await usePlatform().load();
+  const workspace = useWorkspace(backend);
+  void workspace.watchRepos();
+  createApp(App).mount("#app");
+  if (demo) await workspace.openPath("demo-repo");
+  else if (useGeneralSettings().restoreTabs.value) await workspace.restoreSession();
+}
+
+void start();

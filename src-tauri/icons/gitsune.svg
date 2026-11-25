@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Gitsune</title>
+  <rect width="1024" height="1024" rx="224" fill="#12162e"/>
+  <g fill="none" stroke-width="40" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M512 600 L512 410 L232 130" stroke="#b57bff"/>
+      <path d="M512 600 L512 410 L792 130" stroke="#ff6b9d"/>
+      <path d="M512 600 L512 330 L380 198 L380 160" stroke="#4cc9f0"/>
+      <path d="M512 600 L512 330 L644 198 L644 160" stroke="#3ddc97"/>
+      <path d="M512 600 L512 110" stroke="#ffc247"/>
+      </g>
+  <g fill="#ffffff" stroke-width="20">
+      <circle cx="232" cy="130" r="34" stroke="#b57bff"/>
+      <circle cx="792" cy="130" r="34" stroke="#ff6b9d"/>
+      <circle cx="380" cy="160" r="34" stroke="#4cc9f0"/>
+      <circle cx="644" cy="160" r="34" stroke="#3ddc97"/>
+      <circle cx="512" cy="110" r="34" stroke="#ffc247"/>
+      </g>
+  <g transform="translate(512 590) scale(0.82) translate(-512 -529)">
+    <path d="M286 170 L430 372 L594 372 L738 170 L808 520 Q808 650 690 746 L512 888 L334 746 Q216 650 216 520 Z" fill="#f6f1e9"/>
+    <path d="M312 262 L398 382 L338 400 Z" fill="#e8423f"/>
+    <path d="M712 262 L626 382 L686 400 Z" fill="#e8423f"/>
+    <g fill="none" stroke="#e8423f" stroke-width="26" stroke-linecap="round">
+      <path d="M250 520 Q330 540 366 626"/><path d="M270 598 Q330 618 350 684"/>
+      <path d="M774 520 Q694 540 658 626"/><path d="M754 598 Q694 618 674 684"/>
+    </g>
+    <g fill="none" stroke="#1b1f3b" stroke-width="26" stroke-linecap="round">
+      <path d="M356 588 Q410 536 474 600"/><path d="M668 588 Q614 536 550 600"/>
+    </g>
+    <path d="M512 718 L478 770 L546 770 Z" fill="#1b1f3b"/>
+    <path d="M512 410 L512 468" stroke="#e8423f" stroke-width="22" stroke-linecap="round"/>
+  </g>
+</svg>

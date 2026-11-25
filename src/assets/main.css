@@ -116,6 +116,42 @@
   --sidebar-ring: oklch(0.556 0 0);
 }
 
+/*
+ * Scrollbars: wide enough to see and grab, always shown, in the colors of the theme. The
+ * system ones hide themselves and are thin and dark on dark themes.
+ */
+::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+::-webkit-scrollbar-track {
+  background: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+::-webkit-scrollbar-thumb {
+  min-height: 48px;
+  min-width: 48px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-color: color-mix(in oklab, var(--muted-foreground) 65%, transparent);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted-foreground);
+}
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--foreground);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+/* Browsers that do not know the pseudo-elements above. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: auto;
+    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 65%, transparent) transparent;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -124,4 +160,64 @@
     @apply bg-background text-foreground;
     @apply font-sans;
   }
+}
+
+/* Syntax highlighting inside diffs (highlight.js classes). The colors come from the theme
+   (`--syntax-*`, set with the rest of the theme); the values here are only a fallback. */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-section {
+  color: var(--syntax-keyword, oklch(0.52 0.2 300));
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+  color: var(--syntax-string, oklch(0.5 0.13 150));
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-variable.constant_ {
+  color: var(--syntax-number, oklch(0.55 0.15 50));
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--syntax-function, oklch(0.5 0.15 255));
+}
+.hljs-type,
+.hljs-built_in,
+.hljs-title.class_,
+.hljs-attr,
+.hljs-property {
+  color: var(--syntax-type, oklch(0.52 0.12 200));
+}
+.hljs-comment,
+.hljs-quote,
+.hljs-meta {
+  color: var(--syntax-comment, oklch(0.55 0 0));
+  font-style: italic;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 700;
+}
+
+/* Fonts and base size set by the theme; without them the defaults of the application. */
+html {
+  font-size: var(--app-font-size, 16px);
+}
+body {
+  font-family: var(--app-font-ui, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
+}
+.font-mono {
+  font-family: var(--app-font-code, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
 }

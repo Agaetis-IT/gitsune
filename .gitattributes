@@ -1,0 +1,9 @@
+# Text files are checked out with LF on every system. Without this, Git for Windows turns them into
+# CRLF and Prettier (which expects LF) reports every file.
+* text=auto eol=lf
+
+# Never touched by line-ending conversion.
+*.png binary
+*.jpg binary
+*.icns binary
+*.ico binary

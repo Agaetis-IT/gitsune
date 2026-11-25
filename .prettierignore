@@ -4,3 +4,4 @@ src-tauri/gen
 src/components/ui
 bun.lock
 SPEC.md
+src/dev

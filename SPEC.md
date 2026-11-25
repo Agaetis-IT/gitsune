@@ -1,158 +1,133 @@
-# git-hydra — Specification and Plan
+# Gitsune
 
-A personal desktop git client. v1 is read-only and centered on a "metro map" view of the commit graph.
+> **Name.** The application was called *git-hydra* and is now *Gitsune* (a kitsune, the fox of Japanese folklore that gains a tail with each century of wisdom, and git; the tails are the branches). Everything carries the new name: the window and package, the bundle identifier `io.github.simondujardin.gitsune`, the settings and session keys `gitsune:*`, the snapshot references `refs/gitsune/undo/`, the identity `gitsune <gitsune@localhost>` and the `GITSUNE_*` variables of the helper scripts. Two things were not carried over: the settings saved under the old identifier are not read (they are set again once), and the snapshots of discarded changes that an older version left under `refs/git-hydra/undo/` are still listed, restored and purged with the others, but never written.
 
-## 1. Goals and non-goals
+A desktop git client built around a **metro-style branch graph**: one colored line per branch, commits as stations, merges as interchanges. Browsing history, searching and reading diffs are complete. Writing is in too (version 2): staging by file and hunk, committing and amending, discarding, branches, checkout, tags, fetch, pull, push, stash, cherry-pick, revert, reset, merge, conflict resolution and rebase (see [SPEC.md](SPEC.md), section 12). Every change the app makes goes through the `git` binary and is listed in an activity log; a read-only switch per repository refuses all writes.
 
-**Goals (v1)**
-- Open one or more local repositories and browse their history.
-- Render the commit graph as a metro map: one colored line per branch, commits as stations.
-- Show commit details (message, author, date, changed files, diff).
-- Stay smooth on repositories up to ~100,000 commits.
-- macOS first; Windows/Linux later (Tauri makes this possible, no work now).
+Tauri 2 (Rust) + Vue 3 + TypeScript + Tailwind + shadcn-vue. macOS first.
 
-**Non-goals (v1)**
-- Any git write operation (stage, commit, push, pull, merge, rebase, checkout).
-- GitHub/GitLab/other integrations.
-- Conflict resolution.
-- Submodules and worktrees.
-- File editing.
+## Features
 
-## 2. Stack
+- Metro graph on a virtualized canvas, comfortable up to ~100,000 commits. Each station shows the initials of the author on a color of their own (the ring keeps the color of the branch; it can be switched off in Settings).
+- Tabs per repository, recent repositories, system light/dark theme.
+- Sidebar with local branches, remotes and tags, in folders by the `/` of their names (`feature/auth-18` is in `feature`; a remote's name is its first folder): close and open folders (remembered per repository), hide a branch, a folder or a group, highlight a branch, jump to its commit.
+- Click a lane in the graph to highlight or hide its branch.
+- Search commits by message, author or id: the *Search* button or Ctrl/Cmd+F opens a small box at the top right of the graph (Enter and Shift+Enter step through the matches, Esc closes it).
+- Commit details, changed files, unified and side-by-side diffs with syntax highlighting; large and binary files are handled.
+- Live refresh: commits, fetches and checkouts made in a terminal appear without losing your place; changes to the working tree show up in the status as you save files.
+- Stage files or single hunks, commit with a summary and description (hooks and signing behave as in the terminal), amend, discard changes with an undo, and an activity log of every git command the app ran.
+- Always know where you are: the row of HEAD is tinted, a _Go to HEAD_ button and an indicator at the edge of the graph take you back to it. Double-click the last commit of a branch (or its label) to switch to that branch.
+- Settings (gear at the bottom of the sidebar, or Cmd+,): choose system, light or dark, and a theme among ten (Default, GitHub, Nord, Solarized, Gruvbox, Dracula and the four Catppuccin flavors: Latte, Frappé, Macchiato, Mocha), each with a light and a dark variant that also set the colors of the graph lines. Make your own from a copy, with color pickers and a live preview, and import or export a theme as JSON.
+- Create, rename and delete branches, set upstreams, switch branches (with a stash-or-discard choice when local changes are in the way), create and delete tags, all from context menus on the graph and the sidebar; deletions can be undone.
+- Fetch, pull (merge or rebase) and push (with an optional `--force-with-lease`), with progress, cancel and password prompts through your usual credential helpers and ssh-agent.
+- A history of positions (the reflog of HEAD) in a side panel, with *Restore here* for any entry and *Undo Last Operation* (also in the Repository menu, `Cmd+Alt+Z`): a commit, merge, pull or reset goes back to the previous position, a checkout switches back, a whole rebase goes back to before it started. Both use `reset --keep`, so changes that would be overwritten make git refuse and nothing is lost; undoing again redoes.
+- Tickets (`src/lib/tickets.ts`): the number in a branch name (`type/title/5310`, `5310-title`, `title-5310`) and `AB#5310` / `#5310` in a commit message are recognised. In the commit details they are links to the work item (Azure DevOps `_workitems/edit/N`), the issue (GitHub `issues/N`) or the GitLab issue; the branch menu has *Open ticket N*. An empty commit box starts with `AB#5310 ` on Azure DevOps or `#5310 ` elsewhere (not when amending, not over text already typed, only with a known host); *Settings, General* switches it off (`gitsune:ticket-prefill`).
+- Pull request badges (`src/lib/prStatus.ts`, `src-tauri/src/hosting_status.rs`): the open pull requests of the repository are read in one go (GitHub: one GraphQL query; GitLab and Azure DevOps: the REST list, plus one build-policy request per pull request on Azure) with the tokens of `gh`, `glab` and `az`. A branch label of the graph and its row in the sidebar get one round icon: red cross for a failing build, amber cross for requested changes, amber clock for a running build, green check for a passing build or an approval, grey (draft) or blue (open) pull request icon otherwise; the tooltip says it in words, and a click opens the pull request. They are read when a tab is shown, after a fetch and on *Refresh*, at most every 30 seconds otherwise, never by polling. Without a sign-in nothing is shown; after a failed read the badges stay, grey, with one notice per session. GitLab approvals are not part of its list, so only the build is shown there; forks are left out.
+- Creating a pull request (`src-tauri/src/hosting_create.rs`, `src/components/PullRequestDialog.vue`): *Open or create a pull request* opens the existing pull request, or, when the user is signed in with the tool of the host, a dialog with the target branch (the default branch of the host, among the branches of the remote), a title (the only commit's message, or the branch name made readable, after the ticket `AB#5310` / `#5310`), a description (empty: the commits are not listed, the host shows them; on Azure DevOps it starts with `AB#N`, which links the work item), a *Draft* box and *Push first* (checked when the branch is not on the remote or is at another commit). It calls the REST API of GitHub, GitLab or Azure DevOps with the token of `gh`, `glab` or `az`; a refusal (a pull request exists, no right) stays in the dialog with the text. Afterwards a notice says so and the pull request opens in the browser. Without a sign-in, or in read-only mode, the page of the host that starts a pull request is opened as before. No reviewers are chosen: the host applies its own defaults.
+- Author focus: a selector next to *Search* (shown when the repository has several authors, read with `git log --all --format=%an`, most active first, names that differ by case, accents or spacing counted as one person) and *Focus on <author>* in the menu of a commit fade everything but that author's commits (stations, messages, labels), with the lines paler. It adds to *Highlight this branch*: a commit is in full only when it passes both. The focus is kept per tab while the app runs, not between launches. *View, Hide or Show Remote Branches* hides every remote branch (the eyes of the sidebar do the same per remote or folder). Folding long linear stretches of commits is not done.
+- Command palette (`src/lib/commandPalette.ts`, `src/components/CommandPalette.vue`): `Cmd+K` (`Ctrl+K` elsewhere, also *View, Command Palette…*) opens a box that lists every usable entry of the menu bar with its path (`Branch › Check Out › feature/x`, `File › Open Recent › …`) and its shortcut; greyed entries are not listed. The search is fuzzy on the whole path (`ck fe`), best match first; with an empty field the last five actions run come first. `Up` / `Down` choose, `Enter` runs (the same function as the menu), `Esc` closes. It works on every system, since it reads the menu model, not the native menu. Nothing is added that the menu does not offer.
+- Automatic fetch (`src-tauri/src/git/autofetch.rs`, `src/lib/autoFetch.ts`): *Settings, General, Fetch the remotes in the background* (never by default; 1, 5, 15 or 30 minutes, `gitsune:auto-fetch`) fetches every remote of every open repository while the window is shown, skipping a repository that is fetching, pulling, pushing or writing. It never asks a question: no askpass helper, no terminal prompt, ssh in batch mode with a timeout (the user's own `GIT_SSH_COMMAND` or `core.sshCommand` is kept and completed), a slow web remote is dropped after 30 seconds; what the keychain and ssh-agent know is used, anything else makes the fetch fail quietly (a small alert on the tab, no notice). The commits a local branch with an upstream is behind are counted before and after: when a tracked branch received commits one desktop notification per repository says so (`demo: 3 new commits on origin/main`), through the Tauri notification plugin, whose permission is asked once when the option is switched on (if refused, only the badge remains). A badge `↓N` on the tab counts the commits waiting to be pulled; a manual fetch or pull refreshes it. Clicking a notification does not select the tab (the desktop plugin gives no click event): click the badge.
+- Working trees (`src-tauri/src/git/worktrees.rs`, `src/components/WorktreeDialogs.vue`): a *Worktrees* group in the sidebar (shown when the repository has more than one) lists each working tree with its folder, its branch (or *detached HEAD*), *main*, a lock, a dot for uncommitted changes and *folder gone*; a click opens it in a tab (named `repo (branch)` when it is a linked working tree), the **+** creates one (an existing branch that no working tree has, or a new branch from a starting point; the folder proposed is `<repo>-<branch>` next to the repository, with a folder picker; *Open it in a tab* is checked), and the context menu has open, open in the editor or the terminal (which opens its tab first), reveal, copy the path, lock or unlock, prune (a vanished folder) and *Remove…*. Removing uses `git worktree remove`, is refused for the main one, and git's refusal (changes there) stays in the dialog until *Remove it anyway* is checked. A local branch checked out in another working tree has a small folder icon in the sidebar, and a checkout git refuses for that reason says which working tree holds it, with *Open it*. There is no move.
+- Single lines and blame (`line_patch` in `src-tauri/src/git/text_diff.rs`, `src-tauri/src/git/blame.rs`): in the unified layout of the diff of the working tree a box in the margin of each added or removed line, and one at the top of the hunk for all of them, picks lines; *Stage lines (n)* / *Unstage lines (n)* in the header of the hunk applies them with `git apply --cached --recount` on a patch where what is not picked is left as it is (a removed line stays as context, an added one is left out; the other way round for unstaging, which is applied in reverse), so the two halves of a change can be staged one after the other. A hunk that has a line without a line ending only offers the whole hunk; a changed file makes the hunk stale (refused, the diff reloads); the side-by-side layout keeps the hunk buttons only. *Blame*, in the header of the diff of a file of a commit or of the working tree (not for a deleted, binary, large or submodule file), swaps the diff for the file with, on the first line of each run of the same commit, its author, how long ago and its subject, in the color of the person as in the graph; clicking it shows that commit in the graph. It is read when asked (`git blame --porcelain`) and cut at 5000 lines.
+- Diagnostics (`src-tauri/src/diagnostics.rs`, `src/lib/diagnostics.ts`, `src/components/DiagnosticsDialog.vue`): *Diagnostics…* in the Gitsune menu (so also in the command palette) and a button in *Settings, General* open a window with a report to paste in a ticket, made each time it opens (*Refresh* makes it again, *Copy the report* copies Markdown). It lists first what looks wrong in plain words (no git, no ssh key in the agent, an agent that cannot be reached, signing on without a key or with an ssh format and no key in the agent, an installed tool the user is signed out of), then the version of the application and the system, the tools (`git`, `ssh`, `ssh-keygen`, `ssh-add`, `gh`, `glab`, `az`, `zed`, `code`) with where they were found and, for the quick ones, their version, the folders searched, the sign-in of each host, the ssh agent (named: system, 1Password, named by ssh config, environment, none, never its path), how many keys it holds (`ssh-add -l`), the signing configuration (format, on or off, key set or not) and a few settings. Nothing personal: the home folder is written `~` everywhere, and there is no account, e-mail, address of a remote, repository or branch name, and no value of a key. Nothing is written or sent; the only outside check is the sign-in state that the integrations settings already ask `gh`, `glab` and `az` for (which may reach the host to verify a token).
+- Stash (list, apply, pop, drop), cherry-pick, revert and reset (soft, mixed, hard), each with a confirmation where something is lost and an Undo.
+- The conflict resolver shows the file as *Ours* and *Theirs* side by side in one scroll (so each conflict stays level in both columns), the conflicts highlighted (amber while undecided, green on the side taken), and the *Result* underneath. Clicking a side takes it; *This one* offers Ours, Theirs, Both, Both with theirs first and Undo for the current conflict, *All* does it for every conflict. *Previous* / *Next* (`Alt+Up` / `Alt+Down`) go from conflict to conflict, scroll to it and follow it in the result (unless the result was written by hand); after the last one *Next file* opens the next conflicted file. Keys `1` to `4` choose and `0` takes the choice back, except while typing in a field. *Show base* unfolds the common ancestor of a conflict when git wrote it (`merge.conflictStyle=diff3`). - Merge (fast-forward, merge commit, squash), with a banner for any merge, cherry-pick, revert or rebase in progress (also when started in a terminal) and a conflict resolver: choose ours, theirs or both per block, edit the result, then continue, skip or abort.
+- Rebase onto a branch or a commit, plain or interactive (reorder, reword, edit, squash, fixup, drop), with a warning when commits are already on the remote and an Undo.
+- The list of an interactive rebase can be reordered by dragging a row by its handle (a bar shows the gap), with the arrows, or with `Alt+Up` / `Alt+Down` on a focused row; `P`, `R`, `E`, `S`, `F`, `D` set the action of the focused row. An *After* column shows the commits as they will be (dropped ones gone, squashed and fixed-up ones folded into the commit above, with new messages for rewords and combined squashes, "stops here" for an edit) and a line says "7 commits → 4". It is computed from the list (`previewOf`), nothing is run.
 
-| Layer | Choice |
-|---|---|
-| Shell | Tauri 2 |
-| Backend | Rust |
-| Frontend | Vue 3 + TypeScript + Tailwind + shadcn-vue |
-| Package manager / runner | Bun |
-| Git read access | `gix` or `git2` (decided during the prototype, see M1) |
-| Git write access (later) | `git` CLI (keeps hooks, SSH, credentials behaviour) |
-| FS watching | `notify` crate |
-| Tests | Rust (`cargo test`) + Vitest |
+## Requirements
 
-## 3. UI layout
+- macOS, [Bun](https://bun.sh), a Rust toolchain (edition 2024, Rust 1.85 or newer) and the Xcode command line tools.
+- `git` on the path, only for the tests and the synthetic repository generator.
 
-Three zones, per repository tab:
+## Everyday commands
 
-1. **Left sidebar** — local branches, remote branches, tags (collapsible groups, visibility toggles).
-2. **Center** — metro graph (Canvas) with a commit list aligned to the stations.
-3. **Right panel** — details of the selected commit: message, author, date, hash, parents, changed files, diff.
+```bash
+bun install
+bun run tauri dev        # the app, with hot reload
+bun run dev              # the UI alone in a browser, on recorded demo data (no Tauri needed)
+bun run check:all        # typecheck, lint, format, front tests, rustfmt, clippy, Rust tests
+bun run package          # release build: .app and .dmg under src-tauri/target/release/bundle
+```
 
-Global: tabs per repository, recent repositories list, light/dark theme following the system.
+In the plain browser mode the app shows a small invented repository. In the browser console, `__simulateRepoChange()` adds a commit on top, like the file watcher does for a real repository.
 
-## 4. Metro graph
+The release build is not signed or notarized: it runs on the machine that built it; to share it, sign it first.
 
-### 4.1 Visual identity
-Clean transit-map style, inspired by GitKraken but not copying it:
-- Thick lines, orthogonal paths with rounded corners at forks and merges.
-- Stations are white dots with a colored ring; merge commits get a distinct marker.
-- Branch labels placed at the line heads, like line names on a transit map.
-- Saturated but harmonious palette, tested in light and dark themes.
+## Large repositories
 
-### 4.2 Lane rules
-- One lane per named branch. Color is stable and derived from the branch name (hash into the palette).
-- The main line follows the **first parent**.
-- A merged branch whose ref no longer exists keeps its own lane, named from the merge commit message (e.g. "Merge branch 'x'"); if no name can be derived, it becomes an anonymous lane.
-- Commits not reachable from a named branch go on anonymous lanes (neutral color).
-- Lane assignment is deterministic: same repo state produces the same layout.
+The synthetic generator builds a repository of invented commits (fake authors, no real data):
 
-### 4.3 Interactions (v1)
-- Scroll and select a commit (updates the right panel).
-- Hover a station: tooltip with hash, message, author, date.
-- Filter/hide branches: click a lane or sidebar entry to hide or highlight it.
-- Search commits by message, author or hash, with jump to the result.
-- Zoom: switch between compact and detailed row density.
+```bash
+bun scripts/gen-synthetic-repo.ts /tmp/synth-100k 100000
+cd src-tauri
+SYNTH_REPO=/tmp/synth-100k cargo test --release -- --ignored --nocapture
+cargo test --release perf_ -- --ignored --nocapture   # status and staging on 100,000 files
+```
 
-### 4.4 Refs shown by default
-Local branches, remote branches and tags. Remotes and tags can be hidden through filters.
+The ignored tests print timings for the layout, paging, search and refresh. `docs/benchmarks/bench_git.rs` is the original `gix` vs `git2` comparison.
 
-## 5. Architecture
+## Layout of the code
 
-### 5.1 Responsibilities
-- **Rust** owns all git access, the lane layout algorithm and diff computation. The frontend never parses git data.
-- **Vue** owns the UI shell, panels, sidebar, search box and diff rendering.
-- **Canvas 2D** owns graph drawing only; it receives pre-computed geometry.
+| Path                              | What                                                                                                   |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `src-tauri/src/layout`            | Lane layout engine: topological order, lanes, connectors, names, colors                                |
+| `src-tauri/src/git`               | Read-only git access (`gix`): refs, graph cache and pages, commit details, diffs, search, file watcher |
+| `src-tauri/src/commands.rs`       | Tauri commands and the registry of open repositories                                                   |
+| `src/lib/metro`                   | Canvas renderer: geometry, drawing, palette, row cache                                                 |
+| `src/composables/useWorkspace.ts` | Application state: tabs, selection, search, refresh                                                    |
+| `src/components`                  | Vue components (graph, sidebar, commit panel, diff view...)                                            |
+| `src/dev`                         | Demo data and stand-in backend for browser development (not in production builds)                      |
+| `scripts`                         | Synthetic repository and icon generators                                                               |
 
-### 5.2 Data flow
-1. Frontend asks for a page of commits: `get_graph_page(repo_id, cursor, limit)`.
-2. Rust walks commits in topological order, assigns lanes incrementally, and returns rows:
-   `{ oid, parents, lane, lane_color, edges: [...], refs: [...], summary, author, time }`.
-3. The frontend keeps only the visible window plus a margin and requests further pages while scrolling (virtualization).
-4. Selecting a commit calls `get_commit_detail(repo_id, oid)`; file diffs are loaded per file through `get_file_diff(repo_id, oid, path)` (hunks as JSON).
+All design decisions, measurements and the milestone plan are in [SPEC.md](SPEC.md).
 
-Lane state (active lanes at the cursor) is kept in Rust per repository so that paging stays consistent without recomputing the whole history.
+## 22. Other systems: Linux and Windows
 
-### 5.3 Live refresh
-A `notify` watcher on `.git` (HEAD, `refs/`, `packed-refs`) triggers an incremental update: only new commits and changed refs are recomputed, and the frontend receives a `repo-changed` event with the affected range. Events are debounced.
+macOS is the system the application is made and tried on. The code for Linux and Windows is written and checked by a build on those systems (`.github/workflows/ci.yml`), not by hand.
 
-### 5.4 Search
-Search runs in Rust over the commit index (message, author, hash prefix). Results return oids; the frontend asks for the page containing the target and scrolls to it.
+**What changes between systems** is in `src-tauri/src/platform.rs`, as plain functions of the system (`Os`), so the three cases are tested on any machine: how an address is opened (`open`, `xdg-open`, `rundll32`), a folder shown (`open -R`, `xdg-open`, `explorer`), an editor started (`open -a` on a Mac, the command `zed`, `code`, `cursor` elsewhere, through `cmd /C` on Windows) and a terminal started in a folder (the Mac applications, GNOME Terminal, Konsole, kitty, Alacritty and xterm, Windows Terminal, PowerShell and the Command Prompt), the folders added to the `PATH` of an application that was not started from a shell (Homebrew on a Mac, `/snap/bin` and Linuxbrew on Linux, the install folders of Git, GitHub CLI and Azure CLI on Windows; the `PATH` separator is `;` there), the names a program may have as a file (`git.exe`, `git.cmd`...), and a path written for a shell (slashes). `platform_info` tells the interface which editors and terminals to offer, what the file manager is called (Finder, Explorer, the file manager) and whether there is a native menu.
 
-### 5.5 Diff
-Computed in Rust, sent as structured hunks. The Vue component renders unified and side-by-side modes with light syntax highlighting. Large or binary files are collapsed with a "load anyway" action.
+**The menu bar** is native on macOS only. Elsewhere the *Commands* button of the toolbar and `Ctrl+K` open the command palette, which lists the same actions.
 
-## 6. Performance targets
-- Open a 100k-commit repository and show the first screen in under 1 s (first page only).
-- Scrolling stays at 60 fps (only visible rows drawn).
-- Incremental refresh after a new commit under 100 ms.
-- Memory: the frontend holds a bounded window of rows, not the whole history.
+**Known limits.** The ssh agent workaround of the Finder (1Password, `IdentityAgent`) is for macOS only. On Windows git runs the helper scripts (askpass, the editors of an interactive rebase) through the `sh` of Git for Windows, so Git for Windows is needed, and a passphrase asked by ssh cannot be answered in the application (the command fails; load the key in the agent or fetch from a terminal). Packages are `deb` and `AppImage` for Linux and `nsis` for Windows, not signed (macOS: `.app` and `.dmg`, not signed nor notarized). The Windows build is experimental in the CI: its failures are shown without failing the run. Nothing was run on Linux or Windows when this was written.
 
-## 7. Testing strategy
-- **Rust unit tests** for the lane algorithm on **synthetic repositories created by script** (linear history, fork/merge, octopus merge, deleted merged branches, many parallel branches). All data is invented; no real repositories in fixtures.
-- **Rust integration tests** for paging, search and incremental refresh.
-- **Vitest** for components and the diff renderer.
-- **Performance check**: a script generates a 100k-commit synthetic repository, used for manual and benchmark runs.
-- Lint (`clippy`, `rustfmt`, ESLint) and tests run before declaring any milestone done.
+## Not included
 
-## 8. Project conventions
-- Code, comments, commit messages in English.
-- Bun for all JS tooling.
-- Work on feature branches only; commits happen only when explicitly requested.
+GitHub/GitLab integrations, submodules and worktrees, file editing.
 
-## 9. Plan
+## 17. Search box and density
 
-Each milestone ends with lint and tests passing and a short demo.
+The **search** is a *Search* button (a magnifier and the word) in the toolbar and Ctrl/Cmd+F; both open a small box floating at the top right of the graph, which closes with Esc or its close button and then clears the search; it closes when another repository is shown. The **compact / detailed** choice is gone from the toolbar: it lives in *Settings, Appearance, Graph* and is remembered (`gitsune:graph-density`); Ctrl+wheel on the graph still changes it, and the choice is saved the same way.
 
-**M0 — Scaffold**
-- `git init` on a branch (not `main`/`develop`), Tauri 2 + Vue 3 + TS + Tailwind + shadcn-vue with Bun.
-- Lint/format config, CI-less local scripts, theme (light/dark) wiring.
 
-**M1 — Git access prototype**
-- Benchmark `gix` vs `git2` on a 100k-commit synthetic repo (commit walk, ref listing, diff). Pick one and record the decision.
-- Script generating synthetic repositories (invented data).
-- Tauri commands: open repository, list refs.
+## 18. Three-column graph
 
-**M2 — Lane layout engine (Rust)**
-- Topological walk, first-parent main line, lane allocation and reuse, edge geometry (fork/merge curves).
-- Named lanes from refs, merge-message-derived names, anonymous lanes.
-- Stable color assignment.
-- Full unit-test coverage on the synthetic cases.
+The graph has three columns under a header (*Branch / tag*, *Graph*, *Commit message*): the **labels** of the branches and tags on the left, the **lanes** in the middle, the commit message on the right. A label is linked to its station by a line in the color of the branch, and every row is faintly tinted in that color.
 
-**M3 — Paged graph API**
-- `get_graph_page` with cursor, persistent lane state, row model.
-- Integration tests and the 100k benchmark.
+- **One label per branch.** `feature/x`, `origin/feature/x` and `upstream/feature/x` on one commit make a single label (`src/lib/metro/refGroups.ts`) with a laptop when the branch exists locally and one icon per remote that has it; a tag has a tag icon; the current branch has a check mark. Labels that do not fit are folded into `+N`. `origin/HEAD` is not shown.
+- **Icons per remote.** Chosen by remote name in *Settings, Graph, Remote icons* from a fixed set (Lucide outlines drawn on the canvas, `src/lib/metro/icons.ts`); the default is people for `origin`, fork for `upstream`, server for the others. Stored in `gitsune:remote-icons`.
+- **Resizable columns.** The dividers in the header are dragged (or moved with the arrow keys; double click resets): `gitsune:graph-refs-width` and `gitsune:graph-width` (the lane area fits the graph when no width is set).
+- **Optional columns** right of the message: author, date, commit id (`gitsune:graph-columns`; author and date on by default). In the detailed density, what is not in a column stays under the message.
 
-**M4 — Metro canvas renderer**
-- Canvas component with virtualized rows, line/station/label drawing in the metro style.
-- Scrolling, selection, hover tooltip, density zoom.
+## 19. Session and menu bar
 
-**M5 — App shell**
-- Three-zone layout, sidebar (branches/remotes/tags with visibility toggles), repository tabs, recent repositories, theme.
+**Session.** The open tabs, the one shown and the refs each hid are saved on every change (`gitsune:session`, `src/lib/session.ts`) and reopened in order at the next start (`restoreSession` in the workspace). A tab closed by hand is not brought back. A repository that cannot be opened any more is left out, with one notice naming it; it stays in *Recent*. Nothing is saved while the tabs are being reopened, so a partial state never replaces the session. *Settings, General, Restore the tabs at start* (on by default, `gitsune:restore-tabs`) switches it off; the session is still saved so that switching it on later works. The scroll position and the selected commit are not kept: the graph goes to HEAD as for any opening. *Recent* keeps 10 repositories and can be cleared from the menu.
 
-**M6 — Commit detail and diff**
-- `get_commit_detail`, `get_file_diff`, unified and side-by-side rendering, large/binary handling.
+**Menu bar (macOS).** The default menu is replaced by one built from `buildMenuModel` (`src/lib/appMenu.ts`, pure and tested) and set with Tauri's JS menu API (`src/lib/nativeMenu.ts`), rebuilt whenever its state changes: Gitsune (About, Settings, Quit...), File (Open, Open Recent, Close the Tab, tab switching), Edit (clipboard and undo, so text fields keep working), Repository (Fetch, Pull, Push, Undo Last Operation, Refresh, Read-only Mode, Reveal in Finder, Copy the Path), Branch (New Branch, Check Out / Merge into the Current Branch / Rebase onto as lists of the local branches, Stash), View (Search, Go to HEAD, density, Command Palette, History of Positions, Hide or Show Remote Branches, Activity Log, Full Screen), Window. Entries that make no sense are greyed: no repository, read-only mode or a write running (reading actions stay available), a remote operation running, a detached HEAD for merge and rebase. Every action calls the function the toolbar or the context menu calls. Elsewhere than macOS the window is unchanged.
 
-**M7 — Filters and search**
-- Branch hide/highlight (lane click and sidebar), commit search with jump-to-result.
+**Merges.** A merge commit is a small plain dot in the color of its branch: no initials, no ring, so that the people who did the work stand out.
 
-**M8 — Live refresh**
-- `notify` watcher, debounce, incremental recompute, `repo-changed` events, UI patching without losing scroll or selection.
+## 20. Opening things outside the application
 
-**M9 — Polish**
-- Visual tuning of the palette and metro style in both themes, empty/error states, performance pass against the targets in section 6, macOS packaging (unsigned build is enough for personal use).
+- **Pull requests.** *Open or create a pull request* (context menu of a branch, Branch menu for the current branch) reads the remotes (`list_remote_urls`), picks the first one on a known host (`origin` first; GitHub, Azure DevOps in https, ssh and `visualstudio.com` forms, and GitLab: `gitlab.com` and any host with "gitlab" in its name, groups and subgroups included, `src/lib/remoteUrl.ts`), and opens the page that starts a pull request from the branch. When the user is signed in with the command line tool of the host it first looks for an **open pull request** of the branch through the API (`src-tauri/src/hosting.rs`: GitHub `pulls?head=`, Azure DevOps `pullrequests?searchCriteria.sourceRefName=`, GitLab `projects/:path/merge_requests?state=opened&source_branch=`) and opens it instead, saying its number and title. A failed lookup (unknown repository, network...) is reported and the creation page is opened anyway. Creating a pull request through the API is not done.
+- **No credentials of its own (decision of §12.1).** No personal access token and no application registration: the application asks the tools the user already signed in with, `az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798` for Azure DevOps (Entra ID token, about one hour, `az login` opens a login page in the browser) `gh auth token` for GitHub and `glab auth status --hostname <host> --show-token` for GitLab (the token is read from that report, which is written for people: if a version of `glab` changes it the lookup says so and the creation page is still opened; not tested against a real `glab`, only against its documented output), and sends it as a `Bearer` token to that host only, over https. An Azure token is kept in memory until five minutes before it expires; nothing is written to disk or to the keychain, and the token is never put in a message. *Settings, Integrations* shows whether each tool is installed and signed in, a *Sign in with the Azure CLI* button (runs `az login`) and, for `gh` and `glab`, the command to run. Self-hosted GitLab instances use the sign-in of `glab` for their own host. Earlier choices set aside: a personal access token in the keychain (the user does not want one), and an OAuth application of Gitsune (it would have to be registered with GitHub and with Microsoft Entra, and an administrator of the tenant may have to consent). The cost: the tools must be installed on the machine.
+- **Only `https` addresses and known applications.** `open_external` refuses anything but a plain `https://` address; the editor (`zed`, `vscode`, `cursor`) and the terminal (`terminal`, `iterm`, `ghostty`) are ids mapped to application names on the Rust side, and the path of a file must be inside the repository and exist.
+- **Editor and terminal.** Chosen in *Settings, Integrations* (Zed and Terminal by default, `gitsune:editor`, `gitsune:terminal`); used by the Repository menu and by a right click on a file (commit and working tree panels).
 
-## 10. Open questions (to settle during the milestones)
-- `gix` vs `git2`: decided at M1 from the benchmark.
-- Exact palette and line thickness: tuned at M4/M9.
-- Whether to add a minimal commit list column (hash, author, date) next to the graph or keep only summaries: decide at M4.
+## 21. Themes: code colors, fonts, files, System pair
+
+- **Code colors in diffs** follow the theme: six tokens (keywords, strings, numbers, functions, types, comments) per variant, set as `--syntax-*` on the page. A theme without them (older, or imported) gets colors drawn from its lane colors by hue (`deriveSyntax`), comments use the muted text color. The editor shows them with a preview and warns when a color has a contrast under 3 with the background.
+- **Fonts and size** are optional in a theme: interface font, code font, base size (12 to 16 to 20 px; everything is sized from it). Font lists accept names only (letters, digits, spaces, commas, quotes), so an imported theme cannot inject CSS. The density of the graph stays a setting of its own.
+- **Import from a file** next to the paste of JSON (files up to 256 KB, same validation).
+- **A theme for each look of the system.** In *System* mode two selectors pick the theme used when the system is light and when it is dark (`gitsune:theme-id-light` / `-dark`; empty means the chosen theme). In *Light* and *Dark* the chosen theme is used as before. A deleted theme leaves the pair.

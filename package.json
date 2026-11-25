@@ -1,7 +1,14 @@
 {
-  "name": "git-hydra",
+  "name": "gitsune",
   "private": true,
   "version": "0.1.0",
+  "description": "A git client built around a metro-style branch graph",
+  "license": "MIT",
+  "author": "Agaetis",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simondujardin/gitsune.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,14 +20,21 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "check": "bun run typecheck && bun run lint && bun run format:check && bun run test"
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun run test",
+    "check:rust": "cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test",
+    "check:all": "bun run check && bun run check:rust",
+    "package": "tauri build"
   },
   "dependencies": {
     "@lucide/vue": "^1.78.0",
     "@tailwindcss/vite": "^4.3.5",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "@tauri-apps/plugin-notification": "^2.8.1",
+    "@vueuse/core": "^15.1.0",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.5.2",
+    "highlight.js": "^11.12.0",
     "reka-ui": "^2.11.0",
     "shadcn-vue": "^2.9.0",
     "tailwindcss": "^4.3.5",
