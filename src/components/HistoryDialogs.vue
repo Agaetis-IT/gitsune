@@ -10,7 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { type RepoTab, useWorkspace } from "@/composables/useWorkspace";
+import { type CommitTarget, type RepoTab, useWorkspace } from "@/composables/useWorkspace";
 import type { ResetMode } from "@/lib/api";
 
 const props = defineProps<{ tab: RepoTab }>();
@@ -27,9 +27,31 @@ const message = ref("");
 const includeUntracked = ref(true);
 const keepIndex = ref(false);
 const mode = ref<ResetMode>("mixed");
+/** The branch a reset moves; empty for a detached HEAD. */
+const picked = ref("");
+
+const branches = computed(() =>
+  props.tab.refs.filter((ref) => ref.kind === "local").map((ref) => ref.name),
+);
+/** A branch that is not there yet is created at the commit. */
+const creating = computed(() => picked.value !== "" && !branches.value.includes(picked.value));
+/** A hard reset rewrites the files, so it needs the checked-out branch (or a detached HEAD). */
+const hardAllowed = computed(() => picked.value === "" || picked.value === props.tab.headBranch);
+
+function submitReset(target: CommitTarget) {
+  if (picked.value === "") void workspace.reset(props.tab, target, mode.value);
+  else
+    void workspace.resetBranch(
+      props.tab,
+      picked.value,
+      target,
+      creating.value ? "mixed" : mode.value,
+    );
+}
 
 watch(dialog, (next) => {
   if (!next) return;
+  picked.value = next.type === "reset" ? (next.branch ?? "") : "";
   message.value = "";
   includeUntracked.value = true;
   keepIndex.value = false;
@@ -127,29 +149,41 @@ function close() {
       <form
         v-else-if="dialog.type === 'reset'"
         class="space-y-4"
-        @submit.prevent="workspace.reset(tab, dialog.target, mode)"
+        @submit.prevent="submitReset(dialog.target)"
       >
         <DialogHeader>
-          <DialogTitle
-            >Reset {{ tab.headBranch ?? "HEAD" }} to {{ dialog.target.label }}</DialogTitle
-          >
-          <DialogDescription>
-            The current branch moves to this commit. You can undo it right after.
+          <DialogTitle>Reset {{ picked || "HEAD" }} to {{ dialog.target.label }}</DialogTitle>
+          <DialogDescription v-if="creating">
+            {{ picked }} does not exist yet: it is created at this commit.
+          </DialogDescription>
+          <DialogDescription v-else>
+            The branch moves to this commit. You can undo it right after.
           </DialogDescription>
         </DialogHeader>
-        <fieldset class="space-y-2">
+        <label v-if="dialog.choose && branches.length > 0" class="block space-y-1 text-sm">
+          <span>Branch</span>
+          <select
+            v-model="picked"
+            class="border-input bg-background h-9 w-full rounded-md border px-3 text-sm"
+          >
+            <option v-for="name in branches" :key="name" :value="name">{{ name }}</option>
+          </select>
+        </label>
+        <fieldset v-if="!creating" class="space-y-2">
           <legend class="sr-only">How to reset</legend>
           <label
             v-for="option in MODES"
             :key="option.mode"
             class="flex items-start gap-2 rounded border p-2 text-sm"
             :class="{ 'border-destructive': option.mode === 'hard' && mode === 'hard' }"
+            :aria-disabled="option.mode === 'hard' && !hardAllowed ? 'true' : undefined"
           >
             <input
               v-model="mode"
               type="radio"
               name="reset-mode"
               :value="option.mode"
+              :disabled="option.mode === 'hard' && !hardAllowed"
               class="mt-1"
             />
             <span>
@@ -158,7 +192,14 @@ function close() {
             </span>
           </label>
         </fieldset>
-        <p v-if="mode === 'hard' && changes > 0" class="text-destructive text-sm" role="alert">
+        <p v-if="!hardAllowed" class="text-muted-foreground text-sm">
+          A hard reset rewrites the files, so it only works on the checked-out branch.
+        </p>
+        <p
+          v-if="mode === 'hard' && hardAllowed && changes > 0"
+          class="text-destructive text-sm"
+          role="alert"
+        >
           {{ changes }} file{{ changes === 1 ? "" : "s" }} with uncommitted changes will be
           discarded.
         </p>
@@ -166,10 +207,10 @@ function close() {
           <Button type="button" variant="outline" @click="close">Cancel</Button>
           <Button
             type="submit"
-            :variant="mode === 'hard' ? 'destructive' : 'default'"
-            :disabled="busy"
+            :variant="mode === 'hard' && !creating ? 'destructive' : 'default'"
+            :disabled="busy || (mode === 'hard' && !hardAllowed)"
           >
-            Reset ({{ mode }})
+            {{ creating ? "Create" : `Reset (${mode})` }}
           </Button>
         </DialogFooter>
       </form>

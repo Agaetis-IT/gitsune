@@ -59,7 +59,7 @@ fn invalid(kind: &str, name: &str) -> GitError {
 }
 
 /// Refuses names git would not accept, before anything is run.
-fn validate_name(ctx: &OpCtx, branch: bool, name: &str) -> Result<(), GitError> {
+pub(super) fn validate_name(ctx: &OpCtx, branch: bool, name: &str) -> Result<(), GitError> {
     let kind = if branch { "branch" } else { "tag" };
     if name.trim().is_empty() || name.trim() != name || name.starts_with('-') {
         return Err(invalid(kind, name));
@@ -91,7 +91,7 @@ fn validate_full(ctx: &OpCtx, full: &str) -> Result<(), GitError> {
     Ok(())
 }
 
-fn ref_exists(ctx: &OpCtx, full: &str) -> Result<bool, GitError> {
+pub(super) fn ref_exists(ctx: &OpCtx, full: &str) -> Result<bool, GitError> {
     let output = ctx.runner().run_raw(
         ctx.workdir,
         &["show-ref", "--verify", "--quiet", full],
@@ -333,7 +333,14 @@ pub struct DeletedBranch {
 
 /// Deletes a local branch. Without `force`, git refuses a branch with commits that are not
 /// merged anywhere else (`NotFullyMerged`); the caller can then confirm and ask again with `force`.
-pub fn delete_branch(ctx: &OpCtx, name: &str, force: bool) -> Result<DeletedBranch, GitError> {
+/// With `remove_tracking`, the remote-tracking branch it followed (`origin/x`) is removed too:
+/// deleting the local branch does not touch it, and a fetch without prune would keep it.
+pub fn delete_branch(
+    ctx: &OpCtx,
+    name: &str,
+    force: bool,
+    remove_tracking: bool,
+) -> Result<DeletedBranch, GitError> {
     check_paths(&[name.to_string()])?;
     let _write = ctx.stores.begin_write()?;
     let full = format!("refs/heads/{name}");
@@ -348,11 +355,11 @@ pub fn delete_branch(ctx: &OpCtx, name: &str, force: bool) -> Result<DeletedBran
         .stdout_text()
         .trim()
         .to_string();
-    let upstream = ctx
+    let upstream_full = ctx
         .runner()
         .run(
             ctx.workdir,
-            &["for-each-ref", "--format=%(upstream:short)", &full],
+            &["for-each-ref", "--format=%(upstream)", &full],
             RunOptions::background(),
         )?
         .stdout_text()
@@ -363,6 +370,21 @@ pub fn delete_branch(ctx: &OpCtx, name: &str, force: bool) -> Result<DeletedBran
         &["branch", if force { "-D" } else { "-d" }, name],
         RunOptions::default(),
     )?;
+    if remove_tracking
+        && upstream_full.starts_with("refs/remotes/")
+        && ref_exists(ctx, &upstream_full)?
+    {
+        ctx.runner().run(
+            ctx.workdir,
+            &["update-ref", "-d", &upstream_full],
+            RunOptions::default(),
+        )?;
+    }
+    let upstream = upstream_full
+        .strip_prefix("refs/remotes/")
+        .or_else(|| upstream_full.strip_prefix("refs/heads/"))
+        .unwrap_or(&upstream_full)
+        .to_string();
     Ok(DeletedBranch {
         name: name.to_string(),
         tip,

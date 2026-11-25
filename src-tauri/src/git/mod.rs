@@ -55,13 +55,14 @@ pub use rebase::{RebasePlan, RebaseResult, TodoItem, rebase, rebase_plan};
 pub use reflog::{ReflogEntry, UndoResult, list_reflog, restore_head, undo_last};
 pub use refs::{RefInfo, list_refs};
 pub use remote::{
-    PullStrategy, PushOptions, RemoteResult, RemoteUrl, delete_remote_branch, fetch, list_remotes,
-    pull, push, remote_urls,
+    PullStrategy, PushOptions, RemoteResult, RemoteUrl, add_remote, clone_repository,
+    delete_remote_branch, fetch, list_remotes, pull, push, push_tags, remote_urls, remove_remote,
+    rename_remote, set_remote_url,
 };
 pub use repo::{RepoInfo, open_repository};
 pub use rewrite::{
-    CommitOpResult, ResetMode, ResetResult, cherry_pick, reset, revert_commit, undo_replay,
-    undo_reset,
+    BranchResetResult, CommitOpResult, ResetMode, ResetResult, cherry_pick, reset, reset_branch,
+    revert_commit, undo_branch_reset, undo_replay, undo_reset,
 };
 pub use search::SearchResult;
 pub use speed::{StatusHint, enable_untracked_cache, status_hint};

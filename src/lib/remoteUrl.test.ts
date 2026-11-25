@@ -59,6 +59,12 @@ describe("parseRemoteUrl", () => {
     expect(parseRemoteUrl("https://gitlab.com/onlyone")).toBeNull();
   });
 
+  it("reads the host an SSH alias resolves to", () => {
+    const expected = { kind: "github", owner: "acme", repo: "tool" };
+    expect(parseRemoteUrl("git@work-github:acme/tool.git", "github.com")).toEqual(expected);
+    expect(parseRemoteUrl("git@work-github:acme/tool.git")).toBeNull();
+  });
+
   it("gives null for unknown hosts and malformed paths", () => {
     expect(parseRemoteUrl("https://bitbucket.org/a/b.git")).toBeNull();
     expect(parseRemoteUrl("https://code.example.com/a/b.git")).toBeNull();
@@ -118,5 +124,12 @@ describe("pickHostedRepo", () => {
     expect(picked?.repo.kind).toBe("azure");
     expect(pickHostedRepo([{ name: "x", url: "https://bitbucket.org/a/b" }])).toBeNull();
     expect(pickHostedRepo([])).toBeNull();
+  });
+
+  it("uses the resolved host of an SSH alias", () => {
+    const picked = pickHostedRepo([
+      { name: "origin", url: "git@work-github:acme/tool.git", host: "github.com" },
+    ]);
+    expect(picked?.repo).toEqual({ kind: "github", owner: "acme", repo: "tool" });
   });
 });

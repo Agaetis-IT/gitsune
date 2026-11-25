@@ -34,6 +34,7 @@ import NoticeHost from "@/components/NoticeHost.vue";
 import RebaseDialog from "@/components/RebaseDialog.vue";
 import OperationBanner from "@/components/OperationBanner.vue";
 import RemoteDialogs from "@/components/RemoteDialogs.vue";
+import RemotesDialog from "@/components/RemotesDialog.vue";
 import RemoteStatus from "@/components/RemoteStatus.vue";
 import MetroGraph, { type GraphContextTarget } from "@/components/graph/MetroGraph.vue";
 import WorktreeDialogs from "@/components/WorktreeDialogs.vue";
@@ -63,7 +64,14 @@ import type {
   StatusEntry,
   Worktree,
 } from "@/lib/api";
-import { commitMenu, laneMenu, type MenuItem, refMenu, worktreeMenu } from "@/lib/menus";
+import {
+  commitMenu,
+  laneMenu,
+  type MenuItem,
+  pullRequestTargetOf,
+  refMenu,
+  worktreeMenu,
+} from "@/lib/menus";
 import { personKey } from "@/lib/metro/people";
 import { describeUpdates } from "@/lib/autoFetch";
 import { paletteEntries, remember } from "@/lib/commandPalette";
@@ -75,7 +83,8 @@ import { headSide as headSideOf, pickCheckoutRef } from "@/lib/navigation";
 import type { WipRow } from "@/lib/metro/draw";
 
 const workspace = useWorkspace();
-const { tabs, active, activeId, diffMode, recentRepos, openError, opening } = workspace;
+const { entries, active, activeBlank, activeId, diffMode, recentRepos, openError, opening } =
+  workspace;
 
 const graph = ref<InstanceType<typeof MetroGraph>>();
 const searchBar = ref<InstanceType<typeof SearchBar>>();
@@ -147,7 +156,7 @@ const canHideLane = computed(() => {
 
 type MenuTarget =
   | { kind: "ref"; ref: RefInfo; commitId: string | null }
-  | { kind: "commit"; id: string; author: string }
+  | { kind: "commit"; id: string; author: string; pullRequestTarget: string | null }
   | { kind: "lane"; lane: Lane }
   | { kind: "worktree"; tree: Worktree };
 const menu = ref<{ target: MenuTarget; items: MenuItem[]; x: number; y: number } | null>(null);
@@ -159,6 +168,7 @@ function menuContext(canHighlight: boolean, highlighted: boolean, hidden: boolea
     readOnly: tab?.readOnly ?? false,
     headId: head?.target ?? null,
     detached: !!tab && tab.headBranch === null,
+    headBranch: tab?.headBranch ?? null,
     canHighlight,
     highlighted,
     hidden,
@@ -171,20 +181,24 @@ function laneOfRef(ref: RefInfo): number | null {
   return found ? found.lane : null;
 }
 
+/** The branch a pull request of this ref is made from (a remote branch without its remote). */
+const pullRequestBranchOf = (ref: RefInfo): string =>
+  ref.kind === "remote" ? ref.name.slice(ref.name.indexOf("/") + 1) : ref.name;
+
 function openRefMenu(ref: RefInfo, x: number, y: number, commitId: string | null) {
   const tab = active.value;
   if (!tab) return;
   const lane = laneOfRef(ref);
   menu.value = {
     target: { kind: "ref", ref, commitId },
-    items: refMenu(
-      ref,
-      menuContext(
+    items: refMenu(ref, {
+      ...menuContext(
         lane !== null,
         lane !== null && tab.highlightLane === lane,
         tab.hidden.has(ref.fullName),
       ),
-    ),
+      hasPullRequest: tab.pullRequests.some((pr) => pr.branch === pullRequestBranchOf(ref)),
+    }),
     x,
     y,
   };
@@ -230,10 +244,17 @@ function onGraphMenu(target: GraphContextTarget) {
   if (target.kind === "ref") {
     openRefMenu(target.ref, x, y, target.commit?.id ?? null);
   } else if (target.kind === "commit") {
+    const pullRequestTarget = pullRequestTargetOf(target.commit.refs, tab.headBranch);
     menu.value = {
-      target: { kind: "commit", id: target.commit.id, author: target.commit.author },
+      target: {
+        kind: "commit",
+        id: target.commit.id,
+        author: target.commit.author,
+        pullRequestTarget,
+      },
       items: commitMenu(target.commit, {
         ...menuContext(false, false, false),
+        pullRequestTarget,
         authorFocused:
           tab.focusAuthor !== null && tab.focusAuthor === personKey(target.commit.author),
       }),
@@ -293,7 +314,11 @@ function onMenuSelect(id: string) {
     if (id === "checkoutCommit") void workspace.checkout(tab, { kind: "commit", id: t.id }, null);
     else if (id === "createBranch") workspace.askCreateBranch(tab, { id: t.id, label: short });
     else if (id === "createTag") workspace.askCreateTag(tab, { id: t.id, label: short });
-    else if (id === "cherryPick") void workspace.cherryPick(tab, { id: t.id, label: short });
+    else if (id === "pullRequestHere") {
+      if (tab.headBranch && t.pullRequestTarget) {
+        void workspace.pullRequestAction(tab, tab.headBranch, t.pullRequestTarget);
+      }
+    } else if (id === "cherryPick") void workspace.cherryPick(tab, { id: t.id, label: short });
     else if (id === "revert") void workspace.revert(tab, { id: t.id, label: short });
     else if (id === "reset") workspace.askReset(tab, { id: t.id, label: short });
     else if (id === "rebase") void workspace.askRebase(tab, t.id);
@@ -336,6 +361,7 @@ function onMenuSelect(id: string) {
       const slash = ref.name.indexOf("/");
       workspace.askDeleteRemoteBranch(tab, ref.name.slice(0, slash), ref.name.slice(slash + 1));
     } else if (id === "deleteTag") workspace.askDeleteTag(tab, ref.name);
+    else if (id === "pushTag") void workspace.askPushTags(tab, ref.name);
     else if (id === "highlight") {
       const lane = laneOfRef(ref);
       if (lane !== null) workspace.toggleHighlight(tab, lane);
@@ -345,6 +371,11 @@ function onMenuSelect(id: string) {
       const name = ref.kind === "remote" ? ref.name.slice(ref.name.indexOf("/") + 1) : ref.name;
       const ticket = ticketFromBranch(name);
       if (ticket) void workspace.openTicket(tab, ticket);
+    } else if (id === "pullRequestInto") {
+      // From the current branch into the branch that was clicked.
+      const slash = ref.name.indexOf("/");
+      const target = ref.kind === "remote" ? ref.name.slice(slash + 1) : ref.name;
+      if (tab.headBranch) void workspace.pullRequestAction(tab, tab.headBranch, target);
     } else if (id === "pullRequest") {
       const slash = ref.name.indexOf("/");
       void workspace.pullRequestAction(
@@ -408,6 +439,18 @@ watch(
 function onActivate(target: { commit: GraphRow; ref: RefInfo | null }) {
   const tab = active.value;
   if (!tab) return;
+  // A double click on a remote branch label asks to reset the local branch that follows it.
+  if (target.ref?.kind === "remote") {
+    const remote = target.ref;
+    const slash = remote.name.indexOf("/");
+    workspace.askReset(
+      tab,
+      { id: target.commit.id, label: remote.name },
+      remote.name.slice(slash + 1),
+      false,
+    );
+    return;
+  }
   const choice = pickCheckoutRef(target.ref ? [target.ref] : target.commit.refs);
   if (!choice) return;
   if (choice.kind === "local" && choice.isHead) {
@@ -584,7 +627,7 @@ const menuState = computed<AppMenuState>(() => {
     readOnly: tab?.readOnly ?? false,
     detached: !!tab && tab.headBranch === null,
     hasHead: headRow.value !== null,
-    tabCount: tabs.value.length,
+    tabCount: entries.value.length,
     recents: recentRepos.value.map((r) => ({ path: r.path, name: r.name })),
     branches: (tab?.refs ?? [])
       .filter((ref) => ref.kind === "local")
@@ -599,7 +642,7 @@ const menuState = computed<AppMenuState>(() => {
 });
 
 function shiftTab(delta: 1 | -1) {
-  const list = tabs.value;
+  const list = entries.value;
   if (list.length < 2) return;
   const index = list.findIndex((tab) => tab.id === activeId.value);
   workspace.activate(list[(index + delta + list.length) % list.length].id);
@@ -648,6 +691,12 @@ function onMenuAction(id: string) {
       break;
     case "push":
       void workspace.push(tab);
+      break;
+    case "pushTags":
+      void workspace.askPushTags(tab, null);
+      break;
+    case "remotes":
+      void workspace.askRemotes(tab);
       break;
     case "refresh":
       void workspace.refreshGraph(tab);
@@ -766,11 +815,12 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       @close="paletteOpen = false"
     />
     <TabBar
-      :tabs="tabs"
+      :entries="entries"
       :active-id="activeId"
       @activate="workspace.activate"
       @close="workspace.closeTab"
-      @open="workspace.pickAndOpen"
+      @new="workspace.newTab"
+      @reorder="workspace.reorderTab"
     />
 
     <div v-if="active" class="relative flex min-h-0 flex-1">
@@ -787,6 +837,8 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             @open-pr="workspace.openPullRequestPage(active, $event)"
             @open-worktree="workspace.openWorktree($event)"
             @create-worktree="workspace.askCreateWorktree(active)"
+            @manage-remotes="workspace.askRemotes(active)"
+            @push-tags="workspace.askPushTags(active, null)"
             @worktree-menu="openWorktreeMenu"
             @stash="onStash"
           />
@@ -1150,6 +1202,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       <IdentityDialog :tab="active" />
       <BranchDialogs :tab="active" />
       <RemoteDialogs :tab="active" />
+      <RemotesDialog :tab="active" />
       <PullRequestDialog :tab="active" />
       <WorktreeDialogs :tab="active" />
       <HistoryDialogs :tab="active" />
@@ -1182,16 +1235,20 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       />
     </div>
 
-    <WelcomeScreen
-      v-else
-      class="min-h-0 flex-1"
-      :recents="recentRepos"
-      :error="openError"
-      :busy="opening"
-      @open="workspace.pickAndOpen"
-      @open-recent="workspace.openPath"
-      @forget="workspace.forgetRecent"
-    />
+    <div v-else class="relative flex min-h-0 flex-1 flex-col">
+      <WelcomeScreen
+        :key="activeBlank?.id ?? 'welcome'"
+        class="min-h-0 flex-1"
+        :recents="recentRepos"
+        :error="openError"
+        :busy="opening"
+        :blank="activeBlank"
+        @open="workspace.pickAndOpen"
+        @open-recent="workspace.openPath"
+        @forget="workspace.forgetRecent"
+      />
+      <RemoteStatus v-if="activeBlank" :tab="activeBlank" />
+    </div>
 
     <p v-if="active && openError" class="text-destructive border-t px-3 py-1 text-xs" role="alert">
       {{ openError }}

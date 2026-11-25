@@ -143,6 +143,7 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
   const graphCalls: Array<{ id: string; hidden: string[] }> = [];
   const backend: RepoBackend = {
     pickFolder: async () => null,
+    cloneRepository: vi.fn(async (_owner, _op, _url, parent, name) => `${parent}/${name}`),
     open: async (path) => ({ info: infoFor(path), refs: REFS }),
     remoteUrls: async () => [{ name: "origin", url: "git@ssh.dev.azure.com:v3/acme/Demo/repo" }],
     openExternal: vi.fn(async () => {}),
@@ -224,6 +225,15 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
       snapshot: null,
     }),
     undoReset: async () => ({ snapshot: null, status: cleanStatus() }),
+    resetBranch: async (_repoId, branch, target) => ({
+      status: cleanStatus(),
+      branch,
+      before: "b".repeat(40),
+      after: target,
+      current: false,
+      snapshot: null,
+    }),
+    undoBranchReset: async () => cleanStatus(),
     reflog: async () => [],
     restoreHead: async () => cleanStatus(),
     undoLast: async () => ({ status: cleanStatus(), undone: "the commit" }),
@@ -258,6 +268,14 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
     statusHint: async () => ({ lastMs: 20, untrackedCache: false, canSpeedUp: false }),
     speedUpStatus: async () => ({ lastMs: 10, untrackedCache: true, canSpeedUp: false }),
     remotes: async () => ["origin"],
+    addRemote: vi.fn(async (_id, name, url) => [
+      { name: "origin", url: "git@ssh.dev.azure.com:v3/acme/Demo/repo" },
+      { name, url },
+    ]),
+    renameRemote: vi.fn(async (_id, _name, newName) => [{ name: newName, url: "https://x/r" }]),
+    setRemoteUrl: vi.fn(async (_id, name, url) => [{ name, url }]),
+    removeRemote: vi.fn(async () => []),
+    pushTags: vi.fn(async () => ({ status: cleanStatus(), summary: "" })),
     fetch: async () => ({ status: cleanStatus(), summary: "" }),
     pull: async () => ({ status: cleanStatus(), summary: "Already up to date." }),
     push: async () => ({ status: cleanStatus(), summary: "" }),
@@ -403,6 +421,36 @@ describe("tabs", () => {
     expect(workspace.tabs.value).toHaveLength(0);
   });
 
+  it("moves a tab, and the order of the repositories follows", async () => {
+    const { workspace } = setup();
+    for (const name of ["a", "b", "c"]) await workspace.openPath(`/fake/${name}`);
+    workspace.reorderTab("/fake/c", 0);
+    expect(workspace.tabs.value.map((t) => t.name)).toEqual(["c", "a", "b"]);
+    workspace.shiftTabBy("/fake/c", 1);
+    expect(workspace.tabs.value.map((t) => t.name)).toEqual(["a", "c", "b"]);
+    workspace.shiftTabBy("/fake/a", -1);
+    workspace.reorderTab("/fake/zzz", 0);
+    expect(workspace.tabs.value.map((t) => t.name)).toEqual(["a", "c", "b"]);
+    expect(workspace.activeId.value).toBe("/fake/c");
+  });
+
+  it("keeps the new order for the next session", async () => {
+    const written: string[][] = [];
+    const store = {
+      read: () => ({ paths: [], active: null, hidden: {} }),
+      write: (session: { paths: string[] }) => void written.push(session.paths),
+    };
+    const fake = fakeBackend();
+    const workspace = createWorkspace(
+      fake.backend,
+      createRecentStore(memoryStorage()),
+      undefined,
+      store,
+    );
+    for (const name of ["a", "b"]) await workspace.openPath(`/fake/${name}`);
+    workspace.reorderTab("/fake/b", 0);
+    expect(written[written.length - 1]).toEqual(["/fake/b", "/fake/a"]);
+  });
   it("remembers selection and scroll per tab", async () => {
     const { workspace } = setup();
     await workspace.openPath("/fake/a");
@@ -415,6 +463,163 @@ describe("tabs", () => {
     expect(workspace.active.value?.selected).toBe(7);
     expect(workspace.active.value?.scrollTop).toBe(420);
     expect(b.selected).toBeNull();
+  });
+});
+
+describe("blank tabs", () => {
+  it("adds a blank tab at the end and shows it", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const blank = workspace.newTab();
+    expect(workspace.entries.value.map((e) => e.id)).toEqual(["/fake/a", blank.id]);
+    expect(workspace.activeId.value).toBe(blank.id);
+    expect(workspace.active.value).toBeNull();
+    expect(workspace.activeBlank.value).toBe(blank);
+  });
+
+  it("turns into the tab of the repository opened from it, in the same place", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const first = workspace.newTab();
+    const second = workspace.newTab();
+    workspace.activate(first.id);
+    await workspace.openPath("/fake/c");
+    expect(workspace.blanks.value).toEqual([second]);
+    expect(workspace.entries.value.map((e) => e.id)).toEqual(["/fake/a", "/fake/c", second.id]);
+    expect(workspace.activeId.value).toBe("/fake/c");
+  });
+
+  it("closes itself when the repository opened from it is already open", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    workspace.newTab();
+    await workspace.openPath("/fake/a");
+    expect(workspace.blanks.value).toHaveLength(0);
+    expect(workspace.entries.value.map((e) => e.id)).toEqual(["/fake/a"]);
+    expect(workspace.activeId.value).toBe("/fake/a");
+  });
+
+  it("is closed without touching a repository, and is not kept for the next session", async () => {
+    const { workspace, backend } = setup();
+    await workspace.openPath("/fake/a");
+    const blank = workspace.newTab();
+    await workspace.closeTab(blank.id);
+    expect(backend.close).not.toHaveBeenCalled();
+    expect(workspace.activeId.value).toBe("/fake/a");
+    expect(workspace.entries.value).toHaveLength(1);
+  });
+
+  it("can be opened several times and moved like any tab", async () => {
+    const { workspace } = setup();
+    const first = workspace.newTab();
+    const second = workspace.newTab();
+    expect(first.id).not.toBe(second.id);
+    workspace.shiftTabBy(second.id, -1);
+    expect(workspace.entries.value.map((e) => e.id)).toEqual([second.id, first.id]);
+  });
+});
+
+describe("cloning", () => {
+  it("clones from the blank tab and opens the repository in its place", async () => {
+    const { workspace, backend } = setup();
+    const blank = workspace.newTab();
+    await workspace.cloneRepository("https://example.invalid/team/tool.git", "/fake", "tool");
+    expect(backend.cloneRepository).toHaveBeenCalledWith(
+      blank.id,
+      expect.any(String),
+      "https://example.invalid/team/tool.git",
+      "/fake",
+      "tool",
+    );
+    expect(workspace.blanks.value).toHaveLength(0);
+    expect(workspace.active.value?.path).toBe("/fake/tool");
+    expect(lastOf(workspace.notices.value)?.text).toBe("Cloned tool.");
+  });
+
+  it("adds a blank tab when there is none", async () => {
+    const { workspace } = setup();
+    await workspace.cloneRepository("https://example.invalid/r.git", "/fake", "r");
+    expect(workspace.entries.value.map((e) => e.id)).toEqual(["/fake/r"]);
+  });
+
+  it("keeps the failure on the blank tab", async () => {
+    const { workspace } = setup({
+      cloneRepository: async () => {
+        throw new GitCommandError("other", "fatal: repository not found");
+      },
+    });
+    const blank = workspace.newTab();
+    await workspace.cloneRepository("https://example.invalid/r.git", "/fake", "r");
+    expect(blank.cloneError).toContain("repository not found");
+    expect(blank.clone).toBeNull();
+    expect(workspace.activeBlank.value).toBe(blank);
+  });
+
+  it("tells when the clone was cancelled, without an error on the tab", async () => {
+    const { workspace } = setup({
+      cloneRepository: async () => {
+        throw new GitCommandError("cancelled", "Cancelled.");
+      },
+    });
+    const blank = workspace.newTab();
+    await workspace.cloneRepository("https://example.invalid/r.git", "/fake", "r");
+    expect(blank.cloneError).toBe("");
+    expect(lastOf(workspace.notices.value)?.text).toBe("Clone cancelled.");
+  });
+
+  it("cancels a running clone when its tab is closed", async () => {
+    let finish: (path: string) => void = () => {};
+    const { workspace, backend } = setup({
+      cloneRepository: () => new Promise<string>((resolve) => (finish = resolve)),
+      cancelOperation: vi.fn(async () => {}),
+    });
+    const blank = workspace.newTab();
+    const running = workspace.cloneRepository("https://example.invalid/r.git", "/fake", "r");
+    await Promise.resolve();
+    expect(blank.clone?.kind).toBe("clone");
+    await workspace.closeTab(blank.id);
+    expect(backend.cancelOperation).toHaveBeenCalledWith(expect.stringMatching(/^op-/));
+    finish("/fake/r");
+    await running;
+  });
+
+  it("shows the progress and answers the questions of a clone", async () => {
+    const asked: Array<[string, string, string | null]> = [];
+    let finish: (path: string) => void = () => {};
+    let progress: (event: { repoId: string; opId: string; line: string }) => void = () => {};
+    let ask: (event: {
+      repoId: string;
+      opId: string;
+      promptId: string;
+      prompt: string;
+    }) => void = () => {};
+    const { workspace } = setup({
+      cloneRepository: () => new Promise<string>((resolve) => (finish = resolve)),
+      onRemoteProgress: async (handler) => {
+        progress = handler;
+        return () => {};
+      },
+      onAskpass: async (handler) => {
+        ask = handler;
+        return () => {};
+      },
+      answerAskpass: async (opId, promptId, answer) => void asked.push([opId, promptId, answer]),
+    });
+    const stop = await workspace.watchRepos();
+    const blank = workspace.newTab();
+    const running = workspace.cloneRepository("https://example.invalid/r.git", "/fake", "r");
+    await Promise.resolve();
+    const opId = blank.clone!.id;
+    progress({ repoId: blank.id, opId, line: "Receiving objects:  40% (4/10)" });
+    expect(blank.clone).toMatchObject({ line: "Receiving objects:  40% (4/10)", percent: 40 });
+    ask({ repoId: blank.id, opId, promptId: "7", prompt: "Password: " });
+    expect(blank.clone?.prompt).toEqual({ promptId: "7", text: "Password: " });
+    await workspace.answerPrompt(blank, "secret");
+    expect(asked).toEqual([[opId, "7", "secret"]]);
+    expect(blank.clone?.prompt).toBeNull();
+    finish("/fake/r");
+    await running;
+    stop();
   });
 });
 
@@ -1671,6 +1876,121 @@ describe("creating branches and tags", () => {
   });
 });
 
+describe("managing the remotes", () => {
+  it("opens the dialog with the remotes, and shows the list after each change", async () => {
+    const { workspace, tab, backend } = await openWorktree(cleanStatus());
+    await workspace.askRemotes(tab);
+    expect(tab.dialog).toEqual({
+      type: "remotes",
+      remotes: [{ name: "origin", url: "git@ssh.dev.azure.com:v3/acme/Demo/repo" }],
+    });
+
+    expect(
+      await workspace.addRemote(tab, " backup ", " https://example.invalid/b.git ", false),
+    ).toBe(true);
+    expect(backend.addRemote).toHaveBeenCalledWith(
+      "/fake/a",
+      "backup",
+      "https://example.invalid/b.git",
+    );
+    expect(tab.dialog).toMatchObject({ type: "remotes" });
+    expect((tab.dialog as { remotes: unknown[] }).remotes).toHaveLength(2);
+
+    await workspace.renameRemote(tab, "backup", " mirror ");
+    expect(backend.renameRemote).toHaveBeenCalledWith("/fake/a", "backup", "mirror");
+    await workspace.setRemoteUrl(tab, "origin", " git@example.invalid:t/r.git ");
+    expect(backend.setRemoteUrl).toHaveBeenCalledWith(
+      "/fake/a",
+      "origin",
+      "git@example.invalid:t/r.git",
+    );
+    await workspace.removeRemote(tab, "origin");
+    expect(backend.removeRemote).toHaveBeenCalledWith("/fake/a", "origin");
+    expect((tab.dialog as { remotes: unknown[] }).remotes).toEqual([]);
+  });
+
+  it("fetches a new remote when asked to", async () => {
+    const fetch = vi.fn(async () => ({ status: cleanStatus(), summary: "" }));
+    const { workspace, tab } = await openWorktree(cleanStatus(), { fetch });
+    await workspace.askRemotes(tab);
+    await workspace.addRemote(tab, "backup", "https://example.invalid/b.git", true);
+    await vi.waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith("/fake/a", expect.any(String), "backup", true),
+    );
+  });
+
+  it("keeps the dialog and says why when a change is refused", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      addRemote: async () => {
+        throw new GitCommandError("alreadyExists", "A remote named 'origin' already exists.");
+      },
+    });
+    await workspace.askRemotes(tab);
+    expect(await workspace.addRemote(tab, "origin", "https://example.invalid/x.git", true)).toBe(
+      false,
+    );
+    expect(tab.dialog).toMatchObject({ type: "remotes" });
+    expect(tab.writeError?.kind).toBe("alreadyExists");
+  });
+
+  it("refuses a change in read-only mode without asking git", async () => {
+    const { workspace, tab, backend } = await openWorktree(cleanStatus());
+    await workspace.askRemotes(tab);
+    tab.readOnly = true;
+    expect(await workspace.removeRemote(tab, "origin")).toBe(false);
+    expect(backend.removeRemote).not.toHaveBeenCalled();
+  });
+});
+
+describe("pushing tags", () => {
+  it("asks for the remote, origin first, then pushes the tag", async () => {
+    const { workspace, tab, backend } = await openWorktree(cleanStatus(), {
+      remotes: async () => ["backup", "origin"],
+    });
+    await workspace.askPushTags(tab, "v1");
+    expect(tab.dialog).toEqual({
+      type: "pushTags",
+      tag: "v1",
+      remotes: ["backup", "origin"],
+      remote: "origin",
+    });
+    await workspace.pushTags(tab, "origin", "v1");
+    expect(backend.pushTags).toHaveBeenCalledWith("/fake/a", expect.any(String), "origin", "v1");
+    expect(tab.dialog).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toBe("Pushed v1.");
+  });
+
+  it("pushes every tag when none is named", async () => {
+    const { workspace, tab, backend } = await openWorktree(cleanStatus());
+    await workspace.askPushTags(tab, null);
+    await workspace.pushTags(tab, "origin", null);
+    expect(backend.pushTags).toHaveBeenCalledWith("/fake/a", expect.any(String), "origin", null);
+    expect(lastOf(workspace.notices.value)?.text).toBe("Pushed the tags.");
+  });
+
+  it("says so when there is no remote", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), { remotes: async () => [] });
+    await workspace.askPushTags(tab, "v1");
+    expect(tab.dialog).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toBe("This repository has no remote to push to.");
+  });
+
+  it("reports a tag the remote refused and keeps the dialog", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      pushTags: async () => {
+        throw new GitCommandError("pushRejected", "! [rejected] v1 -> v1 (already exists)");
+      },
+    });
+    await workspace.askPushTags(tab, "v1");
+    await workspace.pushTags(tab, "origin", "v1");
+    expect(tab.dialog).toMatchObject({ type: "pushTags" });
+    expect(lastOf(workspace.notices.value)).toMatchObject({
+      kind: "error",
+      text: expect.stringContaining("already exists"),
+    });
+  });
+});
+
 describe("deleting branches and tags", () => {
   it("deletes a branch and offers to bring it back with its tip and upstream", async () => {
     const restoreBranch = vi.fn(async () => cleanStatus());
@@ -1684,7 +2004,12 @@ describe("deleting branches and tags", () => {
       restoreBranch,
     });
     workspace.askDeleteBranch(tab, "topic");
-    expect(tab.dialog).toEqual({ type: "deleteBranch", name: "topic", unmerged: null });
+    expect(tab.dialog).toEqual({
+      type: "deleteBranch",
+      name: "topic",
+      unmerged: null,
+      tracking: null,
+    });
 
     await workspace.deleteBranch(tab, "topic");
     expect(tab.dialog).toBeNull();
@@ -1710,10 +2035,11 @@ describe("deleting branches and tags", () => {
       type: "deleteBranch",
       name: "topic",
       unmerged: "the branch 'topic' is not fully merged.",
+      tracking: null,
     });
 
     await workspace.deleteBranch(tab, "topic", true);
-    expect(deleteBranch).toHaveBeenLastCalledWith("/fake/a", "topic", true);
+    expect(deleteBranch).toHaveBeenLastCalledWith("/fake/a", "topic", true, false);
     expect(tab.dialog).toBeNull();
   });
 
@@ -2140,7 +2466,7 @@ describe("stash, cherry-pick, revert and reset", () => {
     const undoReset = vi.fn(async () => ({ snapshot: null, status: cleanStatus() }));
     const { workspace, tab } = await openWorktree(dirty(), { reset, undoReset });
     workspace.askReset(tab, target);
-    expect(tab.dialog).toEqual({ type: "reset", target });
+    expect(tab.dialog).toEqual({ type: "reset", target, branch: tab.headBranch, choose: true });
 
     await workspace.reset(tab, target, "hard");
     expect(reset).toHaveBeenCalledWith("/fake/a", target.id, "hard");
@@ -2156,6 +2482,27 @@ describe("stash, cherry-pick, revert and reset", () => {
       target.id,
       "refs/gitsune/undo/1",
     );
+  });
+
+  it("moves a branch that is not checked out, and its undo moves it back", async () => {
+    const target = { id: "c".repeat(40), label: "origin/develop" };
+    const resetBranch = vi.fn(async (_id: string, branch: string, to: string) => ({
+      status: cleanStatus(),
+      branch,
+      before: "b".repeat(40),
+      after: to,
+      current: false,
+      snapshot: null,
+    }));
+    const undoBranchReset = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(cleanStatus(), { resetBranch, undoBranchReset });
+
+    await workspace.resetBranch(tab, "develop", target, "soft");
+    expect(resetBranch).toHaveBeenCalledWith("/fake/a", "develop", target.id, "soft");
+    expect(tab.dialog).toBeNull();
+
+    await lastOf(workspace.notices.value)?.action?.run();
+    expect(undoBranchReset).toHaveBeenCalledWith("/fake/a", "develop", "b".repeat(40), target.id);
   });
 
   it("read-only mode refuses all of them without calling the backend", async () => {
@@ -2933,7 +3280,7 @@ describe("opening things outside the application", () => {
       );
     });
 
-    it("fills the dialog with the target, the title and the commits", async () => {
+    it("fills the dialog with the target and the title, and leaves the commits out", async () => {
       const { workspace, tab } = await ready({
         defaultBranch: vi.fn(async () => "develop" as string | null),
         commitsBetween: vi.fn(async () => [
@@ -2948,9 +3295,57 @@ describe("opening things outside the application", () => {
         remote: "origin",
         target: "develop",
         title: "AB#5310 Login",
-        description: "AB#5310\n\n- Add the form\n- Style the form",
+        description: "AB#5310",
         needsPush: true,
         newOnRemote: true,
+      });
+    });
+
+    it("targets the branch it is closest to, not the default branch of the host", async () => {
+      const many = Array.from({ length: 40 }, (_, i) => ({ id: `${i}`, summary: `Commit ${i}` }));
+      const { workspace, tab } = await ready({
+        defaultBranch: vi.fn(async () => "main" as string | null),
+        commitsBetween: vi.fn(async (_id: string, base: string) =>
+          base === "origin/main" ? many : [{ id: "1", summary: "Add the form" }],
+        ),
+      });
+      await workspace.pullRequestAction(tab, "feat/login/5310");
+      expect(tab.dialog).toMatchObject({
+        target: "develop",
+        title: "AB#5310 Add the form",
+        description: "AB#5310",
+      });
+    });
+
+    it("goes into the branch it is asked for, even when another one is closer", async () => {
+      const { workspace, backend, tab } = await ready({
+        defaultBranch: vi.fn(async () => "develop" as string | null),
+      });
+      await workspace.pullRequestAction(tab, "feat/login/5310", "main");
+      expect(tab.dialog).toMatchObject({ type: "createPullRequest", target: "main" });
+      expect(backend.commitsBetween).toHaveBeenCalledTimes(1);
+      expect(backend.commitsBetween).toHaveBeenCalledWith(
+        "/fake/alpha",
+        "origin/main",
+        "feat/login/5310",
+      );
+    });
+
+    it("makes the title again for another target (one commit gives its message)", async () => {
+      const { workspace, tab } = await ready({
+        commitsBetween: vi.fn(async (_id: string, base: string) =>
+          base === "origin/develop"
+            ? [{ id: "1", summary: "Only one" }]
+            : [
+                { id: "1", summary: "Only one" },
+                { id: "2", summary: "Another" },
+              ],
+        ),
+      });
+      await workspace.pullRequestAction(tab, "feat/login/5310", "main");
+      expect(await workspace.describePullRequest(tab, "develop")).toEqual({
+        title: "AB#5310 Only one",
+        description: "AB#5310",
       });
     });
 

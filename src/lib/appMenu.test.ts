@@ -74,6 +74,8 @@ describe("application menu", () => {
     ]) {
       expect(enabled(none, label), label).toBe(false);
     }
+    expect(enabled(none, "Manage the Remotes…")).toBe(false);
+    expect(enabled(none, "Push All Tags…")).toBe(false);
     expect(enabled(none, "Open a Repository…")).toBe(true);
     expect(enabled(none, "Settings…")).toBe(true);
   });

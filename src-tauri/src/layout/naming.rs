@@ -15,15 +15,28 @@ fn hash(key: &str) -> u32 {
     hash
 }
 
+/// The main branches have a color of their own, so they are recognized at a glance and never
+/// change with the other branches that are shown or with the branch that is checked out.
+const FIXED_COLORS: [(&str, u32); 3] = [("main", 6), ("master", 7), ("develop", 3)];
+
+/// The color a main branch always has (`main`, `master`, `develop`).
+pub fn fixed_color(key: &str) -> Option<u32> {
+    FIXED_COLORS
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|&(_, color)| color)
+}
+
 /// The color a name asks for: stable, but two names can ask for the same one.
 pub fn color_for(key: &str) -> u32 {
-    hash(key) % PALETTE_SIZE
+    fixed_color(key).unwrap_or(hash(key) % PALETTE_SIZE)
 }
 
 /// Picks a palette color for every name so that names shown at the same time (their rows
 /// overlap) get different colors whenever the palette allows it.
 ///
-/// Each name asks for its hash color and keeps it unless an overlapping name already took it;
+/// The main branches come first and always keep their own color. Every other name asks for its
+/// hash color and keeps it unless an overlapping name already took it;
 /// then it gets the next free one (or, when more names overlap than the palette has colors,
 /// the least used one). Names are handled in hash order, so the result only depends on the
 /// names and their extents, not on the order of the lanes.
@@ -37,7 +50,7 @@ pub fn assign_colors(names: &[(&str, usize, usize)]) -> HashMap<String, u32> {
         extent.1 = extent.1.max(last);
     }
     let mut ordered: Vec<(&str, (usize, usize))> = extents.into_iter().collect();
-    ordered.sort_by_key(|(name, _)| (hash(name), *name));
+    ordered.sort_by_key(|(name, _)| (fixed_color(name).is_none(), hash(name), *name));
 
     let mut assigned: Vec<(usize, usize, u32)> = Vec::with_capacity(ordered.len());
     let mut colors = HashMap::with_capacity(ordered.len());
@@ -49,6 +62,11 @@ pub fn assign_colors(names: &[(&str, usize, usize)]) -> HashMap<String, u32> {
             }
         }
         let preferred = color_for(name);
+        if fixed_color(name).is_some() {
+            assigned.push((first, last, preferred));
+            colors.insert(name.to_string(), preferred);
+            continue;
+        }
         let color = (0..PALETTE_SIZE)
             .map(|step| (preferred + step) % PALETTE_SIZE)
             .min_by_key(|&color| uses[color as usize])

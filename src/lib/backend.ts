@@ -30,6 +30,7 @@ import {
   type ResetMode,
   type UndoResult,
   type ResetResult,
+  type BranchResetResult,
   type StashEntry,
   cherryPick,
   listReflog,
@@ -37,6 +38,7 @@ import {
   restoreHead,
   undoLast,
   resetTo,
+  resetBranch,
   revertCommit,
   stashApply,
   stashDrop,
@@ -45,6 +47,7 @@ import {
   stashRestore,
   undoReplay,
   undoReset,
+  undoBranchReset,
   type AskpassEvent,
   type PullStrategy,
   type PushOptions,
@@ -89,6 +92,12 @@ import {
   type RemoteUrl,
   cancelOperation,
   answerAskpass,
+  cloneRepository,
+  addRemote,
+  renameRemote,
+  setRemoteUrl,
+  removeRemote,
+  pushTags,
   createTag,
   deleteBranch,
   deleteTag,
@@ -149,8 +158,8 @@ export interface GraphSource {
 
 /** Everything the app needs from the machine; the Tauri backend, or a stand-in for dev and tests. */
 export interface RepoBackend {
-  /** Asks the user for a repository folder; `null` when cancelled. */
-  pickFolder(): Promise<string | null>;
+  /** Asks the user for a folder; `null` when cancelled. */
+  pickFolder(title?: string): Promise<string | null>;
   open(path: string): Promise<{ info: RepoInfo; refs: RefInfo[] }>;
   close(repoId: string): Promise<void>;
   /** Graph of the repository without the commits only reachable from `hiddenRefs`. */
@@ -210,7 +219,13 @@ export interface RepoBackend {
   ): Promise<CheckoutResult>;
   renameBranch(repoId: string, oldName: string, newName: string): Promise<WorkingStatus>;
   /** A branch with unmerged commits needs `force`. */
-  deleteBranch(repoId: string, name: string, force: boolean): Promise<DeletedBranch>;
+  /** With `removeTracking`, the remote-tracking branch it followed (origin/x) goes too. */
+  deleteBranch(
+    repoId: string,
+    name: string,
+    force: boolean,
+    removeTracking: boolean,
+  ): Promise<DeletedBranch>;
   restoreBranch(
     repoId: string,
     name: string,
@@ -254,6 +269,19 @@ export interface RepoBackend {
   revert(repoId: string, commit: string): Promise<CommitOpResult>;
   undoReplay(repoId: string, before: string, after: string): Promise<WorkingStatus>;
   reset(repoId: string, target: string, mode: ResetMode): Promise<ResetResult>;
+  /** Moves any local branch; a branch that is not checked out only has its ref moved. */
+  resetBranch(
+    repoId: string,
+    branch: string,
+    target: string,
+    mode: ResetMode,
+  ): Promise<BranchResetResult>;
+  undoBranchReset(
+    repoId: string,
+    branch: string,
+    before: string | null,
+    after: string,
+  ): Promise<WorkingStatus>;
   /** The positions HEAD went through, newest first. */
   reflog(repoId: string): Promise<ReflogEntry[]>;
   /** Moves the branch back to a commit of the reflog; local changes in the way make it fail. */
@@ -346,7 +374,22 @@ export interface RepoBackend {
     remote: string,
     branch: string,
   ): Promise<RemoteResult>;
-  /** Stops a running fetch, pull or push. */
+  /** Adds, renames, re-addresses or removes a remote; each gives the remotes afterwards. */
+  addRemote(repoId: string, name: string, url: string): Promise<RemoteUrl[]>;
+  renameRemote(repoId: string, name: string, newName: string): Promise<RemoteUrl[]>;
+  setRemoteUrl(repoId: string, name: string, url: string): Promise<RemoteUrl[]>;
+  removeRemote(repoId: string, name: string): Promise<RemoteUrl[]>;
+  /** Pushes one tag, or every tag when `tag` is `null`. */
+  pushTags(repoId: string, opId: string, remote: string, tag: string | null): Promise<RemoteResult>;
+  /** Clones a repository into `name` inside `parent`; gives the path of the new repository. */
+  cloneRepository(
+    ownerId: string,
+    opId: string,
+    url: string,
+    parent: string,
+    name: string,
+  ): Promise<string>;
+  /** Stops a running fetch, pull, push or clone. */
   cancelOperation(opId: string): Promise<void>;
   /** Answers a question git asked (`null` refuses). */
   answerAskpass(opId: string, promptId: string, answer: string | null): Promise<void>;
@@ -367,8 +410,8 @@ export interface RepoBackend {
 export const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
 
 export const tauriBackend: RepoBackend = {
-  async pickFolder() {
-    const selected = await open({ directory: true, multiple: false, title: "Open a repository" });
+  async pickFolder(title = "Open a repository") {
+    const selected = await open({ directory: true, multiple: false, title });
     return typeof selected === "string" ? selected : null;
   },
   async open(path) {
@@ -444,6 +487,8 @@ export const tauriBackend: RepoBackend = {
   revert: revertCommit,
   undoReplay,
   reset: resetTo,
+  resetBranch,
+  undoBranchReset,
   reflog: listReflog,
   restoreHead,
   undoLast,
@@ -452,6 +497,12 @@ export const tauriBackend: RepoBackend = {
   pull: pullBranch,
   push: pushBranch,
   deleteRemoteBranch,
+  cloneRepository,
+  addRemote,
+  renameRemote,
+  setRemoteUrl,
+  removeRemote,
+  pushTags,
   cancelOperation,
   answerAskpass,
   onRemoteProgress: (handler) =>

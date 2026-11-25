@@ -48,17 +48,13 @@ describe("pullRequestTitle", () => {
 });
 
 describe("pullRequestDescription", () => {
-  it("lists several commits, oldest first", () => {
-    expect(pullRequestDescription("feat/x", [commit("One"), commit("Two")], github)).toBe(
-      "- One\n- Two",
-    );
+  it("never lists the commits", () => {
+    expect(pullRequestDescription("feat/x", github)).toBe("");
   });
 
-  it("starts with the work item reference on Azure only", () => {
-    expect(pullRequestDescription("feat/x/5310", [commit("One"), commit("Two")], azure)).toBe(
-      "AB#5310\n\n- One\n- Two",
-    );
-    expect(pullRequestDescription("feat/x/5310", [commit("One")], github)).toBe("");
-    expect(pullRequestDescription("feat/x/5310", [commit("One")], azure)).toBe("AB#5310");
+  it("is the work item reference on Azure only", () => {
+    expect(pullRequestDescription("feat/x/5310", azure)).toBe("AB#5310");
+    expect(pullRequestDescription("feat/x/5310", github)).toBe("");
+    expect(pullRequestDescription("feat/x", azure)).toBe("");
   });
 });

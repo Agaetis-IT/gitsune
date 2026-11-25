@@ -282,6 +282,32 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
       );
       return await worktree.status();
     },
+    resetBranch: async (_repoId, branch, target, mode) => {
+      const row = rowOf(target);
+      const found = data.meta.refs.find((r) => r.kind === "local" && r.name === branch);
+      if (mode === "hard" && !found?.isHead) {
+        throw new GitCommandError("other", `A hard reset needs '${branch}' to be checked out.`);
+      }
+      const before = found ? found.target : null;
+      editRefs((refs) => [...refs.filter((r) => r !== found), addRef("local", branch, row, found?.isHead ?? false)]);
+      return {
+        status: await worktree.status(),
+        branch,
+        before,
+        after: row.id,
+        current: found?.isHead ?? false,
+        snapshot: null,
+      };
+    },
+    undoBranchReset: async (_repoId, branch, before, after) => {
+      const found = data.meta.refs.find((r) => r.kind === "local" && r.name === branch);
+      if (!found || found.target !== after) throw new GitCommandError("other", `'${branch}' has moved since then.`);
+      editRefs((refs) => [
+        ...refs.filter((r) => r !== found),
+        ...(before === null ? [] : [addRef("local", branch, rowOf(before), found.isHead)]),
+      ]);
+      return await worktree.status();
+    },
     deleteBranch: async (_repoId, name, force) => {
       const found = data.meta.refs.find((r) => r.kind === "local" && r.name === name);
       if (!found) throw new GitCommandError("other", `Unknown branch '${name}'.`);

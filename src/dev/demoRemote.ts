@@ -35,12 +35,15 @@ export function createDemoRemote(hooks: Hooks) {
   const askListeners = new Set<(event: AskpassEvent) => void>();
   const running = new Map<string, Running>();
   const pushed = new Set<string>();
+  let remoteList: Array<{ name: string; url: string }> = [
+    { name: "origin", url: "git@ssh.dev.azure.com:v3/acme/Demo/demo-repo" },
+  ];
   let diverged = true;
   let knowsPassword = false;
   let promptCount = 0;
 
-  const emit = (opId: string, line: string) =>
-    progressListeners.forEach((listener) => listener({ repoId: hooks.repoId, opId, line }));
+  const emit = (opId: string, line: string, owner = hooks.repoId) =>
+    progressListeners.forEach((listener) => listener({ repoId: owner, opId, line }));
 
   async function track<T>(opId: string, work: (op: Running) => Promise<T>): Promise<T> {
     const op: Running = { cancelled: false, answer: null };
@@ -54,10 +57,15 @@ export function createDemoRemote(hooks: Hooks) {
 
   const cancelled = () => new GitCommandError("cancelled", "Cancelled.");
 
-  async function play(opId: string, op: Running, lines: string[]): Promise<void> {
+  async function play(
+    opId: string,
+    op: Running,
+    lines: string[],
+    owner = hooks.repoId,
+  ): Promise<void> {
     for (const line of lines) {
       if (op.cancelled) throw cancelled();
-      emit(opId, line);
+      emit(opId, line, owner);
       await wait(180);
     }
     if (op.cancelled) throw cancelled();
@@ -149,8 +157,35 @@ export function createDemoRemote(hooks: Hooks) {
     pruneWorktrees: async () => {
       trees = trees.filter((t) => t.prunable === null);
     },
-    remotes: async () => ["origin"],
-    remoteUrls: async () => [{ name: "origin", url: "git@ssh.dev.azure.com:v3/acme/Demo/demo-repo" }],
+    remotes: async () => remoteList.map((remote) => remote.name),
+    remoteUrls: async () => remoteList,
+    addRemote: async (_repoId: string, name: string, url: string) => {
+      if (remoteList.some((remote) => remote.name === name)) {
+        throw new GitCommandError("alreadyExists", `A remote named '${name}' already exists.`);
+      }
+      remoteList = [...remoteList, { name, url }];
+      return remoteList;
+    },
+    renameRemote: async (_repoId: string, name: string, newName: string) => {
+      if (name !== newName && remoteList.some((remote) => remote.name === newName)) {
+        throw new GitCommandError("alreadyExists", `A remote named '${newName}' already exists.`);
+      }
+      remoteList = remoteList.map((r) => (r.name === name ? { ...r, name: newName } : r));
+      return remoteList;
+    },
+    setRemoteUrl: async (_repoId: string, name: string, url: string) => {
+      remoteList = remoteList.map((r) => (r.name === name ? { ...r, url } : r));
+      return remoteList;
+    },
+    removeRemote: async (_repoId: string, name: string) => {
+      remoteList = remoteList.filter((remote) => remote.name !== name);
+      return remoteList;
+    },
+    pushTags: (_repoId: string, opId: string, _remote: string, tag: string | null) =>
+      track(opId, async (op) => {
+        await play(opId, op, ["Enumerating objects: 1, done.", "Writing objects: 100% (1/1), done."]);
+        return done(`To example.invalid:demo/repo.git\n * [new tag]  ${tag ?? "v1.0"} -> ${tag ?? "v1.0"}`);
+      }),
     openExternal: async (url: string) => void window.open(url, "_blank", "noopener"),
     openInEditor: async () => {},
     openInTerminal: async () => {},
@@ -218,6 +253,11 @@ export function createDemoRemote(hooks: Hooks) {
         ]);
         pushed.add(branch);
         return done(`To example.invalid:demo/repo.git\n   5d6e7f8..9a0b1c2  ${branch} -> ${branch}`);
+      }),
+    cloneRepository: (ownerId: string, opId: string, _url: string, parent: string, name: string) =>
+      track(opId, async (op) => {
+        await play(opId, op, [`Cloning into '${name}'...`, ...transfer("Receiving")], ownerId);
+        return `${parent}/${name}`;
       }),
     deleteRemoteBranch: (_repoId: string, opId: string, remote: string, branch: string) =>
       track(opId, async (op) => {

@@ -4,11 +4,14 @@
 //! [`Runner::run_long`]: progress is streamed, secrets are asked through the askpass helper,
 //! and the user can cancel. Authentication is the system's own (credential helpers, ssh-agent).
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 use super::cli::{ErrorKind, GitError, LongIo, RunOptions, RunOutput};
 use super::ops::OpCtx;
 use super::status::WorkingStatus;
+use super::store::RepoStores;
 
 /// How a pull reconciles the remote branch with the local one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -71,6 +74,9 @@ pub fn list_remotes(ctx: &OpCtx) -> Result<Vec<String>, GitError> {
 pub struct RemoteUrl {
     pub name: String,
     pub url: String,
+    /// The host the address points to. An SSH alias (`git@work-github:…`) is replaced by the
+    /// host its configuration names, so the hosting service can be found. `None` for a local path.
+    pub host: Option<String>,
 }
 
 /// The remotes and their fetch addresses.
@@ -78,7 +84,107 @@ pub fn remote_urls(ctx: &OpCtx) -> Result<Vec<RemoteUrl>, GitError> {
     let output = ctx
         .runner()
         .run(ctx.workdir, &["remote", "-v"], RunOptions::background())?;
-    Ok(parse_remote_urls(&output.stdout_text()))
+    let mut urls = parse_remote_urls(&output.stdout_text());
+    for remote in &mut urls {
+        if !is_web_address(&remote.url) {
+            remote.host = remote.host.as_deref().map(resolve_ssh_host);
+        }
+    }
+    Ok(urls)
+}
+
+fn check_url(url: &str) -> Result<(), GitError> {
+    let url = url.trim();
+    // A leading dash would be read as an option, a control character has no place in an address.
+    if url.is_empty() || url.starts_with('-') || url.chars().any(char::is_control) {
+        return Err(GitError::other("This is not a valid repository address."));
+    }
+    Ok(())
+}
+
+fn no_such_remote(name: &str) -> GitError {
+    GitError::new(
+        ErrorKind::InvalidName,
+        format!("There is no remote named '{name}'."),
+    )
+}
+
+fn remote_exists(ctx: &OpCtx, name: &str) -> Result<bool, GitError> {
+    Ok(list_remotes(ctx)?.iter().any(|known| known == name))
+}
+
+/// Adds a remote and gives the remotes as they are afterwards. It does not fetch.
+pub fn add_remote(ctx: &OpCtx, name: &str, url: &str) -> Result<Vec<RemoteUrl>, GitError> {
+    check_name("remote", name)?;
+    check_url(url)?;
+    let _write = ctx.stores.begin_write()?;
+    if remote_exists(ctx, name)? {
+        return Err(GitError::new(
+            ErrorKind::AlreadyExists,
+            format!("A remote named '{name}' already exists."),
+        ));
+    }
+    ctx.runner().run(
+        ctx.workdir,
+        &["remote", "add", "--", name, url.trim()],
+        RunOptions::default(),
+    )?;
+    remote_urls(ctx)
+}
+
+/// Renames a remote: its remote-tracking branches and the upstreams that follow it move with it.
+pub fn rename_remote(ctx: &OpCtx, name: &str, new_name: &str) -> Result<Vec<RemoteUrl>, GitError> {
+    check_name("remote", name)?;
+    check_name("remote", new_name)?;
+    let _write = ctx.stores.begin_write()?;
+    if !remote_exists(ctx, name)? {
+        return Err(no_such_remote(name));
+    }
+    if name != new_name && remote_exists(ctx, new_name)? {
+        return Err(GitError::new(
+            ErrorKind::AlreadyExists,
+            format!("A remote named '{new_name}' already exists."),
+        ));
+    }
+    if name != new_name {
+        ctx.runner().run(
+            ctx.workdir,
+            &["remote", "rename", "--", name, new_name],
+            RunOptions::default(),
+        )?;
+    }
+    remote_urls(ctx)
+}
+
+/// Changes the address a remote fetches from (and pushes to, unless it has its own push address).
+pub fn set_remote_url(ctx: &OpCtx, name: &str, url: &str) -> Result<Vec<RemoteUrl>, GitError> {
+    check_name("remote", name)?;
+    check_url(url)?;
+    let _write = ctx.stores.begin_write()?;
+    if !remote_exists(ctx, name)? {
+        return Err(no_such_remote(name));
+    }
+    ctx.runner().run(
+        ctx.workdir,
+        &["remote", "set-url", "--", name, url.trim()],
+        RunOptions::default(),
+    )?;
+    remote_urls(ctx)
+}
+
+/// Removes a remote with its remote-tracking branches (the branches on the server stay).
+pub fn remove_remote(ctx: &OpCtx, name: &str) -> Result<Vec<RemoteUrl>, GitError> {
+    check_name("remote", name)?;
+    let _write = ctx.stores.begin_write()?;
+    if !remote_exists(ctx, name)? {
+        return Err(no_such_remote(name));
+    }
+    ctx.runner().run(
+        ctx.workdir,
+        &["remote", "remove", "--", name],
+        RunOptions::default(),
+    )?;
+    remote_urls(ctx)
 }
 
 /// Reads `git remote -v`: `name<TAB>url (fetch)` lines (the push lines are the same address
@@ -93,13 +199,131 @@ pub fn parse_remote_urls(text: &str) -> Vec<RemoteUrl> {
             continue;
         };
         if !urls.iter().any(|known| known.name == name) {
+            let url = url.trim().to_string();
             urls.push(RemoteUrl {
                 name: name.to_string(),
-                url: url.trim().to_string(),
+                host: host_of_url(&url),
+                url,
             });
         }
     }
     urls
+}
+
+fn is_web_address(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// The host an address points to: `https://host/…`, `ssh://user@host:port/…` or `user@host:path`.
+/// `None` for a local path.
+pub fn host_of_url(url: &str) -> Option<String> {
+    let host = match url.split_once("://") {
+        Some((scheme, rest)) if !scheme.contains(['/', ':', '@']) => {
+            let authority = rest.split('/').next()?;
+            let host_port = authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host);
+            host_port.split(':').next()?
+        }
+        _ => {
+            let (before, _) = url.split_once(':')?;
+            if before.contains('/') {
+                return None;
+            }
+            before.rsplit_once('@').map_or(before, |(_, host)| host)
+        }
+    };
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+/// The host name `ssh` uses for an alias, read from the configuration without connecting.
+/// The alias itself when it cannot be read.
+pub fn resolve_ssh_host(alias: &str) -> String {
+    if !crate::hosting::valid_host(alias) {
+        return alias.to_string();
+    }
+    let output = std::process::Command::new("ssh")
+        .args(["-G", alias])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let Ok(output) = output else {
+        return alias.to_string();
+    };
+    if !output.status.success() {
+        return alias.to_string();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("hostname "))
+        .map(|host| host.trim().to_ascii_lowercase())
+        .filter(|host| !host.is_empty())
+        .unwrap_or_else(|| alias.to_string())
+}
+
+/// A folder name that stays inside the folder it is created in.
+fn valid_folder_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\'])
+        && !name.chars().any(char::is_control)
+}
+
+/// Clones `url` into the folder `name` of `parent` and returns the path of the new working tree.
+/// The folder may exist when it is empty. When the clone fails or is cancelled the folder this
+/// call created is removed, so no half-cloned repository is left behind.
+pub fn clone_repository(
+    io: &LongIo,
+    url: &str,
+    parent: &Path,
+    name: &str,
+) -> Result<PathBuf, GitError> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(GitError::other("Enter the address of the repository."));
+    }
+    // Read as an option otherwise; `--` below only protects the arguments after it.
+    if url.starts_with('-') || url.chars().any(char::is_control) {
+        return Err(GitError::other("This is not a valid repository address."));
+    }
+    if !valid_folder_name(name) {
+        return Err(GitError::other("This is not a valid folder name."));
+    }
+    if !parent.is_dir() {
+        return Err(GitError::other("The folder to clone into does not exist."));
+    }
+    let destination = parent.join(name);
+    let existed = destination.exists();
+    if existed && !is_empty_folder(&destination) {
+        return Err(GitError::other(format!(
+            "{name} already exists in that folder and is not empty."
+        )));
+    }
+    let stores = RepoStores::default();
+    let result = stores.runner().run_long_checked(
+        parent,
+        &["clone", "--progress", "--", url, name],
+        RunOptions::default(),
+        io,
+    );
+    match result {
+        Ok(_) => Ok(destination),
+        Err(error) => {
+            if !existed {
+                let _ = std::fs::remove_dir_all(&destination);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn is_empty_folder(path: &Path) -> bool {
+    path.is_dir()
+        && std::fs::read_dir(path)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false)
 }
 
 fn finish(ctx: &OpCtx, output: RunOutput) -> Result<RemoteResult, GitError> {
@@ -196,6 +420,42 @@ pub fn push(ctx: &OpCtx, io: &LongIo, options: &PushOptions) -> Result<RemoteRes
     } else if let Some(name) = options.branch.as_deref() {
         // A branch without a remote: it goes to its own upstream.
         check_name("branch", name)?;
+    }
+    let output = ctx
+        .runner()
+        .run_long_checked(ctx.workdir, &args, RunOptions::default(), io)?;
+    finish(ctx, output)
+}
+
+/// Pushes one tag to a remote, or every tag when `tag` is `None`. A tag the remote has at
+/// another commit is refused by git (nothing is forced).
+pub fn push_tags(
+    ctx: &OpCtx,
+    io: &LongIo,
+    remote: &str,
+    tag: Option<&str>,
+) -> Result<RemoteResult, GitError> {
+    check_name("remote", remote)?;
+    let _write = ctx.stores.begin_write()?;
+    let refspec;
+    let mut args = vec!["push", "--progress", remote];
+    match tag {
+        Some(name) => {
+            // A colon would turn the name into a refspec that moves something else.
+            if name.trim().is_empty()
+                || name.starts_with('-')
+                || name.contains([':', '\0'])
+                || name.chars().any(char::is_whitespace)
+            {
+                return Err(GitError::new(
+                    ErrorKind::InvalidName,
+                    format!("'{name}' is not a valid tag name."),
+                ));
+            }
+            refspec = format!("refs/tags/{name}");
+            args.push(&refspec);
+        }
+        None => args.push("--tags"),
     }
     let output = ctx
         .runner()

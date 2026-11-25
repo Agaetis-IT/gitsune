@@ -24,8 +24,10 @@ import {
   type TodoItem,
   type Worktree,
   type PushOptions,
+  type RangeCommit,
   type RefInfo,
   type RemoteResult,
+  type RemoteUrl,
   type RefKind,
   type ResetMode,
   type StashEntry,
@@ -49,6 +51,7 @@ import {
   pullRequestUrl,
 } from "@/lib/remoteUrl";
 import { pullRequestDescription, pullRequestTitle } from "@/lib/pullRequestText";
+import { moveId } from "@/lib/tabOrder";
 import { ticketFromBranch, ticketPrefix, ticketUrl } from "@/lib/tickets";
 import { createSessionStore, type Session, type SessionStore } from "@/lib/session";
 
@@ -125,7 +128,12 @@ export type BranchDialog =
   | { type: "createBranch"; start: CommitTarget | null }
   | { type: "renameBranch"; name: string }
   /** `unmerged` holds git's warning once it refused to delete a branch with unmerged commits. */
-  | { type: "deleteBranch"; name: string; unmerged: string | null }
+  /** `tracking` is the remote-tracking branch (origin/x) that may be removed with the branch. */
+  | { type: "deleteBranch"; name: string; unmerged: string | null; tracking: string | null }
+  /** The remotes of the repository, to add, rename, re-address or remove. */
+  | { type: "remotes"; remotes: RemoteUrl[] }
+  /** Push one tag (`null`: all of them) to `remote`, among `remotes`. */
+  | { type: "pushTags"; tag: string | null; remotes: string[]; remote: string }
   | { type: "createTag"; target: CommitTarget | null }
   | { type: "deleteTag"; name: string }
   | { type: "upstream"; branch: string }
@@ -148,8 +156,11 @@ export type BranchDialog =
   /** Put the changes of the working tree aside. */
   | { type: "stash" }
   | { type: "dropStash"; stash: StashEntry }
-  /** Move the current branch to a commit: soft, mixed or hard. */
-  | { type: "reset"; target: CommitTarget }
+  /**
+   * Move a branch (`branch`, null for a detached HEAD) to a commit: soft, mixed or hard. `choose`
+   * lets the user pick another local branch.
+   */
+  | { type: "reset"; target: CommitTarget; branch: string | null; choose: boolean }
   /** Merge a branch into the current one; `info` is what the merge would do (when known). */
   | { type: "merge"; target: string; info: MergeInfo | null }
   /** Cancel the merge, cherry-pick, revert or rebase in progress: the work done so far is lost. */
@@ -157,10 +168,10 @@ export type BranchDialog =
   /** Rebase the current branch onto `onto`; `plan` lists what would be replayed (when known). */
   | { type: "rebase"; onto: string; plan: RebasePlan | null; interactive: boolean };
 
-/** A fetch, pull or push that is running. */
+/** A fetch, pull, push or clone that is running. */
 export interface RemoteOp {
   id: string;
-  kind: "fetch" | "pull" | "push" | "deleteRemote";
+  kind: "fetch" | "pull" | "push" | "deleteRemote" | "clone";
   /** What is happening, for the progress panel ("Pushing main…"). */
   label: string;
   /** The last line git printed. */
@@ -171,6 +182,23 @@ export interface RemoteOp {
   prompt: { promptId: string; text: string } | null;
   cancelling: boolean;
 }
+
+/**
+ * A tab with no repository yet: the place to open, clone or pick a recent repository. It becomes
+ * the tab of the repository that is opened from it. It is not kept for the next session.
+ */
+export interface BlankTab {
+  blank: true;
+  id: string;
+  name: string;
+  /** The clone that is running from this tab. */
+  clone: RemoteOp | null;
+  /** Why the last clone failed. */
+  cloneError: string;
+}
+
+/** What the tab bar shows. */
+export type TabEntry = RepoTab | BlankTab;
 
 /** A short message shown to the user, optionally with an action (Undo...). */
 export interface Notice {
@@ -296,7 +324,11 @@ export function createWorkspace(
   readOnlyStore: ReadOnlyStore = createReadOnlyStore(null),
   sessionStore: SessionStore = createSessionStore(null),
 ) {
+  /** The tabs of a repository, in the order they are shown. */
   const tabs = shallowRef<RepoTab[]>([]);
+  const blanks = shallowRef<BlankTab[]>([]);
+  /** The ids of every tab, repositories and blank ones, in the order they are shown. */
+  const order = shallowRef<string[]>([]);
   const activeId = ref<string | null>(null);
   const density = ref<Density>("compact");
   const diffMode = ref<DiffMode>("unified");
@@ -306,6 +338,15 @@ export function createWorkspace(
   const opening = ref(false);
 
   const active = computed(() => tabs.value.find((tab) => tab.id === activeId.value) ?? null);
+  const activeBlank = computed(() => blanks.value.find((tab) => tab.id === activeId.value) ?? null);
+  /** Every tab, in the order of the tab bar. */
+  const entries = computed<TabEntry[]>(() =>
+    order.value.flatMap((id) => {
+      const entry =
+        tabs.value.find((tab) => tab.id === id) ?? blanks.value.find((b) => b.id === id);
+      return entry ? [entry] : [];
+    }),
+  );
 
   // ---------- session: the tabs come back at the next start ----------
 
@@ -456,6 +497,16 @@ export function createWorkspace(
         if (tab && activityOpen.value && tab.id === activeId.value) void loadActivity(tab);
       }),
       backend.onRemoteProgress((event) => {
+        const blank = blanks.value.find((candidate) => candidate.id === event.repoId);
+        if (blank?.clone?.id === event.opId) {
+          const percent = /(\d{1,3})%/.exec(event.line);
+          blank.clone = {
+            ...blank.clone,
+            line: event.line,
+            percent: percent ? Math.min(100, Number(percent[1])) : blank.clone.percent,
+          };
+          return;
+        }
         const tab = tabOf(event.repoId);
         if (tab?.remote?.id !== event.opId) return;
         const percent = /(\d{1,3})%/.exec(event.line);
@@ -466,6 +517,14 @@ export function createWorkspace(
         };
       }),
       backend.onAskpass((event) => {
+        const blank = blanks.value.find((candidate) => candidate.id === event.repoId);
+        if (blank?.clone?.id === event.opId) {
+          blank.clone = {
+            ...blank.clone,
+            prompt: { promptId: event.promptId, text: event.prompt },
+          };
+          return;
+        }
         const tab = tabOf(event.repoId);
         if (tab?.remote?.id !== event.opId) return;
         tab.remote = { ...tab.remote, prompt: { promptId: event.promptId, text: event.prompt } };
@@ -796,7 +855,14 @@ export function createWorkspace(
   const askRenameBranch = (tab: RepoTab, name: string) =>
     openDialog(tab, { type: "renameBranch", name });
   const askDeleteBranch = (tab: RepoTab, name: string) =>
-    openDialog(tab, { type: "deleteBranch", name, unmerged: null });
+    openDialog(tab, {
+      type: "deleteBranch",
+      name,
+      unmerged: null,
+      tracking:
+        tab.refs.find((ref) => ref.kind === "remote" && ref.name.endsWith(`/${name}`))?.name ??
+        null,
+    });
   const askCreateTag = (tab: RepoTab, target: CommitTarget | null) =>
     openDialog(tab, { type: "createTag", target });
   const askDeleteTag = (tab: RepoTab, name: string) => openDialog(tab, { type: "deleteTag", name });
@@ -887,18 +953,27 @@ export function createWorkspace(
    * Deletes a branch. A branch with commits that are not merged anywhere else is first
    * refused (the dialog then shows git's warning); `force` is the answer to that warning.
    */
-  async function deleteBranch(tab: RepoTab, name: string, force = false): Promise<void> {
-    const deleted = await write(tab, () => backend.deleteBranch(tab.id, name, force));
+  async function deleteBranch(
+    tab: RepoTab,
+    name: string,
+    force = false,
+    removeTracking = false,
+  ): Promise<void> {
+    const deleted = await write(tab, () =>
+      backend.deleteBranch(tab.id, name, force, removeTracking),
+    );
     if (!deleted) {
       const failure = tab.writeError;
       if (failure?.kind === "notFullyMerged") {
-        tab.dialog = { type: "deleteBranch", name, unmerged: failure.message };
+        const tracking = tab.dialog?.type === "deleteBranch" ? tab.dialog.tracking : null;
+        tab.dialog = { type: "deleteBranch", name, unmerged: failure.message, tracking };
       }
       return;
     }
     closeDialog(tab);
     applyStatus(tab, deleted.status);
-    notify("info", `Deleted branch ${name}.`, {
+    const trackingNote = removeTracking && deleted.upstream ? ` and ${deleted.upstream}` : "";
+    notify("info", `Deleted branch ${name}${trackingNote}.`, {
       label: "Undo",
       run: () => restoreDeletedBranch(tab, deleted),
     });
@@ -1010,7 +1085,8 @@ export function createWorkspace(
     return failure;
   }
 
-  async function fetchRemote(tab: RepoTab, remote: string | null = null, prune = false) {
+  /** Fetches; `prune` also drops the remote-tracking branches deleted on the remote (on by default). */
+  async function fetchRemote(tab: RepoTab, remote: string | null = null, prune = true) {
     if (remote === null) {
       const remotes = await backend.remotes(tab.id).catch(() => null);
       if (remotes !== null && remotes.length === 0) {
@@ -1137,6 +1213,81 @@ export function createWorkspace(
     }
   }
 
+  // ---------- managing the remotes ----------
+
+  /** Opens the dialog that lists the remotes and changes them. */
+  async function askRemotes(tab: RepoTab): Promise<void> {
+    const remotes = await backend.remoteUrls(tab.id).catch(() => []);
+    openDialog(tab, { type: "remotes", remotes });
+  }
+
+  /**
+   * Applies a change of the remotes: the dialog shows the new list, and what depends on the
+   * remotes (the pull request host, the remote-tracking branches of the graph) is read again.
+   */
+  async function changeRemotes(tab: RepoTab, action: () => Promise<RemoteUrl[]>): Promise<boolean> {
+    const remotes = await write(tab, action);
+    if (!remotes) return false;
+    if (tab.dialog?.type === "remotes") tab.dialog = { type: "remotes", remotes };
+    void loadHosted(tab);
+    void refreshGraph(tab);
+    return true;
+  }
+
+  async function addRemote(
+    tab: RepoTab,
+    name: string,
+    url: string,
+    fetchAfter: boolean,
+  ): Promise<boolean> {
+    const added = await changeRemotes(tab, () =>
+      backend.addRemote(tab.id, name.trim(), url.trim()),
+    );
+    if (added && fetchAfter) void fetchRemote(tab, name.trim());
+    return added;
+  }
+
+  const renameRemote = (tab: RepoTab, name: string, newName: string): Promise<boolean> =>
+    changeRemotes(tab, () => backend.renameRemote(tab.id, name, newName.trim()));
+
+  const setRemoteUrl = (tab: RepoTab, name: string, url: string): Promise<boolean> =>
+    changeRemotes(tab, () => backend.setRemoteUrl(tab.id, name, url.trim()));
+
+  const removeRemote = (tab: RepoTab, name: string): Promise<boolean> =>
+    changeRemotes(tab, () => backend.removeRemote(tab.id, name));
+
+  // ---------- pushing tags ----------
+
+  /** Opens the dialog that sends a tag (`null`: every tag) to a remote. */
+  async function askPushTags(tab: RepoTab, tag: string | null): Promise<void> {
+    const remotes = await backend.remotes(tab.id).catch((): string[] => []);
+    if (remotes.length === 0) {
+      notify("info", "This repository has no remote to push to.");
+      return;
+    }
+    const remote = remotes.includes("origin") ? "origin" : remotes[0];
+    openDialog(tab, { type: "pushTags", tag, remotes, remote });
+  }
+
+  async function pushTags(tab: RepoTab, remote: string, tag: string | null): Promise<void> {
+    const what = tag ?? "the tags";
+    const result = await runRemote(tab, "push", `Pushing ${tag ?? "the tags"}…`, (opId) =>
+      backend.pushTags(tab.id, opId, remote, tag),
+    );
+    if (result) {
+      closeDialog(tab);
+      notify(
+        "info",
+        /up-to-date/i.test(result.summary) ? "Everything is up to date." : `Pushed ${what}.`,
+      );
+      return;
+    }
+    // A tag the remote already has at another commit is refused, never forced.
+    if (remoteFailure(tab)?.kind === "pushRejected") {
+      notify("error", tab.writeError?.message ?? "The remote refused the tag.");
+    }
+  }
+
   async function deleteRemoteBranch(tab: RepoTab, remote: string, branch: string): Promise<void> {
     const result = await runRemote(tab, "deleteRemote", `Deleting ${remote}/${branch}…`, (opId) =>
       backend.deleteRemoteBranch(tab.id, opId, remote, branch),
@@ -1153,19 +1304,28 @@ export function createWorkspace(
   const askDeleteRemoteBranch = (tab: RepoTab, remote: string, branch: string) =>
     openDialog(tab, { type: "deleteRemoteBranch", remote, branch });
 
-  async function cancelRemote(tab: RepoTab): Promise<void> {
-    const op = tab.remote;
+  /** The operation a tab is running: a remote operation, or the clone of a blank tab. */
+  const operationOf = (tab: RepoTab | BlankTab): RemoteOp | null =>
+    "blank" in tab ? tab.clone : tab.remote;
+
+  function setOperation(tab: RepoTab | BlankTab, op: RemoteOp): void {
+    if ("blank" in tab) tab.clone = op;
+    else tab.remote = op;
+  }
+
+  async function cancelRemote(tab: RepoTab | BlankTab): Promise<void> {
+    const op = operationOf(tab);
     if (!op || op.cancelling) return;
-    tab.remote = { ...op, cancelling: true, prompt: null };
+    setOperation(tab, { ...op, cancelling: true, prompt: null });
     await backend.cancelOperation(op.id).catch(() => {});
   }
 
   /** Answers the question git is waiting for; `null` refuses, which ends the operation. */
-  async function answerPrompt(tab: RepoTab, answer: string | null): Promise<void> {
-    const op = tab.remote;
+  async function answerPrompt(tab: RepoTab | BlankTab, answer: string | null): Promise<void> {
+    const op = operationOf(tab);
     if (!op?.prompt) return;
     const { promptId } = op.prompt;
-    tab.remote = { ...op, prompt: null };
+    setOperation(tab, { ...op, prompt: null });
     await backend.answerAskpass(op.id, promptId, answer).catch(() => {});
   }
 
@@ -1194,8 +1354,13 @@ export function createWorkspace(
   const askStash = (tab: RepoTab) => openDialog(tab, { type: "stash" });
   const askDropStash = (tab: RepoTab, stash: StashEntry) =>
     openDialog(tab, { type: "dropStash", stash });
-  const askReset = (tab: RepoTab, target: CommitTarget) =>
-    openDialog(tab, { type: "reset", target });
+  /** Reset `branch` (the checked-out one by default) to a commit. */
+  const askReset = (
+    tab: RepoTab,
+    target: CommitTarget,
+    branch: string | null = tab.headBranch,
+    choose = true,
+  ) => openDialog(tab, { type: "reset", target, branch, choose });
 
   async function stashChanges(
     tab: RepoTab,
@@ -1276,6 +1441,56 @@ export function createWorkspace(
     notify("info", `Reverted ${commit.label}.`, {
       label: "Undo",
       run: () => takeBackReplay(tab, result.before, result.after),
+    });
+  }
+
+  /**
+   * Moves a local branch to a commit. The checked-out branch is reset as HEAD; another branch only
+   * has its ref moved, and a branch that does not exist yet is created at the commit.
+   */
+  async function resetBranch(
+    tab: RepoTab,
+    branch: string,
+    target: CommitTarget,
+    mode: ResetMode,
+  ): Promise<void> {
+    const result = await write(tab, () => backend.resetBranch(tab.id, branch, target.id, mode));
+    if (!result) return reportInline(tab);
+    closeDialog(tab);
+    applyStatus(tab, result.status, true);
+    const before = result.before;
+    if (before === null) {
+      notify("info", `Created ${branch} at ${target.label}.`, {
+        label: "Undo",
+        run: async () => {
+          const undone = await write(tab, () =>
+            backend.undoBranchReset(tab.id, branch, null, result.after),
+          );
+          if (undone) {
+            applyStatus(tab, undone, true);
+            notify("info", `Deleted ${branch} again.`);
+          }
+        },
+      });
+      return;
+    }
+    const snapshot = result.snapshot;
+    const discarded = snapshot ? " Your uncommitted changes were discarded." : "";
+    notify("info", `Moved ${branch} to ${target.label} (${mode}).${discarded}`, {
+      label: "Undo",
+      run: async () => {
+        const undone = result.current
+          ? ((
+              await write(tab, () =>
+                backend.undoReset(tab.id, before, result.after, snapshot?.reference ?? null),
+              )
+            )?.status ?? null)
+          : await write(tab, () => backend.undoBranchReset(tab.id, branch, before, result.after));
+        if (undone) {
+          applyStatus(tab, undone, true);
+          notify("info", `${branch} is back where it was.`);
+        }
+      },
     });
   }
 
@@ -1597,7 +1812,39 @@ export function createWorkspace(
     tab.activity = [];
   }
 
-  async function openPath(path: string, hidden: readonly string[] = []): Promise<void> {
+  /** Removes a blank tab (the one that became a repository, or was closed). */
+  function removeBlank(blank: BlankTab): void {
+    blanks.value = blanks.value.filter((candidate) => candidate !== blank);
+    order.value = order.value.filter((id) => id !== blank.id);
+  }
+
+  /** Puts the repository tabs in the order of the tab bar. */
+  function syncRepoOrder(): void {
+    const rank = new Map(order.value.map((id, index) => [id, index]));
+    tabs.value = [...tabs.value].sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+  }
+
+  /** Shows a new repository tab: in the place of the blank tab it was opened from, else last. */
+  function placeTab(tab: RepoTab, from: BlankTab | null): void {
+    if (from && blanks.value.includes(from)) {
+      order.value = order.value.map((id) => (id === from.id ? tab.id : id));
+      blanks.value = blanks.value.filter((candidate) => candidate !== from);
+    } else {
+      order.value = [...order.value, tab.id];
+    }
+    tabs.value = [...tabs.value, tab];
+    syncRepoOrder();
+  }
+
+  /**
+   * Opens a repository in a tab. A blank tab it is opened from (the one that is shown by
+   * default) turns into the tab of the repository.
+   */
+  async function openPath(
+    path: string,
+    hidden: readonly string[] = [],
+    from: BlankTab | null = activeBlank.value,
+  ): Promise<void> {
     const trimmed = path.trim();
     if (!trimmed) return;
     opening.value = true;
@@ -1606,6 +1853,7 @@ export function createWorkspace(
       const { info, refs } = await backend.open(trimmed);
       const existing = tabs.value.find((tab) => tab.id === info.id);
       if (existing) {
+        if (from) removeBlank(from);
         activeId.value = existing.id;
         return;
       }
@@ -1668,7 +1916,7 @@ export function createWorkspace(
         rebaseBefore: null,
         speedChecks: 0,
       });
-      tabs.value = [...tabs.value, tab];
+      placeTab(tab, from);
       activeId.value = tab.id;
       recentRepos.value = recents.add({ path: info.path, name: info.name, openedAt: Date.now() });
       if (tab.readOnly) void backend.setReadOnly(tab.id, true).catch(() => {});
@@ -1722,13 +1970,22 @@ export function createWorkspace(
   }
 
   async function closeTab(id: string): Promise<void> {
-    const index = tabs.value.findIndex((tab) => tab.id === id);
+    const index = order.value.indexOf(id);
     if (index === -1) return;
-    const remaining = tabs.value.filter((tab) => tab.id !== id);
-    tabs.value = remaining;
-    if (activeId.value === id) {
-      activeId.value = (remaining[index] ?? remaining[index - 1] ?? null)?.id ?? null;
+    const remaining = order.value.filter((other) => other !== id);
+    order.value = remaining;
+    const blank = blanks.value.find((candidate) => candidate.id === id);
+    if (blank) {
+      blanks.value = blanks.value.filter((candidate) => candidate !== blank);
+      // A clone that is still running is stopped with its tab.
+      if (blank.clone) void backend.cancelOperation(blank.clone.id).catch(() => {});
+    } else {
+      tabs.value = tabs.value.filter((tab) => tab.id !== id);
     }
+    if (activeId.value === id) {
+      activeId.value = remaining[index] ?? remaining[index - 1] ?? null;
+    }
+    if (blank) return;
     try {
       await backend.close(id);
     } catch {
@@ -1737,7 +1994,68 @@ export function createWorkspace(
   }
 
   function activate(id: string): void {
-    if (tabs.value.some((tab) => tab.id === id)) activeId.value = id;
+    if (order.value.includes(id)) activeId.value = id;
+  }
+
+  let blankCount = 0;
+
+  /** Adds a blank tab, to open, clone or pick a recent repository in. */
+  function newTab(): BlankTab {
+    const blank = shallowReactive<BlankTab>({
+      blank: true,
+      id: `blank-${++blankCount}`,
+      name: "New tab",
+      clone: null,
+      cloneError: "",
+    });
+    blanks.value = [...blanks.value, blank];
+    order.value = [...order.value, blank.id];
+    activeId.value = blank.id;
+    return blank;
+  }
+
+  /** Moves a tab so that it ends up at index `to` of the tab bar. */
+  function reorderTab(id: string, to: number): void {
+    const next = moveId(order.value, order.value.indexOf(id), to);
+    if (next.every((other, index) => other === order.value[index])) return;
+    order.value = next;
+    syncRepoOrder();
+  }
+
+  /** Moves a tab one place to the left (-1) or to the right (1). */
+  const shiftTabBy = (id: string, delta: -1 | 1): void =>
+    reorderTab(id, order.value.indexOf(id) + delta);
+
+  /**
+   * Clones a repository into `name` inside `parent`, from the blank tab that is shown (one is
+   * added when there is none), and opens it in that tab. A failure stays on the tab.
+   */
+  async function cloneRepository(url: string, parent: string, name: string): Promise<void> {
+    const blank = activeBlank.value ?? newTab();
+    if (blank.clone) return;
+    const id = `op-${Date.now().toString(36)}-${++opCount}`;
+    blank.cloneError = "";
+    blank.clone = {
+      id,
+      kind: "clone",
+      label: "Cloning…",
+      line: "",
+      percent: null,
+      prompt: null,
+      cancelling: false,
+    };
+    try {
+      const path = await backend.cloneRepository(blank.id, id, url, parent, name);
+      blank.clone = null;
+      await openPath(path, [], blank);
+      if (!openError.value) notify("info", `Cloned ${name}.`);
+    } catch (error) {
+      const failure = toGitError(error);
+      if (failure.kind === "cancelled") notify("info", "Clone cancelled.");
+      else blank.cloneError = failure.message;
+    } finally {
+      blank.clone = null;
+    }
   }
 
   async function setHidden(tab: RepoTab, fullNames: string[], hide: boolean): Promise<void> {
@@ -2122,15 +2440,16 @@ export function createWorkspace(
   /**
    * What "pull request" does for a branch: open the one that exists; otherwise ask for the text
    * of a new one and create it here (the user is signed in with the tool of the host), or open the
-   * page of the host that starts one.
+   * page of the host that starts one. With a `target` (the branch of a commit the user chose) a
+   * new pull request into it is asked for, whatever pull requests the branch already has.
    */
-  async function pullRequestAction(tab: RepoTab, branch: string): Promise<void> {
+  async function pullRequestAction(tab: RepoTab, branch: string, target?: string): Promise<void> {
     if (!tab.hosted) await loadHosted(tab);
     if (tab.prLoadedAt === 0) await loadPullRequests(tab);
-    const existing = tab.pullRequests.find((pr) => pr.branch === branch);
+    const existing = target ? undefined : tab.pullRequests.find((pr) => pr.branch === branch);
     if (existing) return openPullRequestPage(tab, existing.id);
     if (!tab.hosted || tab.prSignedOut || tab.readOnly) return openPullRequest(tab, branch);
-    return askCreatePullRequest(tab, branch, tab.hosted);
+    return askCreatePullRequest(tab, branch, tab.hosted, target);
   }
 
   /** Opens the dialog of a new pull request with the target, the title and the text filled in. */
@@ -2138,6 +2457,7 @@ export function createWorkspace(
     tab: RepoTab,
     branch: string,
     hosted: HostedRepo,
+    chosen?: string,
   ): Promise<void> {
     const remotes = await backend.remoteUrls(tab.id).catch(() => []);
     const remote = pickHostedRepo(remotes)?.remote ?? remotes[0]?.name ?? "origin";
@@ -2147,16 +2467,29 @@ export function createWorkspace(
       .map((ref) => ref.name.slice(prefix.length))
       .filter((name) => name !== "HEAD" && name !== branch);
     const asked = await backend.defaultBranch(hosted).catch(() => null);
-    const target =
-      [asked, "main", "master", "develop"].find(
-        (name): name is string => !!name && name !== branch && targets.includes(name),
-      ) ??
-      targets[0] ??
-      asked ??
-      "main";
-    const commits = await backend
-      .commitsBetween(tab.id, `${prefix}${target}`, branch)
-      .catch(() => []);
+    // The usual targets that exist, the default branch of the host first.
+    const candidates = (chosen ? [chosen] : [asked, "main", "master", "develop"]).filter(
+      (name, index, all): name is string =>
+        !!name && name !== branch && targets.includes(name) && all.indexOf(name) === index,
+    );
+    // The branch is meant for the target it is closest to: `develop` rather than `main` when
+    // the work started there, even if `main` is the default branch of the host.
+    const ahead = await Promise.all(
+      candidates.map(async (name) => ({
+        name,
+        commits: await backend.commitsBetween(tab.id, `${prefix}${name}`, branch).catch(() => null),
+      })),
+    );
+    let closest: { name: string; commits: RangeCommit[] } | null = null;
+    for (const entry of ahead) {
+      if (entry.commits && (!closest || entry.commits.length < closest.commits.length)) {
+        closest = { name: entry.name, commits: entry.commits };
+      }
+    }
+    const target = closest?.name ?? chosen ?? targets[0] ?? asked ?? "main";
+    const commits =
+      closest?.commits ??
+      (await backend.commitsBetween(tab.id, `${prefix}${target}`, branch).catch(() => []));
     const local = tab.refs.find((ref) => ref.kind === "local" && ref.name === branch);
     const onRemote = tab.refs.find(
       (ref) => ref.kind === "remote" && ref.name === `${prefix}${branch}`,
@@ -2169,10 +2502,31 @@ export function createWorkspace(
       targets: targets.includes(target) ? targets : [target, ...targets],
       target,
       title: pullRequestTitle(branch, commits, hosted),
-      description: pullRequestDescription(branch, commits, hosted),
+      description: pullRequestDescription(branch, hosted),
       needsPush: !onRemote || (!!local && onRemote.target !== local.target),
       newOnRemote: !onRemote,
       error: null,
+    };
+  }
+
+  /**
+   * The title and the description for another target of the open pull request dialog: the
+   * commits to list are the ones the new target does not have. `null` when they cannot be read.
+   */
+  async function describePullRequest(
+    tab: RepoTab,
+    target: string,
+  ): Promise<{ title: string; description: string } | null> {
+    const dialog = tab.dialog;
+    const hosted = tab.hosted;
+    if (dialog?.type !== "createPullRequest" || !hosted) return null;
+    const commits = await backend
+      .commitsBetween(tab.id, `${dialog.remote}/${target}`, dialog.branch)
+      .catch(() => null);
+    if (!commits) return null;
+    return {
+      title: pullRequestTitle(dialog.branch, commits, hosted),
+      description: pullRequestDescription(dialog.branch, hosted),
     };
   }
 
@@ -2320,6 +2674,7 @@ export function createWorkspace(
     askStash,
     askDropStash,
     askReset,
+    resetBranch,
     loadStashes,
     stashChanges,
     applyStash,
@@ -2342,6 +2697,13 @@ export function createWorkspace(
     setUpstream,
     createTag,
     deleteTag,
+    askRemotes,
+    addRemote,
+    renameRemote,
+    setRemoteUrl,
+    removeRemote,
+    askPushTags,
+    pushTags,
     notices,
     activityOpen,
     historyOpen,
@@ -2352,7 +2714,7 @@ export function createWorkspace(
     unstageLines,
     blame,
     locateCommit,
-    pickFolder: () => backend.pickFolder(),
+    pickFolder: (title?: string) => backend.pickFolder(title),
     loadWorktrees,
     openWorktree,
     openWorktreeIn,
@@ -2370,6 +2732,7 @@ export function createWorkspace(
     loadPullRequests,
     pullRequestAction,
     createPullRequest,
+    describePullRequest,
     openPullRequestPage,
     openTicket,
     prefillTicket,
@@ -2398,8 +2761,15 @@ export function createWorkspace(
     loadActivity,
     clearActivity,
     tabs,
+    blanks,
+    entries,
     activeId,
     active,
+    activeBlank,
+    newTab,
+    reorderTab,
+    shiftTabBy,
+    cloneRepository,
     density,
     diffMode,
     recentRepos,

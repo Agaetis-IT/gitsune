@@ -172,6 +172,8 @@ export const MAX_PAGE_SIZE = 1000;
 export interface RemoteUrl {
   name: string;
   url: string;
+  /** The real host of the address, with an SSH alias replaced by its HostName. */
+  host?: string | null;
 }
 
 /** What the lookup of the pull request of a branch found. */
@@ -652,8 +654,12 @@ export const renameBranch = (repoId: string, oldName: string, newName: string) =
   gitInvoke<WorkingStatus>("rename_branch", { repoId, oldName, newName });
 
 /** A branch with unmerged commits needs `force` (the error is `notFullyMerged` without it). */
-export const deleteBranch = (repoId: string, name: string, force: boolean) =>
-  gitInvoke<DeletedBranch>("delete_branch", { repoId, name, force });
+export const deleteBranch = (
+  repoId: string,
+  name: string,
+  force: boolean,
+  removeTracking: boolean,
+) => gitInvoke<DeletedBranch>("delete_branch", { repoId, name, force, removeTracking });
 
 export const restoreBranch = (repoId: string, name: string, tip: string, upstream: string | null) =>
   gitInvoke<WorkingStatus>("restore_branch", { repoId, name, tip, upstream });
@@ -727,6 +733,32 @@ export const deleteRemoteBranch = (repoId: string, opId: string, remote: string,
   gitInvoke<RemoteResult>("delete_remote_branch", { repoId, opId, remote, branch });
 
 export const listRemotes = (repoId: string) => gitInvoke<string[]>("list_remotes", { repoId });
+
+// The commands below give the remotes as they are afterwards.
+export const addRemote = (repoId: string, name: string, url: string) =>
+  gitInvoke<RemoteUrl[]>("add_remote", { repoId, name, url });
+export const renameRemote = (repoId: string, name: string, newName: string) =>
+  gitInvoke<RemoteUrl[]>("rename_remote", { repoId, name, newName });
+export const setRemoteUrl = (repoId: string, name: string, url: string) =>
+  gitInvoke<RemoteUrl[]>("set_remote_url", { repoId, name, url });
+export const removeRemote = (repoId: string, name: string) =>
+  gitInvoke<RemoteUrl[]>("remove_remote", { repoId, name });
+
+/** Pushes one tag to a remote, or every tag when `tag` is `null`. */
+export const pushTags = (repoId: string, opId: string, remote: string, tag: string | null) =>
+  gitInvoke<RemoteResult>("push_tags", { repoId, opId, remote, tag });
+
+/**
+ * Clones `url` into the folder `name` of `parent` and gives the path of the new repository.
+ * `ownerId` is the tab it was started from: the progress events carry it.
+ */
+export const cloneRepository = (
+  ownerId: string,
+  opId: string,
+  url: string,
+  parent: string,
+  name: string,
+) => gitInvoke<string>("clone_repository", { ownerId, opId, url, parent, name });
 
 export const cancelOperation = (opId: string) => gitInvoke<void>("cancel_operation", { opId });
 
@@ -808,6 +840,27 @@ export const resetTo = (repoId: string, target: string, mode: ResetMode) =>
 
 export const undoReset = (repoId: string, before: string, after: string, snapshot: string | null) =>
   gitInvoke<DiscardResult>("undo_reset", { repoId, before, after, snapshot });
+
+/** A reset of any local branch. `before` is `null` when the call created the branch. */
+export interface BranchResetResult {
+  status: WorkingStatus;
+  branch: string;
+  before: string | null;
+  after: string;
+  /** The checked-out branch: the reset went through HEAD and `undoReset` takes it back. */
+  current: boolean;
+  snapshot: Snapshot | null;
+}
+
+export const resetBranch = (repoId: string, branch: string, target: string, mode: ResetMode) =>
+  gitInvoke<BranchResetResult>("reset_branch", { repoId, branch, target, mode });
+
+export const undoBranchReset = (
+  repoId: string,
+  branch: string,
+  before: string | null,
+  after: string,
+) => gitInvoke<WorkingStatus>("undo_branch_reset", { repoId, branch, before, after });
 
 export interface ReflogEntry {
   /** The commit HEAD pointed at after the operation. */

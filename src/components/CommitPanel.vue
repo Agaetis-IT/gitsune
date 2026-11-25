@@ -80,6 +80,7 @@ function split(path: string): { dir: string; name: string } {
       <p>Select a commit to see its details.</p>
       <p class="text-xs">
         Double-click the last commit of a branch, or its label, to switch to that branch.
+        Double-click a remote branch label to reset the local branch that follows it to that commit.
       </p>
     </div>
     <template v-else>

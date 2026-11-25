@@ -27,12 +27,19 @@ const description = ref("");
 const draft = ref(false);
 const push = ref(true);
 
+// The text made for `generatedFor`: it is replaced when the target changes, unless the user
+// edited it.
+let generated = { title: "", description: "" };
+let generatedFor = "";
+
 // Form state, filled in each time the dialog is opened (not when only its error changes).
 watch(
   () => dialog.value?.branch,
   () => {
     const d = dialog.value;
     if (!d) return;
+    generated = { title: d.title, description: d.description };
+    generatedFor = d.target;
     target.value = d.target;
     title.value = d.title;
     description.value = d.description;
@@ -41,6 +48,17 @@ watch(
   },
   { immediate: true },
 );
+
+// Another target means other commits to list.
+watch(target, async (next) => {
+  if (!dialog.value || next === "" || next === generatedFor) return;
+  const text = await workspace.describePullRequest(props.tab, next);
+  if (!text || target.value !== next) return;
+  if (title.value === generated.title) title.value = text.title;
+  if (description.value === generated.description) description.value = text.description;
+  generated = text;
+  generatedFor = next;
+});
 
 const busy = computed(() => props.tab.busy || props.tab.remote !== null);
 const canCreate = computed(

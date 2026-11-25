@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RefInfo } from "@/lib/api";
-import { commitMenu, laneMenu, type MenuContext, refMenu } from "./menus";
+import { commitMenu, laneMenu, type MenuContext, pullRequestTargetOf, refMenu } from "./menus";
 
 const ctx = (overrides: Partial<MenuContext> = {}): MenuContext => ({
   readOnly: false,
@@ -72,6 +72,36 @@ describe("commit menu", () => {
   });
 });
 
+describe("commit menu, pull request", () => {
+  it("offers a pull request into the branch at the commit", () => {
+    const items = commitMenu({ id: "c1", author: "Ada" }, ctx({ pullRequestTarget: "develop" }));
+    const item = items.find((i) => i.id === "pullRequestHere");
+    expect(item?.label).toBe("Create a pull request into develop…");
+    expect(item?.disabled).toBeUndefined();
+  });
+
+  it("offers nothing for a commit without a branch, and waits for a branch when detached", () => {
+    expect(ids(commitMenu({ id: "c1", author: "Ada" }, ctx()))).not.toContain("pullRequestHere");
+    const detached = commitMenu(
+      { id: "c1", author: "Ada" },
+      ctx({ pullRequestTarget: "develop", detached: true }),
+    );
+    expect(detached.find((i) => i.id === "pullRequestHere")?.disabled).toMatch(/detached/);
+  });
+
+  it("takes the branch name of a local or a remote ref, never the current branch", () => {
+    const refs = [
+      ref("v1", "tag"),
+      ref("origin/HEAD", "remote"),
+      ref("feat/x", "local", true),
+      ref("origin/develop", "remote"),
+    ];
+    expect(pullRequestTargetOf(refs, "feat/x")).toBe("develop");
+    expect(pullRequestTargetOf([ref("v1", "tag")], "feat/x")).toBeNull();
+    expect(pullRequestTargetOf([ref("feat/x", "local")], "feat/x")).toBeNull();
+  });
+});
+
 describe("commit menu, history rewriting", () => {
   it("cherry-picking the current commit onto itself is refused with a reason", () => {
     const items = commitMenu({ id: "head", author: "Ada" }, ctx({ headId: "head" }));
@@ -97,7 +127,7 @@ describe("ref menu", () => {
       "push",
       "merge",
       "rebase",
-      "pullRequest",
+      "pullRequestInto",
       "delete",
       "highlight",
       "hide",
@@ -106,11 +136,63 @@ describe("ref menu", () => {
     expect(find(items, "delete")?.danger).toBe(true);
   });
 
-  it("a pull request can be opened from a branch even in read-only mode", () => {
-    const local = refMenu(ref("topic", "local"), ctx({ readOnly: true }));
-    expect(find(local, "pullRequest")?.disabled).toBeUndefined();
-    const remote = refMenu(ref("origin/topic", "remote"), ctx({ readOnly: true }));
-    expect(find(remote, "pullRequest")?.disabled).toBeUndefined();
+  it("offers a pull request from the current branch into the branch that is clicked", () => {
+    const local = find(
+      refMenu(ref("develop", "local"), ctx({ headBranch: "feat/x" })),
+      "pullRequestInto",
+    );
+    expect(local?.label).toBe("Create a pull request into develop…");
+    expect(local?.disabled).toBeUndefined();
+    const remote = find(
+      refMenu(ref("origin/develop", "remote"), ctx({ headBranch: "feat/x" })),
+      "pullRequestInto",
+    );
+    expect(remote?.label).toBe("Create a pull request into develop…");
+    expect(remote?.disabled).toBeUndefined();
+  });
+
+  it("does not offer a pull request into a branch without a checked-out branch", () => {
+    const detached = refMenu(ref("develop", "local"), ctx({ detached: true, headBranch: null }));
+    expect(find(detached, "pullRequestInto")?.disabled).toMatch(/detached/);
+  });
+
+  it("the current branch has one pull request entry: open it when it exists, else create", () => {
+    const create = refMenu(ref("main", "local", true), ctx({ headBranch: "main" }));
+    expect(ids(create).filter((id) => id.startsWith("pullRequest"))).toEqual(["pullRequest"]);
+    expect(find(create, "pullRequest")?.label).toBe("Create a pull request…");
+    const open = refMenu(
+      ref("main", "local", true),
+      ctx({ headBranch: "main", hasPullRequest: true }),
+    );
+    expect(ids(open).filter((id) => id.startsWith("pullRequest"))).toEqual(["pullRequest"]);
+    expect(find(open, "pullRequest")?.label).toBe("Open the pull request");
+  });
+
+  it("another branch offers to start a pull request into it, and to open its own when it has one", () => {
+    const without = refMenu(ref("develop", "local"), ctx({ headBranch: "feat/x" }));
+    expect(ids(without).filter((id) => id.startsWith("pullRequest"))).toEqual(["pullRequestInto"]);
+    const withOne = refMenu(
+      ref("origin/develop", "remote"),
+      ctx({ headBranch: "feat/x", hasPullRequest: true }),
+    );
+    expect(ids(withOne).filter((id) => id.startsWith("pullRequest"))).toEqual([
+      "pullRequestInto",
+      "pullRequest",
+    ]);
+    expect(find(withOne, "pullRequest")?.label).toBe("Open the pull request of develop");
+  });
+
+  it("a pull request can be started or opened even in read-only mode", () => {
+    const current = refMenu(
+      ref("main", "local", true),
+      ctx({ readOnly: true, headBranch: "main" }),
+    );
+    expect(find(current, "pullRequest")?.disabled).toBeUndefined();
+    const other = refMenu(
+      ref("origin/topic", "remote"),
+      ctx({ readOnly: true, headBranch: "main" }),
+    );
+    expect(find(other, "pullRequestInto")?.disabled).toBeUndefined();
   });
 
   it("the checked-out branch cannot be merged into itself", () => {
@@ -133,7 +215,7 @@ describe("ref menu", () => {
       "checkout",
       "merge",
       "rebase",
-      "pullRequest",
+      "pullRequestInto",
       "deleteRemote",
       "hide",
       "copyName",
@@ -148,8 +230,15 @@ describe("ref menu", () => {
 
   it("a tag can be checked out (detached) and deleted", () => {
     const items = refMenu(ref("v1", "tag"), ctx());
-    expect(ids(items)).toEqual(["checkout", "deleteTag", "copyName"]);
+    expect(ids(items)).toEqual(["checkout", "pushTag", "deleteTag", "copyName"]);
     expect(find(items, "deleteTag")?.danger).toBe(true);
+  });
+
+  it("pushing a tag needs a repository that can be written to", () => {
+    expect(find(refMenu(ref("v1", "tag"), ctx()), "pushTag")?.disabled).toBeUndefined();
+    expect(find(refMenu(ref("v1", "tag"), ctx({ readOnly: true })), "pushTag")?.disabled).toBe(
+      "Read-only mode is on.",
+    );
   });
 
   it("the highlight and hide entries follow the current state", () => {
