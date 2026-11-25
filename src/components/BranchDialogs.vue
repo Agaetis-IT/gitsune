@@ -24,6 +24,7 @@ const switchToIt = ref(true);
 const annotated = ref(false);
 const message = ref("");
 const upstream = ref<string>("");
+const removeTracking = ref(false);
 
 const remoteBranches = computed(() => props.tab.refs.filter((ref) => ref.kind === "remote"));
 
@@ -32,6 +33,7 @@ watch(dialog, (next, previous) => {
   name.value = next.type === "renameBranch" ? next.name : "";
   switchToIt.value = true;
   annotated.value = false;
+  removeTracking.value = false;
   message.value = "";
   if (next.type === "upstream") {
     const own = remoteBranches.value.find((r) => r.name.endsWith(`/${next.branch}`));
@@ -81,7 +83,7 @@ function submit() {
       }
       break;
     case "deleteBranch":
-      void workspace.deleteBranch(tab, d.name, d.unmerged !== null);
+      void workspace.deleteBranch(tab, d.name, d.unmerged !== null, removeTracking.value);
       break;
     case "createTag":
       if (name.value.trim() && (!annotated.value || message.value.trim())) {
@@ -162,6 +164,13 @@ const SELECT_CLASS =
             This branch has commits that no other branch has.
           </DialogDescription>
         </DialogHeader>
+        <label v-if="dialog.tracking" class="flex items-start gap-2 text-sm">
+          <input v-model="removeTracking" type="checkbox" class="mt-1" />
+          <span>
+            Also delete <strong>{{ dialog.tracking }}</strong> in this repository. Deleting the
+            branch leaves it there, and a fetch without prune keeps it.
+          </span>
+        </label>
         <pre
           v-if="dialog.unmerged"
           class="border-destructive/50 text-muted-foreground max-h-40 overflow-auto rounded border p-2 text-xs whitespace-pre-wrap"

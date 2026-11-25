@@ -443,26 +443,26 @@ fn deletes_merged_branches_and_warns_about_unmerged_ones() {
     let stores = RepoStores::default();
     let ctx = ctx(&tmp, &stores);
 
-    let deleted = delete_branch(&ctx, "merged", false).unwrap();
+    let deleted = delete_branch(&ctx, "merged", false, false).unwrap();
     assert_eq!(deleted.name, "merged");
     assert_eq!(text(dir, &["branch", "--list", "merged"]), "");
 
-    let refused = delete_branch(&ctx, "unmerged", false).unwrap_err();
+    let refused = delete_branch(&ctx, "unmerged", false, false).unwrap_err();
     assert_eq!(refused.kind, ErrorKind::NotFullyMerged, "{refused}");
     assert!(
         !text(dir, &["branch", "--list", "unmerged"]).is_empty(),
         "still there"
     );
 
-    let forced = delete_branch(&ctx, "unmerged", true).unwrap();
+    let forced = delete_branch(&ctx, "unmerged", true, false).unwrap();
     assert_eq!(forced.tip, tip);
     assert_eq!(text(dir, &["branch", "--list", "unmerged"]), "");
 
     assert_eq!(
-        delete_branch(&ctx, "main", true).unwrap_err().kind,
+        delete_branch(&ctx, "main", true, false).unwrap_err().kind,
         ErrorKind::BranchCheckedOut
     );
-    assert!(delete_branch(&ctx, "ghost", false).is_err());
+    assert!(delete_branch(&ctx, "ghost", false, false).is_err());
 }
 
 #[test]
@@ -478,7 +478,7 @@ fn a_deleted_branch_comes_back_with_its_tip_and_upstream() {
     let stores = RepoStores::default();
     let ctx = ctx(&tmp, &stores);
 
-    let deleted = delete_branch(&ctx, "topic", true).unwrap();
+    let deleted = delete_branch(&ctx, "topic", true, false).unwrap();
     assert_eq!(deleted.upstream.as_deref(), Some("origin/topic"));
     restore_branch(&ctx, "topic", &deleted.tip, deleted.upstream.as_deref()).unwrap();
     assert_eq!(text(dir, &["rev-parse", "topic"]), deleted.tip);
@@ -634,7 +634,7 @@ fn every_operation_is_refused_in_read_only_mode_without_running_git() {
         ErrorKind::ReadOnly
     );
     assert_eq!(
-        kind(delete_branch(&ctx, "other", true).map(drop)),
+        kind(delete_branch(&ctx, "other", true, false).map(drop)),
         ErrorKind::ReadOnly
     );
     assert_eq!(
@@ -711,4 +711,37 @@ fn the_identity_agent_of_an_ssh_config_is_found() {
     );
     assert_eq!(identity_agent("IdentityAgent none", "/h"), None);
     assert_eq!(identity_agent("Host a\n  User git", "/h"), None);
+}
+
+#[test]
+fn deleting_a_branch_can_remove_the_remote_tracking_branch_it_followed() {
+    let tmp = repo_with(&[("a.txt", "one\n")]);
+    let dir = tmp.path();
+    let tip = text(dir, &["rev-parse", "HEAD"]);
+    git(dir, &["branch", "topic"]);
+    git(dir, &["remote", "add", "origin", "."]);
+    git(dir, &["update-ref", "refs/remotes/origin/topic", &tip]);
+    git(dir, &["config", "branch.topic.remote", "origin"]);
+    git(dir, &["config", "branch.topic.merge", "refs/heads/topic"]);
+    let stores = RepoStores::default();
+
+    let deleted = delete_branch(&ctx(&tmp, &stores), "topic", false, true).unwrap();
+    assert_eq!(deleted.upstream.as_deref(), Some("origin/topic"));
+    assert!(!dir.join(".git/refs/remotes/origin/topic").exists());
+    assert!(!text(dir, &["branch", "--list", "topic"]).contains("topic"));
+}
+
+#[test]
+fn deleting_a_branch_keeps_its_remote_tracking_branch_by_default() {
+    let tmp = repo_with(&[("a.txt", "one\n")]);
+    let dir = tmp.path();
+    let tip = text(dir, &["rev-parse", "HEAD"]);
+    git(dir, &["branch", "topic"]);
+    git(dir, &["update-ref", "refs/remotes/origin/topic", &tip]);
+    git(dir, &["config", "branch.topic.remote", "origin"]);
+    git(dir, &["config", "branch.topic.merge", "refs/heads/topic"]);
+    let stores = RepoStores::default();
+
+    delete_branch(&ctx(&tmp, &stores), "topic", false, false).unwrap();
+    assert!(dir.join(".git/refs/remotes/origin/topic").exists());
 }

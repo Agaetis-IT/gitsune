@@ -60,8 +60,8 @@ pub use remote::{
 };
 pub use repo::{RepoInfo, open_repository};
 pub use rewrite::{
-    CommitOpResult, ResetMode, ResetResult, cherry_pick, reset, revert_commit, undo_replay,
-    undo_reset,
+    BranchResetResult, CommitOpResult, ResetMode, ResetResult, cherry_pick, reset, reset_branch,
+    revert_commit, undo_branch_reset, undo_replay, undo_reset,
 };
 pub use search::SearchResult;
 pub use speed::{StatusHint, enable_untracked_cache, status_hint};

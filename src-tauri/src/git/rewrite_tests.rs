@@ -472,3 +472,79 @@ fn rewrites_are_refused_in_read_only_mode() {
         ErrorKind::ReadOnly
     );
 }
+
+// ---------- reset of any branch ----------
+
+#[test]
+fn a_branch_that_is_not_checked_out_moves_and_the_files_stay() {
+    let (tmp, [c1, c2, c3]) = three_commits();
+    let dir = tmp.path();
+    git(dir, &["branch", "side", &c2]);
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+
+    let result = reset_branch(&ctx, "side", &c1, ResetMode::Soft).unwrap();
+    assert!(!result.current);
+    assert_eq!(result.before.as_deref(), Some(c2.as_str()));
+    assert_eq!(text(dir, &["rev-parse", "side"]), c1);
+    assert_eq!(text(dir, &["rev-parse", "HEAD"]), c3);
+    assert_eq!(read(dir, "a.txt"), "three\n");
+
+    undo_branch_reset(&ctx, "side", result.before.as_deref(), &result.after).unwrap();
+    assert_eq!(text(dir, &["rev-parse", "side"]), c2);
+}
+
+#[test]
+fn a_hard_reset_of_another_branch_is_refused_and_runs_nothing() {
+    let (tmp, [c1, c2, _c3]) = three_commits();
+    let dir = tmp.path();
+    git(dir, &["branch", "side", &c2]);
+    let stores = RepoStores::default();
+
+    let error = reset_branch(&ctx(&tmp, &stores), "side", &c1, ResetMode::Hard).unwrap_err();
+    assert!(error.message.contains("checked out"), "{}", error.message);
+    assert_eq!(text(dir, &["rev-parse", "side"]), c2);
+}
+
+#[test]
+fn resetting_the_checked_out_branch_goes_through_head() {
+    let (tmp, [c1, ..]) = three_commits();
+    let dir = tmp.path();
+    let current = text(dir, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let stores = RepoStores::default();
+
+    let result = reset_branch(&ctx(&tmp, &stores), &current, &c1, ResetMode::Mixed).unwrap();
+    assert!(result.current);
+    assert_eq!(text(dir, &["rev-parse", "HEAD"]), c1);
+}
+
+#[test]
+fn a_missing_branch_is_created_at_the_target_and_undo_deletes_it() {
+    let (tmp, [c1, ..]) = three_commits();
+    let dir = tmp.path();
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+
+    let result = reset_branch(&ctx, "fresh", &c1, ResetMode::Soft).unwrap();
+    assert_eq!(result.before, None);
+    assert_eq!(text(dir, &["rev-parse", "fresh"]), c1);
+
+    undo_branch_reset(&ctx, "fresh", None, &result.after).unwrap();
+    assert!(!dir.join(".git/refs/heads/fresh").exists());
+    assert!(!text(dir, &["branch", "--list", "fresh"]).contains("fresh"));
+}
+
+#[test]
+fn undoing_a_branch_reset_is_refused_once_the_branch_moved() {
+    let (tmp, [c1, c2, _c3]) = three_commits();
+    let dir = tmp.path();
+    git(dir, &["branch", "side", &c2]);
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+    let result = reset_branch(&ctx, "side", &c1, ResetMode::Soft).unwrap();
+    git(dir, &["branch", "-f", "side", &c2]);
+
+    let error =
+        undo_branch_reset(&ctx, "side", result.before.as_deref(), &result.after).unwrap_err();
+    assert!(error.message.contains("moved"), "{}", error.message);
+}

@@ -9,12 +9,12 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::git::{
-    self, ActivityEntry, Area, CheckoutResult, CheckoutTarget, CommitDetail, CommitOpResult,
-    CommitResult, ConflictFile, DeletedBranch, DeletedTag, DirtyStrategy, DiscardResult,
-    DroppedStash, FileDiff, GitError, GraphCache, GraphMeta, GraphPage, MergeInfo, MergeMode,
-    MergeResult, PullStrategy, PushOptions, RebasePlan, RebaseResult, RefInfo, RemoteResult,
-    RepoInfo, RepoStores, RepoWatcher, ResetMode, ResetResult, SearchResult, Side, Snapshot,
-    StashEntry, StatusHint, TodoItem, WorkingStatus,
+    self, ActivityEntry, Area, BranchResetResult, CheckoutResult, CheckoutTarget, CommitDetail,
+    CommitOpResult, CommitResult, ConflictFile, DeletedBranch, DeletedTag, DirtyStrategy,
+    DiscardResult, DroppedStash, FileDiff, GitError, GraphCache, GraphMeta, GraphPage, MergeInfo,
+    MergeMode, MergeResult, PullStrategy, PushOptions, RebasePlan, RebaseResult, RefInfo,
+    RemoteResult, RepoInfo, RepoStores, RepoWatcher, ResetMode, ResetResult, SearchResult, Side,
+    Snapshot, StashEntry, StatusHint, TodoItem, WorkingStatus,
 };
 
 struct OpenRepo {
@@ -583,10 +583,11 @@ pub async fn delete_branch(
     repo_id: String,
     name: String,
     force: bool,
+    remove_tracking: bool,
     registry: State<'_, RepoRegistry>,
 ) -> Result<DeletedBranch, GitError> {
     with_ctx(&registry, &repo_id, |ctx| {
-        git::delete_branch(ctx, &name, force)
+        git::delete_branch(ctx, &name, force, remove_tracking)
     })
 }
 
@@ -1365,4 +1366,30 @@ pub async fn speed_up_status(
     registry: State<'_, RepoRegistry>,
 ) -> Result<StatusHint, GitError> {
     with_ctx(&registry, &repo_id, git::enable_untracked_cache)
+}
+
+#[tauri::command]
+pub async fn reset_branch(
+    repo_id: String,
+    branch: String,
+    target: String,
+    mode: ResetMode,
+    registry: State<'_, RepoRegistry>,
+) -> Result<BranchResetResult, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::reset_branch(ctx, &branch, &target, mode)
+    })
+}
+
+#[tauri::command]
+pub async fn undo_branch_reset(
+    repo_id: String,
+    branch: String,
+    before: Option<String>,
+    after: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::undo_branch_reset(ctx, &branch, before.as_deref(), &after)
+    })
 }

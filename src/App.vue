@@ -408,6 +408,18 @@ watch(
 function onActivate(target: { commit: GraphRow; ref: RefInfo | null }) {
   const tab = active.value;
   if (!tab) return;
+  // A double click on a remote branch label asks to reset the local branch that follows it.
+  if (target.ref?.kind === "remote") {
+    const remote = target.ref;
+    const slash = remote.name.indexOf("/");
+    workspace.askReset(
+      tab,
+      { id: target.commit.id, label: remote.name },
+      remote.name.slice(slash + 1),
+      false,
+    );
+    return;
+  }
   const choice = pickCheckoutRef(target.ref ? [target.ref] : target.commit.refs);
   if (!choice) return;
   if (choice.kind === "local" && choice.isHead) {

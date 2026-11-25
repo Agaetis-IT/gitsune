@@ -224,6 +224,15 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
       snapshot: null,
     }),
     undoReset: async () => ({ snapshot: null, status: cleanStatus() }),
+    resetBranch: async (_repoId, branch, target) => ({
+      status: cleanStatus(),
+      branch,
+      before: "b".repeat(40),
+      after: target,
+      current: false,
+      snapshot: null,
+    }),
+    undoBranchReset: async () => cleanStatus(),
     reflog: async () => [],
     restoreHead: async () => cleanStatus(),
     undoLast: async () => ({ status: cleanStatus(), undone: "the commit" }),
@@ -1684,7 +1693,12 @@ describe("deleting branches and tags", () => {
       restoreBranch,
     });
     workspace.askDeleteBranch(tab, "topic");
-    expect(tab.dialog).toEqual({ type: "deleteBranch", name: "topic", unmerged: null });
+    expect(tab.dialog).toEqual({
+      type: "deleteBranch",
+      name: "topic",
+      unmerged: null,
+      tracking: null,
+    });
 
     await workspace.deleteBranch(tab, "topic");
     expect(tab.dialog).toBeNull();
@@ -1710,10 +1724,11 @@ describe("deleting branches and tags", () => {
       type: "deleteBranch",
       name: "topic",
       unmerged: "the branch 'topic' is not fully merged.",
+      tracking: null,
     });
 
     await workspace.deleteBranch(tab, "topic", true);
-    expect(deleteBranch).toHaveBeenLastCalledWith("/fake/a", "topic", true);
+    expect(deleteBranch).toHaveBeenLastCalledWith("/fake/a", "topic", true, false);
     expect(tab.dialog).toBeNull();
   });
 
@@ -2140,7 +2155,7 @@ describe("stash, cherry-pick, revert and reset", () => {
     const undoReset = vi.fn(async () => ({ snapshot: null, status: cleanStatus() }));
     const { workspace, tab } = await openWorktree(dirty(), { reset, undoReset });
     workspace.askReset(tab, target);
-    expect(tab.dialog).toEqual({ type: "reset", target });
+    expect(tab.dialog).toEqual({ type: "reset", target, branch: tab.headBranch, choose: true });
 
     await workspace.reset(tab, target, "hard");
     expect(reset).toHaveBeenCalledWith("/fake/a", target.id, "hard");
@@ -2156,6 +2171,27 @@ describe("stash, cherry-pick, revert and reset", () => {
       target.id,
       "refs/gitsune/undo/1",
     );
+  });
+
+  it("moves a branch that is not checked out, and its undo moves it back", async () => {
+    const target = { id: "c".repeat(40), label: "origin/develop" };
+    const resetBranch = vi.fn(async (_id: string, branch: string, to: string) => ({
+      status: cleanStatus(),
+      branch,
+      before: "b".repeat(40),
+      after: to,
+      current: false,
+      snapshot: null,
+    }));
+    const undoBranchReset = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(cleanStatus(), { resetBranch, undoBranchReset });
+
+    await workspace.resetBranch(tab, "develop", target, "soft");
+    expect(resetBranch).toHaveBeenCalledWith("/fake/a", "develop", target.id, "soft");
+    expect(tab.dialog).toBeNull();
+
+    await lastOf(workspace.notices.value)?.action?.run();
+    expect(undoBranchReset).toHaveBeenCalledWith("/fake/a", "develop", "b".repeat(40), target.id);
   });
 
   it("read-only mode refuses all of them without calling the backend", async () => {

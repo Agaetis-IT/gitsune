@@ -652,8 +652,12 @@ export const renameBranch = (repoId: string, oldName: string, newName: string) =
   gitInvoke<WorkingStatus>("rename_branch", { repoId, oldName, newName });
 
 /** A branch with unmerged commits needs `force` (the error is `notFullyMerged` without it). */
-export const deleteBranch = (repoId: string, name: string, force: boolean) =>
-  gitInvoke<DeletedBranch>("delete_branch", { repoId, name, force });
+export const deleteBranch = (
+  repoId: string,
+  name: string,
+  force: boolean,
+  removeTracking: boolean,
+) => gitInvoke<DeletedBranch>("delete_branch", { repoId, name, force, removeTracking });
 
 export const restoreBranch = (repoId: string, name: string, tip: string, upstream: string | null) =>
   gitInvoke<WorkingStatus>("restore_branch", { repoId, name, tip, upstream });
@@ -808,6 +812,27 @@ export const resetTo = (repoId: string, target: string, mode: ResetMode) =>
 
 export const undoReset = (repoId: string, before: string, after: string, snapshot: string | null) =>
   gitInvoke<DiscardResult>("undo_reset", { repoId, before, after, snapshot });
+
+/** A reset of any local branch. `before` is `null` when the call created the branch. */
+export interface BranchResetResult {
+  status: WorkingStatus;
+  branch: string;
+  before: string | null;
+  after: string;
+  /** The checked-out branch: the reset went through HEAD and `undoReset` takes it back. */
+  current: boolean;
+  snapshot: Snapshot | null;
+}
+
+export const resetBranch = (repoId: string, branch: string, target: string, mode: ResetMode) =>
+  gitInvoke<BranchResetResult>("reset_branch", { repoId, branch, target, mode });
+
+export const undoBranchReset = (
+  repoId: string,
+  branch: string,
+  before: string | null,
+  after: string,
+) => gitInvoke<WorkingStatus>("undo_branch_reset", { repoId, branch, before, after });
 
 export interface ReflogEntry {
   /** The commit HEAD pointed at after the operation. */

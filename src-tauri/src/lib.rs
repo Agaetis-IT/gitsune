@@ -91,6 +91,8 @@ pub fn run() {
             commands::revert_commit,
             commands::undo_replay,
             commands::reset_to,
+            commands::reset_branch,
+            commands::undo_branch_reset,
             commands::undo_reset,
             commands::list_reflog,
             commands::restore_head,

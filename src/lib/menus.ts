@@ -51,7 +51,7 @@ export function commitMenu(commit: { id: string; author: string }, ctx: MenuCont
       disabled: atHead ? "This commit is already the current one." : undefined,
     }),
     write(ctx, { id: "revert", label: "Revert this commit" }),
-    write(ctx, { id: "reset", label: "Reset the current branch to here…", danger: true }),
+    write(ctx, { id: "reset", label: "Reset a branch to here…", danger: true }),
     write(ctx, {
       id: "rebase",
       label: "Rebase the current branch onto this commit…",

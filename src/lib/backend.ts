@@ -30,6 +30,7 @@ import {
   type ResetMode,
   type UndoResult,
   type ResetResult,
+  type BranchResetResult,
   type StashEntry,
   cherryPick,
   listReflog,
@@ -37,6 +38,7 @@ import {
   restoreHead,
   undoLast,
   resetTo,
+  resetBranch,
   revertCommit,
   stashApply,
   stashDrop,
@@ -45,6 +47,7 @@ import {
   stashRestore,
   undoReplay,
   undoReset,
+  undoBranchReset,
   type AskpassEvent,
   type PullStrategy,
   type PushOptions,
@@ -210,7 +213,13 @@ export interface RepoBackend {
   ): Promise<CheckoutResult>;
   renameBranch(repoId: string, oldName: string, newName: string): Promise<WorkingStatus>;
   /** A branch with unmerged commits needs `force`. */
-  deleteBranch(repoId: string, name: string, force: boolean): Promise<DeletedBranch>;
+  /** With `removeTracking`, the remote-tracking branch it followed (origin/x) goes too. */
+  deleteBranch(
+    repoId: string,
+    name: string,
+    force: boolean,
+    removeTracking: boolean,
+  ): Promise<DeletedBranch>;
   restoreBranch(
     repoId: string,
     name: string,
@@ -254,6 +263,19 @@ export interface RepoBackend {
   revert(repoId: string, commit: string): Promise<CommitOpResult>;
   undoReplay(repoId: string, before: string, after: string): Promise<WorkingStatus>;
   reset(repoId: string, target: string, mode: ResetMode): Promise<ResetResult>;
+  /** Moves any local branch; a branch that is not checked out only has its ref moved. */
+  resetBranch(
+    repoId: string,
+    branch: string,
+    target: string,
+    mode: ResetMode,
+  ): Promise<BranchResetResult>;
+  undoBranchReset(
+    repoId: string,
+    branch: string,
+    before: string | null,
+    after: string,
+  ): Promise<WorkingStatus>;
   /** The positions HEAD went through, newest first. */
   reflog(repoId: string): Promise<ReflogEntry[]>;
   /** Moves the branch back to a commit of the reflog; local changes in the way make it fail. */
@@ -444,6 +466,8 @@ export const tauriBackend: RepoBackend = {
   revert: revertCommit,
   undoReplay,
   reset: resetTo,
+  resetBranch,
+  undoBranchReset,
   reflog: listReflog,
   restoreHead,
   undoLast,

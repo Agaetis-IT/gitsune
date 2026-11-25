@@ -125,7 +125,8 @@ export type BranchDialog =
   | { type: "createBranch"; start: CommitTarget | null }
   | { type: "renameBranch"; name: string }
   /** `unmerged` holds git's warning once it refused to delete a branch with unmerged commits. */
-  | { type: "deleteBranch"; name: string; unmerged: string | null }
+  /** `tracking` is the remote-tracking branch (origin/x) that may be removed with the branch. */
+  | { type: "deleteBranch"; name: string; unmerged: string | null; tracking: string | null }
   | { type: "createTag"; target: CommitTarget | null }
   | { type: "deleteTag"; name: string }
   | { type: "upstream"; branch: string }
@@ -148,8 +149,11 @@ export type BranchDialog =
   /** Put the changes of the working tree aside. */
   | { type: "stash" }
   | { type: "dropStash"; stash: StashEntry }
-  /** Move the current branch to a commit: soft, mixed or hard. */
-  | { type: "reset"; target: CommitTarget }
+  /**
+   * Move a branch (`branch`, null for a detached HEAD) to a commit: soft, mixed or hard. `choose`
+   * lets the user pick another local branch.
+   */
+  | { type: "reset"; target: CommitTarget; branch: string | null; choose: boolean }
   /** Merge a branch into the current one; `info` is what the merge would do (when known). */
   | { type: "merge"; target: string; info: MergeInfo | null }
   /** Cancel the merge, cherry-pick, revert or rebase in progress: the work done so far is lost. */
@@ -796,7 +800,14 @@ export function createWorkspace(
   const askRenameBranch = (tab: RepoTab, name: string) =>
     openDialog(tab, { type: "renameBranch", name });
   const askDeleteBranch = (tab: RepoTab, name: string) =>
-    openDialog(tab, { type: "deleteBranch", name, unmerged: null });
+    openDialog(tab, {
+      type: "deleteBranch",
+      name,
+      unmerged: null,
+      tracking:
+        tab.refs.find((ref) => ref.kind === "remote" && ref.name.endsWith(`/${name}`))?.name ??
+        null,
+    });
   const askCreateTag = (tab: RepoTab, target: CommitTarget | null) =>
     openDialog(tab, { type: "createTag", target });
   const askDeleteTag = (tab: RepoTab, name: string) => openDialog(tab, { type: "deleteTag", name });
@@ -887,18 +898,27 @@ export function createWorkspace(
    * Deletes a branch. A branch with commits that are not merged anywhere else is first
    * refused (the dialog then shows git's warning); `force` is the answer to that warning.
    */
-  async function deleteBranch(tab: RepoTab, name: string, force = false): Promise<void> {
-    const deleted = await write(tab, () => backend.deleteBranch(tab.id, name, force));
+  async function deleteBranch(
+    tab: RepoTab,
+    name: string,
+    force = false,
+    removeTracking = false,
+  ): Promise<void> {
+    const deleted = await write(tab, () =>
+      backend.deleteBranch(tab.id, name, force, removeTracking),
+    );
     if (!deleted) {
       const failure = tab.writeError;
       if (failure?.kind === "notFullyMerged") {
-        tab.dialog = { type: "deleteBranch", name, unmerged: failure.message };
+        const tracking = tab.dialog?.type === "deleteBranch" ? tab.dialog.tracking : null;
+        tab.dialog = { type: "deleteBranch", name, unmerged: failure.message, tracking };
       }
       return;
     }
     closeDialog(tab);
     applyStatus(tab, deleted.status);
-    notify("info", `Deleted branch ${name}.`, {
+    const trackingNote = removeTracking && deleted.upstream ? ` and ${deleted.upstream}` : "";
+    notify("info", `Deleted branch ${name}${trackingNote}.`, {
       label: "Undo",
       run: () => restoreDeletedBranch(tab, deleted),
     });
@@ -1010,7 +1030,8 @@ export function createWorkspace(
     return failure;
   }
 
-  async function fetchRemote(tab: RepoTab, remote: string | null = null, prune = false) {
+  /** Fetches; `prune` also drops the remote-tracking branches deleted on the remote (on by default). */
+  async function fetchRemote(tab: RepoTab, remote: string | null = null, prune = true) {
     if (remote === null) {
       const remotes = await backend.remotes(tab.id).catch(() => null);
       if (remotes !== null && remotes.length === 0) {
@@ -1194,8 +1215,13 @@ export function createWorkspace(
   const askStash = (tab: RepoTab) => openDialog(tab, { type: "stash" });
   const askDropStash = (tab: RepoTab, stash: StashEntry) =>
     openDialog(tab, { type: "dropStash", stash });
-  const askReset = (tab: RepoTab, target: CommitTarget) =>
-    openDialog(tab, { type: "reset", target });
+  /** Reset `branch` (the checked-out one by default) to a commit. */
+  const askReset = (
+    tab: RepoTab,
+    target: CommitTarget,
+    branch: string | null = tab.headBranch,
+    choose = true,
+  ) => openDialog(tab, { type: "reset", target, branch, choose });
 
   async function stashChanges(
     tab: RepoTab,
@@ -1276,6 +1302,56 @@ export function createWorkspace(
     notify("info", `Reverted ${commit.label}.`, {
       label: "Undo",
       run: () => takeBackReplay(tab, result.before, result.after),
+    });
+  }
+
+  /**
+   * Moves a local branch to a commit. The checked-out branch is reset as HEAD; another branch only
+   * has its ref moved, and a branch that does not exist yet is created at the commit.
+   */
+  async function resetBranch(
+    tab: RepoTab,
+    branch: string,
+    target: CommitTarget,
+    mode: ResetMode,
+  ): Promise<void> {
+    const result = await write(tab, () => backend.resetBranch(tab.id, branch, target.id, mode));
+    if (!result) return reportInline(tab);
+    closeDialog(tab);
+    applyStatus(tab, result.status, true);
+    const before = result.before;
+    if (before === null) {
+      notify("info", `Created ${branch} at ${target.label}.`, {
+        label: "Undo",
+        run: async () => {
+          const undone = await write(tab, () =>
+            backend.undoBranchReset(tab.id, branch, null, result.after),
+          );
+          if (undone) {
+            applyStatus(tab, undone, true);
+            notify("info", `Deleted ${branch} again.`);
+          }
+        },
+      });
+      return;
+    }
+    const snapshot = result.snapshot;
+    const discarded = snapshot ? " Your uncommitted changes were discarded." : "";
+    notify("info", `Moved ${branch} to ${target.label} (${mode}).${discarded}`, {
+      label: "Undo",
+      run: async () => {
+        const undone = result.current
+          ? ((
+              await write(tab, () =>
+                backend.undoReset(tab.id, before, result.after, snapshot?.reference ?? null),
+              )
+            )?.status ?? null)
+          : await write(tab, () => backend.undoBranchReset(tab.id, branch, before, result.after));
+        if (undone) {
+          applyStatus(tab, undone, true);
+          notify("info", `${branch} is back where it was.`);
+        }
+      },
     });
   }
 
@@ -2320,6 +2396,7 @@ export function createWorkspace(
     askStash,
     askDropStash,
     askReset,
+    resetBranch,
     loadStashes,
     stashChanges,
     applyStash,

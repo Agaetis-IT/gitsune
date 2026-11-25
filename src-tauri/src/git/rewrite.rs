@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::branches::{fallback_identity, resolve};
+use super::branches::{fallback_identity, resolve, validate_name};
 use super::cli::{ErrorKind, GitError, RunOptions};
 use super::ops::{DiscardResult, OpCtx, Snapshot, head_id, restore_snapshot, take_snapshot};
 use super::status::{FileState, WorkingStatus};
@@ -183,6 +183,140 @@ pub fn reset(ctx: &OpCtx, target: &str, mode: ResetMode) -> Result<ResetResult, 
         after: id,
         snapshot,
     })
+}
+
+/// The result of moving a branch, which may not be the checked-out one.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchResetResult {
+    pub status: WorkingStatus,
+    pub branch: String,
+    /// Where the branch was; `None` when this call created it.
+    pub before: Option<String>,
+    pub after: String,
+    /// The checked-out branch: the reset went through HEAD, and `undo_reset` takes it back.
+    pub current: bool,
+    /// Made before a hard reset threw uncommitted changes away.
+    pub snapshot: Option<Snapshot>,
+}
+
+/// The checked-out branch, `None` when HEAD is detached.
+fn current_branch(ctx: &OpCtx) -> Result<Option<String>, GitError> {
+    let output = ctx.runner().run_raw(
+        ctx.workdir,
+        &["symbolic-ref", "-q", "--short", "HEAD"],
+        RunOptions::background(),
+    )?;
+    Ok((output.code == 0).then(|| output.stdout_text().trim().to_string()))
+}
+
+/// The commit a branch points at, `None` when it does not exist.
+fn branch_tip(ctx: &OpCtx, full: &str) -> Result<Option<String>, GitError> {
+    let output = ctx.runner().run_raw(
+        ctx.workdir,
+        &["rev-parse", "--verify", "-q", full],
+        RunOptions::background(),
+    )?;
+    Ok((output.code == 0).then(|| output.stdout_text().trim().to_string()))
+}
+
+/// Moves any local branch to `target`. The checked-out branch goes through `reset`. Another
+/// branch only has its ref moved: soft and mixed change nothing else, and hard is refused since
+/// it would rewrite the files of the checked-out branch. A branch that does not exist is created
+/// at `target` (a remote-tracking `target` also sets its upstream).
+pub fn reset_branch(
+    ctx: &OpCtx,
+    branch: &str,
+    target: &str,
+    mode: ResetMode,
+) -> Result<BranchResetResult, GitError> {
+    validate_name(ctx, true, branch)?;
+    if current_branch(ctx)?.as_deref() == Some(branch) {
+        let result = reset(ctx, target, mode)?;
+        return Ok(BranchResetResult {
+            status: result.status,
+            branch: branch.to_string(),
+            before: Some(result.before),
+            after: result.after,
+            current: true,
+            snapshot: result.snapshot,
+        });
+    }
+    if mode == ResetMode::Hard {
+        return Err(GitError::other(format!(
+            "A hard reset rewrites the files, so '{branch}' must be checked out first. Use soft or mixed, or check it out."
+        )));
+    }
+    let _write = ctx.stores.begin_write()?;
+    let id = resolve(ctx, target)?;
+    let full = format!("refs/heads/{branch}");
+    let Some(before) = branch_tip(ctx, &full)? else {
+        ctx.runner().run(
+            ctx.workdir,
+            &["branch", branch, target],
+            RunOptions::default(),
+        )?;
+        return Ok(BranchResetResult {
+            status: ctx.status()?,
+            branch: branch.to_string(),
+            before: None,
+            after: id,
+            current: false,
+            snapshot: None,
+        });
+    };
+    // The old value makes git refuse the move if the branch changed in the meantime.
+    ctx.runner().run(
+        ctx.workdir,
+        &[
+            "update-ref",
+            "-m",
+            &format!("reset: moving to {target}"),
+            &full,
+            &id,
+            &before,
+        ],
+        RunOptions::default(),
+    )?;
+    Ok(BranchResetResult {
+        status: ctx.status()?,
+        branch: branch.to_string(),
+        before: Some(before),
+        after: id,
+        current: false,
+        snapshot: None,
+    })
+}
+
+/// Takes back `reset_branch` on a branch that is not checked out: the branch goes back to
+/// `before`, or is deleted when this reset created it. Refused if the branch moved since.
+pub fn undo_branch_reset(
+    ctx: &OpCtx,
+    branch: &str,
+    before: Option<&str>,
+    after: &str,
+) -> Result<WorkingStatus, GitError> {
+    validate_name(ctx, true, branch)?;
+    let _write = ctx.stores.begin_write()?;
+    let full = format!("refs/heads/{branch}");
+    if branch_tip(ctx, &full)?.as_deref() != Some(after) {
+        return Err(GitError::other(format!(
+            "'{branch}' has moved since then: this cannot be undone from here."
+        )));
+    }
+    match before {
+        Some(before) => ctx.runner().run(
+            ctx.workdir,
+            &["update-ref", "-m", "reset: undo", &full, before, after],
+            RunOptions::default(),
+        )?,
+        None => ctx.runner().run(
+            ctx.workdir,
+            &["update-ref", "-d", &full, after],
+            RunOptions::default(),
+        )?,
+    };
+    ctx.status()
 }
 
 /// Takes back a reset: the branch goes back to `before` and, after a hard reset, the
