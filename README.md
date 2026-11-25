@@ -14,6 +14,7 @@ Tauri 2 (Rust) + Vue 3 + TypeScript + Tailwind + shadcn-vue. macOS first.
 - Commit details, changed files, unified and side-by-side diffs with syntax highlighting; large and binary files are handled.
 - Live refresh: commits, fetches and checkouts made in a terminal appear without losing your place; changes to the working tree show up in the status as you save files.
 - Stage files or single hunks, commit with a summary and description (hooks and signing behave as in the terminal), amend, discard changes with an undo, and an activity log of every git command the app ran.
+- Settings (gear at the bottom of the sidebar, or Cmd+,): choose system, light or dark, and a theme among six (Default, GitHub, Nord, Solarized, Gruvbox, Dracula), each with a light and a dark variant that also set the colors of the graph lines. Make your own from a copy, with color pickers and a live preview, and import or export a theme as JSON.
 - Create, rename and delete branches, set upstreams, switch branches (with a stash-or-discard choice when local changes are in the way), create and delete tags, all from context menus on the graph and the sidebar; deletions can be undone.
 - Fetch, pull (merge or rebase) and push (with an optional `--force-with-lease`), with progress, cancel and password prompts through your usual credential helpers and ssh-agent.
 - Stash (list, apply, pop, drop), cherry-pick, revert and reset (soft, mixed, hard), each with a confirmation where something is lost and an Undo.

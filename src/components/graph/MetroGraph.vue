@@ -4,7 +4,7 @@ import type { GraphMeta, GraphRow, Lane, RefInfo } from "@/lib/api";
 import { draw, type PillRect, type Theme, type WipRow } from "@/lib/metro/draw";
 import { isOnStation, laneAt, rowAtY } from "@/lib/metro/geometry";
 import { type Density, graphContentWidth, METRICS, rowTop } from "@/lib/metro/metrics";
-import { DARK_PALETTE, LIGHT_PALETTE } from "@/lib/metro/palette";
+import { useTheme } from "@/composables/useTheme";
 import { type FetchPage, RowCache } from "@/lib/metro/rowCache";
 
 /** What was right-clicked in the graph. */
@@ -113,6 +113,8 @@ const cache = new RowCache({
   onError: (error) => emit("error", String(error)),
 });
 
+const appTheme = useTheme();
+
 function readTheme(): Theme {
   const root = document.documentElement;
   const style = getComputedStyle(root);
@@ -122,7 +124,7 @@ function readTheme(): Theme {
     background: read("--background", dark ? "#0d0d0d" : "#ffffff"),
     foreground: read("--foreground", dark ? "#fafafa" : "#171717"),
     muted: read("--muted-foreground", dark ? "#a3a3a3" : "#737373"),
-    palette: dark ? DARK_PALETTE : LIGHT_PALETTE,
+    palette: appTheme.palette.value,
   };
 }
 let theme = readTheme();
@@ -413,7 +415,10 @@ onMounted(() => {
     theme = readTheme();
     scheduleDraw();
   });
-  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class", "style"],
+  });
 });
 
 onBeforeUnmount(() => {
