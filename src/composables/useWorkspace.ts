@@ -1563,6 +1563,12 @@ export function createWorkspace(
   const toggleRef = (tab: RepoTab, fullName: string) =>
     setHidden(tab, [fullName], !tab.hidden.has(fullName));
 
+  /** Hides a group of refs (a folder of the sidebar), or shows them when all are hidden. */
+  function toggleRefs(tab: RepoTab, fullNames: string[]): Promise<void> {
+    if (fullNames.length === 0) return Promise.resolve();
+    return setHidden(tab, fullNames, !fullNames.every((name) => tab.hidden.has(name)));
+  }
+
   /** Hides a whole kind of refs, or shows it again when everything of that kind is hidden. */
   function toggleKind(tab: RepoTab, kind: RefKind): Promise<void> {
     const names = tab.refs.filter((ref) => ref.kind === kind).map((ref) => ref.fullName);
@@ -1769,6 +1775,7 @@ export function createWorkspace(
     closeTab,
     activate,
     toggleRef,
+    toggleRefs,
     toggleKind,
     select,
     openFile,

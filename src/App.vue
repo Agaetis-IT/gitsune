@@ -34,6 +34,7 @@ import TabBar from "@/components/TabBar.vue";
 import { Button } from "@/components/ui/button";
 import WelcomeScreen from "@/components/WelcomeScreen.vue";
 import WorkingPanel from "@/components/WorkingPanel.vue";
+import { useGraphSettings } from "@/composables/useGraphSettings";
 import { useSettings } from "@/composables/useSettings";
 import { useWorkspace } from "@/composables/useWorkspace";
 import type { FileChange, GraphRow, Lane, RefInfo, StashEntry, StatusEntry } from "@/lib/api";
@@ -323,6 +324,7 @@ watch(
 );
 
 const settings = useSettings();
+const graphSettings = useGraphSettings();
 
 // Ctrl/Cmd+F goes to the search box.
 function onKeydown(event: KeyboardEvent) {
@@ -357,6 +359,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
           <RepoSidebar
             :tab="active"
             @toggle-ref="workspace.toggleRef(active, $event)"
+            @toggle-refs="workspace.toggleRefs(active, $event)"
             @toggle-kind="workspace.toggleKind(active, $event)"
             @toggle-highlight="workspace.toggleHighlight(active, $event)"
             @jump="graph?.focusRow($event)"
@@ -533,6 +536,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             :matches="active.search.rows"
             :wip="wipRow"
             :head-row="headRow"
+            :initials="graphSettings.showInitials.value"
             @wip-click="workspace.selectWip(active)"
             @lane-click="lanePopover = $event"
             @context-menu="onGraphMenu"

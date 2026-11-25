@@ -27,3 +27,13 @@ export const rowCenterY = (row: number, m: Metrics): number => row * m.rowH + m.
 export function graphContentWidth(maxCols: number, m: Metrics): number {
   return m.graphPad * 2 + Math.max(0, maxCols - 1) * m.colW;
 }
+
+/** Larger stations, so that two initials fit in them. */
+export const INITIALS_METRICS: Record<Density, Metrics> = {
+  compact: { rowH: 30, colW: 24, lineW: 3.5, stationR: 10, cornerR: 10, graphPad: 16 },
+  detailed: { rowH: 50, colW: 32, lineW: 5, stationR: 13, cornerR: 13, graphPad: 18 },
+};
+
+/** The sizes to use: with initials in the stations they are bigger. */
+export const metricsFor = (density: Density, initials: boolean): Metrics =>
+  initials ? INITIALS_METRICS[density] : METRICS[density];
