@@ -163,6 +163,8 @@ export function buildMenuModel(state: AppMenuState): MenuNode[] {
         item("fetch", "Fetch", remote, "CmdOrCtrl+Shift+F"),
         item("pull", "Pull", remote && state.canWrite, "CmdOrCtrl+Shift+L"),
         item("push", "Push", remote && state.canWrite, "CmdOrCtrl+Shift+P"),
+        item("pushTags", "Push All Tags…", remote && state.canWrite),
+        item("remotes", "Manage the Remotes…", repo),
         separator,
         item("undoLast", "Undo Last Operation", write, "CmdOrCtrl+Alt+Z"),
         item("refresh", "Refresh", repo, "CmdOrCtrl+R"),

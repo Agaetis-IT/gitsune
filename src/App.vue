@@ -34,6 +34,7 @@ import NoticeHost from "@/components/NoticeHost.vue";
 import RebaseDialog from "@/components/RebaseDialog.vue";
 import OperationBanner from "@/components/OperationBanner.vue";
 import RemoteDialogs from "@/components/RemoteDialogs.vue";
+import RemotesDialog from "@/components/RemotesDialog.vue";
 import RemoteStatus from "@/components/RemoteStatus.vue";
 import MetroGraph, { type GraphContextTarget } from "@/components/graph/MetroGraph.vue";
 import WorktreeDialogs from "@/components/WorktreeDialogs.vue";
@@ -355,6 +356,7 @@ function onMenuSelect(id: string) {
       const slash = ref.name.indexOf("/");
       workspace.askDeleteRemoteBranch(tab, ref.name.slice(0, slash), ref.name.slice(slash + 1));
     } else if (id === "deleteTag") workspace.askDeleteTag(tab, ref.name);
+    else if (id === "pushTag") void workspace.askPushTags(tab, ref.name);
     else if (id === "highlight") {
       const lane = laneOfRef(ref);
       if (lane !== null) workspace.toggleHighlight(tab, lane);
@@ -680,6 +682,12 @@ function onMenuAction(id: string) {
     case "push":
       void workspace.push(tab);
       break;
+    case "pushTags":
+      void workspace.askPushTags(tab, null);
+      break;
+    case "remotes":
+      void workspace.askRemotes(tab);
+      break;
     case "refresh":
       void workspace.refreshGraph(tab);
       void workspace.loadPullRequests(tab, true);
@@ -819,6 +827,8 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             @open-pr="workspace.openPullRequestPage(active, $event)"
             @open-worktree="workspace.openWorktree($event)"
             @create-worktree="workspace.askCreateWorktree(active)"
+            @manage-remotes="workspace.askRemotes(active)"
+            @push-tags="workspace.askPushTags(active, null)"
             @worktree-menu="openWorktreeMenu"
             @stash="onStash"
           />
@@ -1182,6 +1192,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       <IdentityDialog :tab="active" />
       <BranchDialogs :tab="active" />
       <RemoteDialogs :tab="active" />
+      <RemotesDialog :tab="active" />
       <PullRequestDialog :tab="active" />
       <WorktreeDialogs :tab="active" />
       <HistoryDialogs :tab="active" />

@@ -27,6 +27,7 @@ import {
   type RangeCommit,
   type RefInfo,
   type RemoteResult,
+  type RemoteUrl,
   type RefKind,
   type ResetMode,
   type StashEntry,
@@ -129,6 +130,10 @@ export type BranchDialog =
   /** `unmerged` holds git's warning once it refused to delete a branch with unmerged commits. */
   /** `tracking` is the remote-tracking branch (origin/x) that may be removed with the branch. */
   | { type: "deleteBranch"; name: string; unmerged: string | null; tracking: string | null }
+  /** The remotes of the repository, to add, rename, re-address or remove. */
+  | { type: "remotes"; remotes: RemoteUrl[] }
+  /** Push one tag (`null`: all of them) to `remote`, among `remotes`. */
+  | { type: "pushTags"; tag: string | null; remotes: string[]; remote: string }
   | { type: "createTag"; target: CommitTarget | null }
   | { type: "deleteTag"; name: string }
   | { type: "upstream"; branch: string }
@@ -1205,6 +1210,81 @@ export function createWorkspace(
       } else {
         notify("error", failure.message);
       }
+    }
+  }
+
+  // ---------- managing the remotes ----------
+
+  /** Opens the dialog that lists the remotes and changes them. */
+  async function askRemotes(tab: RepoTab): Promise<void> {
+    const remotes = await backend.remoteUrls(tab.id).catch(() => []);
+    openDialog(tab, { type: "remotes", remotes });
+  }
+
+  /**
+   * Applies a change of the remotes: the dialog shows the new list, and what depends on the
+   * remotes (the pull request host, the remote-tracking branches of the graph) is read again.
+   */
+  async function changeRemotes(tab: RepoTab, action: () => Promise<RemoteUrl[]>): Promise<boolean> {
+    const remotes = await write(tab, action);
+    if (!remotes) return false;
+    if (tab.dialog?.type === "remotes") tab.dialog = { type: "remotes", remotes };
+    void loadHosted(tab);
+    void refreshGraph(tab);
+    return true;
+  }
+
+  async function addRemote(
+    tab: RepoTab,
+    name: string,
+    url: string,
+    fetchAfter: boolean,
+  ): Promise<boolean> {
+    const added = await changeRemotes(tab, () =>
+      backend.addRemote(tab.id, name.trim(), url.trim()),
+    );
+    if (added && fetchAfter) void fetchRemote(tab, name.trim());
+    return added;
+  }
+
+  const renameRemote = (tab: RepoTab, name: string, newName: string): Promise<boolean> =>
+    changeRemotes(tab, () => backend.renameRemote(tab.id, name, newName.trim()));
+
+  const setRemoteUrl = (tab: RepoTab, name: string, url: string): Promise<boolean> =>
+    changeRemotes(tab, () => backend.setRemoteUrl(tab.id, name, url.trim()));
+
+  const removeRemote = (tab: RepoTab, name: string): Promise<boolean> =>
+    changeRemotes(tab, () => backend.removeRemote(tab.id, name));
+
+  // ---------- pushing tags ----------
+
+  /** Opens the dialog that sends a tag (`null`: every tag) to a remote. */
+  async function askPushTags(tab: RepoTab, tag: string | null): Promise<void> {
+    const remotes = await backend.remotes(tab.id).catch((): string[] => []);
+    if (remotes.length === 0) {
+      notify("info", "This repository has no remote to push to.");
+      return;
+    }
+    const remote = remotes.includes("origin") ? "origin" : remotes[0];
+    openDialog(tab, { type: "pushTags", tag, remotes, remote });
+  }
+
+  async function pushTags(tab: RepoTab, remote: string, tag: string | null): Promise<void> {
+    const what = tag ?? "the tags";
+    const result = await runRemote(tab, "push", `Pushing ${tag ?? "the tags"}…`, (opId) =>
+      backend.pushTags(tab.id, opId, remote, tag),
+    );
+    if (result) {
+      closeDialog(tab);
+      notify(
+        "info",
+        /up-to-date/i.test(result.summary) ? "Everything is up to date." : `Pushed ${what}.`,
+      );
+      return;
+    }
+    // A tag the remote already has at another commit is refused, never forced.
+    if (remoteFailure(tab)?.kind === "pushRejected") {
+      notify("error", tab.writeError?.message ?? "The remote refused the tag.");
     }
   }
 
@@ -2617,6 +2697,13 @@ export function createWorkspace(
     setUpstream,
     createTag,
     deleteTag,
+    askRemotes,
+    addRemote,
+    renameRemote,
+    setRemoteUrl,
+    removeRemote,
+    askPushTags,
+    pushTags,
     notices,
     activityOpen,
     historyOpen,

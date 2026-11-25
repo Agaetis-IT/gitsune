@@ -178,8 +178,15 @@ describe("ref menu", () => {
 
   it("a tag can be checked out (detached) and deleted", () => {
     const items = refMenu(ref("v1", "tag"), ctx());
-    expect(ids(items)).toEqual(["checkout", "deleteTag", "copyName"]);
+    expect(ids(items)).toEqual(["checkout", "pushTag", "deleteTag", "copyName"]);
     expect(find(items, "deleteTag")?.danger).toBe(true);
+  });
+
+  it("pushing a tag needs a repository that can be written to", () => {
+    expect(find(refMenu(ref("v1", "tag"), ctx()), "pushTag")?.disabled).toBeUndefined();
+    expect(find(refMenu(ref("v1", "tag"), ctx({ readOnly: true })), "pushTag")?.disabled).toBe(
+      "Read-only mode is on.",
+    );
   });
 
   it("the highlight and hide entries follow the current state", () => {

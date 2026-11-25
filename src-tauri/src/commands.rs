@@ -886,6 +886,67 @@ pub async fn list_remote_urls(
     with_ctx(&registry, &repo_id, git::remote_urls)
 }
 
+/// Adds a remote; gives the remotes as they are afterwards.
+#[tauri::command]
+pub async fn add_remote(
+    repo_id: String,
+    name: String,
+    url: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<git::RemoteUrl>, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::add_remote(ctx, &name, &url))
+}
+
+#[tauri::command]
+pub async fn rename_remote(
+    repo_id: String,
+    name: String,
+    new_name: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<git::RemoteUrl>, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::rename_remote(ctx, &name, &new_name)
+    })
+}
+
+#[tauri::command]
+pub async fn set_remote_url(
+    repo_id: String,
+    name: String,
+    url: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<git::RemoteUrl>, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::set_remote_url(ctx, &name, &url)
+    })
+}
+
+#[tauri::command]
+pub async fn remove_remote(
+    repo_id: String,
+    name: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<git::RemoteUrl>, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::remove_remote(ctx, &name))
+}
+
+/// Pushes one tag, or every tag when `tag` is `None`.
+#[tauri::command]
+pub async fn push_tags(
+    repo_id: String,
+    op_id: String,
+    remote: String,
+    tag: Option<String>,
+    app: AppHandle,
+    registry: State<'_, RepoRegistry>,
+    ops: State<'_, RemoteOps>,
+) -> Result<RemoteResult, GitError> {
+    run_remote(app, &registry, &ops, repo_id, op_id, move |ctx, io| {
+        git::push_tags(ctx, io, &remote, tag.as_deref())
+    })
+    .await
+}
+
 /// Opens an `https` address in the browser.
 #[tauri::command]
 pub fn open_external(url: String) -> Result<(), String> {

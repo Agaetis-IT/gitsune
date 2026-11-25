@@ -268,6 +268,14 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
     statusHint: async () => ({ lastMs: 20, untrackedCache: false, canSpeedUp: false }),
     speedUpStatus: async () => ({ lastMs: 10, untrackedCache: true, canSpeedUp: false }),
     remotes: async () => ["origin"],
+    addRemote: vi.fn(async (_id, name, url) => [
+      { name: "origin", url: "git@ssh.dev.azure.com:v3/acme/Demo/repo" },
+      { name, url },
+    ]),
+    renameRemote: vi.fn(async (_id, _name, newName) => [{ name: newName, url: "https://x/r" }]),
+    setRemoteUrl: vi.fn(async (_id, name, url) => [{ name, url }]),
+    removeRemote: vi.fn(async () => []),
+    pushTags: vi.fn(async () => ({ status: cleanStatus(), summary: "" })),
     fetch: async () => ({ status: cleanStatus(), summary: "" }),
     pull: async () => ({ status: cleanStatus(), summary: "Already up to date." }),
     push: async () => ({ status: cleanStatus(), summary: "" }),
@@ -1865,6 +1873,121 @@ describe("creating branches and tags", () => {
     expect(lastOf(workspace.notices.value)?.text).toBe("topic now tracks origin/topic.");
     await workspace.setUpstream(tab, "topic", null);
     expect(lastOf(workspace.notices.value)?.text).toBe("topic no longer tracks a branch.");
+  });
+});
+
+describe("managing the remotes", () => {
+  it("opens the dialog with the remotes, and shows the list after each change", async () => {
+    const { workspace, tab, backend } = await openWorktree(cleanStatus());
+    await workspace.askRemotes(tab);
+    expect(tab.dialog).toEqual({
+      type: "remotes",
+      remotes: [{ name: "origin", url: "git@ssh.dev.azure.com:v3/acme/Demo/repo" }],
+    });
+
+    expect(
+      await workspace.addRemote(tab, " backup ", " https://example.invalid/b.git ", false),
+    ).toBe(true);
+    expect(backend.addRemote).toHaveBeenCalledWith(
+      "/fake/a",
+      "backup",
+      "https://example.invalid/b.git",
+    );
+    expect(tab.dialog).toMatchObject({ type: "remotes" });
+    expect((tab.dialog as { remotes: unknown[] }).remotes).toHaveLength(2);
+
+    await workspace.renameRemote(tab, "backup", " mirror ");
+    expect(backend.renameRemote).toHaveBeenCalledWith("/fake/a", "backup", "mirror");
+    await workspace.setRemoteUrl(tab, "origin", " git@example.invalid:t/r.git ");
+    expect(backend.setRemoteUrl).toHaveBeenCalledWith(
+      "/fake/a",
+      "origin",
+      "git@example.invalid:t/r.git",
+    );
+    await workspace.removeRemote(tab, "origin");
+    expect(backend.removeRemote).toHaveBeenCalledWith("/fake/a", "origin");
+    expect((tab.dialog as { remotes: unknown[] }).remotes).toEqual([]);
+  });
+
+  it("fetches a new remote when asked to", async () => {
+    const fetch = vi.fn(async () => ({ status: cleanStatus(), summary: "" }));
+    const { workspace, tab } = await openWorktree(cleanStatus(), { fetch });
+    await workspace.askRemotes(tab);
+    await workspace.addRemote(tab, "backup", "https://example.invalid/b.git", true);
+    await vi.waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith("/fake/a", expect.any(String), "backup", true),
+    );
+  });
+
+  it("keeps the dialog and says why when a change is refused", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      addRemote: async () => {
+        throw new GitCommandError("alreadyExists", "A remote named 'origin' already exists.");
+      },
+    });
+    await workspace.askRemotes(tab);
+    expect(await workspace.addRemote(tab, "origin", "https://example.invalid/x.git", true)).toBe(
+      false,
+    );
+    expect(tab.dialog).toMatchObject({ type: "remotes" });
+    expect(tab.writeError?.kind).toBe("alreadyExists");
+  });
+
+  it("refuses a change in read-only mode without asking git", async () => {
+    const { workspace, tab, backend } = await openWorktree(cleanStatus());
+    await workspace.askRemotes(tab);
+    tab.readOnly = true;
+    expect(await workspace.removeRemote(tab, "origin")).toBe(false);
+    expect(backend.removeRemote).not.toHaveBeenCalled();
+  });
+});
+
+describe("pushing tags", () => {
+  it("asks for the remote, origin first, then pushes the tag", async () => {
+    const { workspace, tab, backend } = await openWorktree(cleanStatus(), {
+      remotes: async () => ["backup", "origin"],
+    });
+    await workspace.askPushTags(tab, "v1");
+    expect(tab.dialog).toEqual({
+      type: "pushTags",
+      tag: "v1",
+      remotes: ["backup", "origin"],
+      remote: "origin",
+    });
+    await workspace.pushTags(tab, "origin", "v1");
+    expect(backend.pushTags).toHaveBeenCalledWith("/fake/a", expect.any(String), "origin", "v1");
+    expect(tab.dialog).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toBe("Pushed v1.");
+  });
+
+  it("pushes every tag when none is named", async () => {
+    const { workspace, tab, backend } = await openWorktree(cleanStatus());
+    await workspace.askPushTags(tab, null);
+    await workspace.pushTags(tab, "origin", null);
+    expect(backend.pushTags).toHaveBeenCalledWith("/fake/a", expect.any(String), "origin", null);
+    expect(lastOf(workspace.notices.value)?.text).toBe("Pushed the tags.");
+  });
+
+  it("says so when there is no remote", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), { remotes: async () => [] });
+    await workspace.askPushTags(tab, "v1");
+    expect(tab.dialog).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toBe("This repository has no remote to push to.");
+  });
+
+  it("reports a tag the remote refused and keeps the dialog", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      pushTags: async () => {
+        throw new GitCommandError("pushRejected", "! [rejected] v1 -> v1 (already exists)");
+      },
+    });
+    await workspace.askPushTags(tab, "v1");
+    await workspace.pushTags(tab, "origin", "v1");
+    expect(tab.dialog).toMatchObject({ type: "pushTags" });
+    expect(lastOf(workspace.notices.value)).toMatchObject({
+      kind: "error",
+      text: expect.stringContaining("already exists"),
+    });
   });
 });
 

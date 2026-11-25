@@ -93,6 +93,11 @@ import {
   cancelOperation,
   answerAskpass,
   cloneRepository,
+  addRemote,
+  renameRemote,
+  setRemoteUrl,
+  removeRemote,
+  pushTags,
   createTag,
   deleteBranch,
   deleteTag,
@@ -369,6 +374,13 @@ export interface RepoBackend {
     remote: string,
     branch: string,
   ): Promise<RemoteResult>;
+  /** Adds, renames, re-addresses or removes a remote; each gives the remotes afterwards. */
+  addRemote(repoId: string, name: string, url: string): Promise<RemoteUrl[]>;
+  renameRemote(repoId: string, name: string, newName: string): Promise<RemoteUrl[]>;
+  setRemoteUrl(repoId: string, name: string, url: string): Promise<RemoteUrl[]>;
+  removeRemote(repoId: string, name: string): Promise<RemoteUrl[]>;
+  /** Pushes one tag, or every tag when `tag` is `null`. */
+  pushTags(repoId: string, opId: string, remote: string, tag: string | null): Promise<RemoteResult>;
   /** Clones a repository into `name` inside `parent`; gives the path of the new repository. */
   cloneRepository(
     ownerId: string,
@@ -486,6 +498,11 @@ export const tauriBackend: RepoBackend = {
   push: pushBranch,
   deleteRemoteBranch,
   cloneRepository,
+  addRemote,
+  renameRemote,
+  setRemoteUrl,
+  removeRemote,
+  pushTags,
   cancelOperation,
   answerAskpass,
   onRemoteProgress: (handler) =>

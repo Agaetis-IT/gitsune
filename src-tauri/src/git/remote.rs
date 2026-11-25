@@ -93,6 +93,100 @@ pub fn remote_urls(ctx: &OpCtx) -> Result<Vec<RemoteUrl>, GitError> {
     Ok(urls)
 }
 
+fn check_url(url: &str) -> Result<(), GitError> {
+    let url = url.trim();
+    // A leading dash would be read as an option, a control character has no place in an address.
+    if url.is_empty() || url.starts_with('-') || url.chars().any(char::is_control) {
+        return Err(GitError::other("This is not a valid repository address."));
+    }
+    Ok(())
+}
+
+fn no_such_remote(name: &str) -> GitError {
+    GitError::new(
+        ErrorKind::InvalidName,
+        format!("There is no remote named '{name}'."),
+    )
+}
+
+fn remote_exists(ctx: &OpCtx, name: &str) -> Result<bool, GitError> {
+    Ok(list_remotes(ctx)?.iter().any(|known| known == name))
+}
+
+/// Adds a remote and gives the remotes as they are afterwards. It does not fetch.
+pub fn add_remote(ctx: &OpCtx, name: &str, url: &str) -> Result<Vec<RemoteUrl>, GitError> {
+    check_name("remote", name)?;
+    check_url(url)?;
+    let _write = ctx.stores.begin_write()?;
+    if remote_exists(ctx, name)? {
+        return Err(GitError::new(
+            ErrorKind::AlreadyExists,
+            format!("A remote named '{name}' already exists."),
+        ));
+    }
+    ctx.runner().run(
+        ctx.workdir,
+        &["remote", "add", "--", name, url.trim()],
+        RunOptions::default(),
+    )?;
+    remote_urls(ctx)
+}
+
+/// Renames a remote: its remote-tracking branches and the upstreams that follow it move with it.
+pub fn rename_remote(ctx: &OpCtx, name: &str, new_name: &str) -> Result<Vec<RemoteUrl>, GitError> {
+    check_name("remote", name)?;
+    check_name("remote", new_name)?;
+    let _write = ctx.stores.begin_write()?;
+    if !remote_exists(ctx, name)? {
+        return Err(no_such_remote(name));
+    }
+    if name != new_name && remote_exists(ctx, new_name)? {
+        return Err(GitError::new(
+            ErrorKind::AlreadyExists,
+            format!("A remote named '{new_name}' already exists."),
+        ));
+    }
+    if name != new_name {
+        ctx.runner().run(
+            ctx.workdir,
+            &["remote", "rename", "--", name, new_name],
+            RunOptions::default(),
+        )?;
+    }
+    remote_urls(ctx)
+}
+
+/// Changes the address a remote fetches from (and pushes to, unless it has its own push address).
+pub fn set_remote_url(ctx: &OpCtx, name: &str, url: &str) -> Result<Vec<RemoteUrl>, GitError> {
+    check_name("remote", name)?;
+    check_url(url)?;
+    let _write = ctx.stores.begin_write()?;
+    if !remote_exists(ctx, name)? {
+        return Err(no_such_remote(name));
+    }
+    ctx.runner().run(
+        ctx.workdir,
+        &["remote", "set-url", "--", name, url.trim()],
+        RunOptions::default(),
+    )?;
+    remote_urls(ctx)
+}
+
+/// Removes a remote with its remote-tracking branches (the branches on the server stay).
+pub fn remove_remote(ctx: &OpCtx, name: &str) -> Result<Vec<RemoteUrl>, GitError> {
+    check_name("remote", name)?;
+    let _write = ctx.stores.begin_write()?;
+    if !remote_exists(ctx, name)? {
+        return Err(no_such_remote(name));
+    }
+    ctx.runner().run(
+        ctx.workdir,
+        &["remote", "remove", "--", name],
+        RunOptions::default(),
+    )?;
+    remote_urls(ctx)
+}
+
 /// Reads `git remote -v`: `name<TAB>url (fetch)` lines (the push lines are the same address
 /// unless a `pushurl` is set, which a pull request does not care about).
 pub fn parse_remote_urls(text: &str) -> Vec<RemoteUrl> {
@@ -326,6 +420,42 @@ pub fn push(ctx: &OpCtx, io: &LongIo, options: &PushOptions) -> Result<RemoteRes
     } else if let Some(name) = options.branch.as_deref() {
         // A branch without a remote: it goes to its own upstream.
         check_name("branch", name)?;
+    }
+    let output = ctx
+        .runner()
+        .run_long_checked(ctx.workdir, &args, RunOptions::default(), io)?;
+    finish(ctx, output)
+}
+
+/// Pushes one tag to a remote, or every tag when `tag` is `None`. A tag the remote has at
+/// another commit is refused by git (nothing is forced).
+pub fn push_tags(
+    ctx: &OpCtx,
+    io: &LongIo,
+    remote: &str,
+    tag: Option<&str>,
+) -> Result<RemoteResult, GitError> {
+    check_name("remote", remote)?;
+    let _write = ctx.stores.begin_write()?;
+    let refspec;
+    let mut args = vec!["push", "--progress", remote];
+    match tag {
+        Some(name) => {
+            // A colon would turn the name into a refspec that moves something else.
+            if name.trim().is_empty()
+                || name.starts_with('-')
+                || name.contains([':', '\0'])
+                || name.chars().any(char::is_whitespace)
+            {
+                return Err(GitError::new(
+                    ErrorKind::InvalidName,
+                    format!("'{name}' is not a valid tag name."),
+                ));
+            }
+            refspec = format!("refs/tags/{name}");
+            args.push(&refspec);
+        }
+        None => args.push("--tags"),
     }
     let output = ctx
         .runner()

@@ -13,7 +13,9 @@ import {
   GitBranch,
   Lock,
   Plus,
+  Settings2,
   Tag,
+  Upload,
 } from "@lucide/vue";
 import { computed, ref } from "vue";
 import type { RepoTab } from "@/composables/useWorkspace";
@@ -37,6 +39,10 @@ const emit = defineEmits<{
   openPr: [id: number];
   openWorktree: [tree: Worktree];
   createWorktree: [];
+  /** The button of the remotes group: add, rename or remove a remote. */
+  manageRemotes: [];
+  /** The button of the tags group: push the tags to a remote. */
+  pushTags: [];
   /** Right click on a working tree (window coordinates). */
   worktreeMenu: [tree: Worktree, x: number, y: number];
   stash: [action: "apply" | "pop" | "drop", stash: StashEntry];
@@ -168,6 +174,24 @@ function onRefClick(ref: RefInfo) {
           @click="setAllFolders(group.kind, group.refs, group.folders === 0)"
         >
           <component :is="group.folders > 0 ? FolderOpen : Folder" class="size-3.5" />
+        </button>
+        <button
+          v-if="group.kind === 'remote'"
+          class="text-muted-foreground hover:bg-accent hover:text-foreground rounded p-1.5"
+          title="Manage the remotes"
+          aria-label="Manage the remotes"
+          @click="emit('manageRemotes')"
+        >
+          <Settings2 class="size-3.5" />
+        </button>
+        <button
+          v-if="group.kind === 'tag' && group.refs.length && !tab.readOnly"
+          class="text-muted-foreground hover:bg-accent hover:text-foreground rounded p-1.5"
+          title="Push the tags to a remote"
+          aria-label="Push the tags to a remote"
+          @click="emit('pushTags')"
+        >
+          <Upload class="size-3.5" />
         </button>
         <button
           v-if="group.refs.length"

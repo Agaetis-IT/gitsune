@@ -608,6 +608,179 @@ fn parse_remote_urls_ignores_push_lines_and_noise() {
     );
 }
 
+// ---------- managing the remotes ----------
+
+fn url_of(remotes: &[RemoteUrl], name: &str) -> Option<String> {
+    remotes
+        .iter()
+        .find(|r| r.name == name)
+        .map(|r| r.url.clone())
+}
+
+#[test]
+fn a_remote_is_added_and_listed_with_its_address() {
+    let tmp = repo_with(&[("a.txt", "one\n")]);
+    let stores = RepoStores::default();
+    let remotes = add_remote(
+        &ctx(&tmp, &stores),
+        "upstream",
+        " https://example.invalid/team/tool.git ",
+    )
+    .unwrap();
+    assert_eq!(
+        url_of(&remotes, "upstream").as_deref(),
+        Some("https://example.invalid/team/tool.git")
+    );
+    let again = add_remote(
+        &ctx(&tmp, &stores),
+        "upstream",
+        "https://example.invalid/x.git",
+    );
+    assert!(again.unwrap_err().to_string().contains("already exists"));
+}
+
+#[test]
+fn a_remote_is_not_added_with_a_bad_name_or_address() {
+    let tmp = repo_with(&[("a.txt", "one\n")]);
+    let stores = RepoStores::default();
+    let c = ctx(&tmp, &stores);
+    for name in ["", "  ", "-x"] {
+        assert!(
+            add_remote(&c, name, "https://example.invalid/r.git").is_err(),
+            "{name:?}"
+        );
+    }
+    for url in ["", "  ", "--upload-pack=touch evil", "a\nb"] {
+        assert!(add_remote(&c, "ok", url).is_err(), "{url:?}");
+    }
+    assert!(remote_urls(&c).unwrap().is_empty());
+}
+
+#[test]
+fn renaming_a_remote_moves_its_remote_tracking_branches() {
+    let (tmp, _remote) = with_remote();
+    let stores = RepoStores::default();
+    let c = ctx(&tmp, &stores);
+    let remotes = rename_remote(&c, "origin", "upstream").unwrap();
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0].name, "upstream");
+    assert!(
+        !text(tmp.path(), &["for-each-ref", "refs/remotes/upstream/main"]).is_empty(),
+        "the remote-tracking branch follows the remote"
+    );
+    assert!(text(tmp.path(), &["for-each-ref", "refs/remotes/origin"]).is_empty());
+    assert_eq!(
+        text(tmp.path(), &["config", "branch.main.remote"]),
+        "upstream"
+    );
+}
+
+#[test]
+fn renaming_to_a_taken_or_unknown_name_is_refused() {
+    let (tmp, _remote) = with_remote();
+    let stores = RepoStores::default();
+    let c = ctx(&tmp, &stores);
+    add_remote(&c, "backup", "https://example.invalid/b.git").unwrap();
+    assert!(rename_remote(&c, "origin", "backup").is_err());
+    assert!(rename_remote(&c, "nowhere", "x").is_err());
+    // Renaming to itself changes nothing and is not an error.
+    assert_eq!(rename_remote(&c, "origin", "origin").unwrap().len(), 2);
+}
+
+#[test]
+fn a_remote_address_can_be_changed() {
+    let (tmp, _remote) = with_remote();
+    let stores = RepoStores::default();
+    let c = ctx(&tmp, &stores);
+    let remotes = set_remote_url(&c, "origin", "git@example.invalid:team/new.git").unwrap();
+    assert_eq!(
+        url_of(&remotes, "origin").as_deref(),
+        Some("git@example.invalid:team/new.git")
+    );
+    assert!(set_remote_url(&c, "nowhere", "https://example.invalid/x.git").is_err());
+    assert!(set_remote_url(&c, "origin", "-bad").is_err());
+}
+
+#[test]
+fn removing_a_remote_drops_its_remote_tracking_branches() {
+    let (tmp, remote) = with_remote();
+    let stores = RepoStores::default();
+    let c = ctx(&tmp, &stores);
+    let remotes = remove_remote(&c, "origin").unwrap();
+    assert!(remotes.is_empty());
+    assert!(text(tmp.path(), &["for-each-ref", "refs/remotes"]).is_empty());
+    assert!(remove_remote(&c, "origin").is_err());
+    // The server is untouched.
+    assert!(!text(remote.path(), &["branch", "--list", "main"]).is_empty());
+}
+
+#[test]
+fn managing_the_remotes_is_refused_in_read_only_mode() {
+    let (tmp, _remote) = with_remote();
+    let stores = RepoStores::default();
+    stores.set_read_only(true);
+    let c = ctx(&tmp, &stores);
+    assert!(add_remote(&c, "x", "https://example.invalid/x.git").is_err());
+    assert!(rename_remote(&c, "origin", "y").is_err());
+    assert!(set_remote_url(&c, "origin", "https://example.invalid/y.git").is_err());
+    assert!(remove_remote(&c, "origin").is_err());
+    assert!(quiet(|io| push_tags(&c, io, "origin", None)).is_err());
+    assert_eq!(remote_urls(&c).unwrap().len(), 1);
+}
+
+// ---------- pushing tags ----------
+
+#[test]
+fn one_tag_is_pushed_and_the_others_stay_local() {
+    let (tmp, remote) = with_remote();
+    git(tmp.path(), &["tag", "v1"]);
+    git(tmp.path(), &["tag", "v2"]);
+    let stores = RepoStores::default();
+    quiet(|io| push_tags(&ctx(&tmp, &stores), io, "origin", Some("v1"))).unwrap();
+    let on_remote = text(remote.path(), &["tag", "--list"]);
+    assert_eq!(on_remote, "v1");
+}
+
+#[test]
+fn every_tag_is_pushed_at_once() {
+    let (tmp, remote) = with_remote();
+    git(tmp.path(), &["tag", "v1"]);
+    git(tmp.path(), &["tag", "-a", "-m", "second", "v2"]);
+    let stores = RepoStores::default();
+    quiet(|io| push_tags(&ctx(&tmp, &stores), io, "origin", None)).unwrap();
+    assert_eq!(text(remote.path(), &["tag", "--list"]), "v1\nv2");
+}
+
+#[test]
+fn a_tag_name_that_is_a_refspec_or_an_option_is_refused() {
+    let (tmp, remote) = with_remote();
+    git(tmp.path(), &["tag", "v1"]);
+    let stores = RepoStores::default();
+    for name in ["v1:refs/heads/hijack", "-f", "a b", ""] {
+        assert!(
+            quiet(|io| push_tags(&ctx(&tmp, &stores), io, "origin", Some(name))).is_err(),
+            "{name:?}"
+        );
+    }
+    assert!(quiet(|io| push_tags(&ctx(&tmp, &stores), io, "-x", None)).is_err());
+    assert!(text(remote.path(), &["branch", "--list", "hijack"]).is_empty());
+}
+
+#[test]
+fn a_tag_the_remote_has_elsewhere_is_refused_not_forced() {
+    let (tmp, remote) = with_remote();
+    git(tmp.path(), &["tag", "v1"]);
+    let stores = RepoStores::default();
+    quiet(|io| push_tags(&ctx(&tmp, &stores), io, "origin", Some("v1"))).unwrap();
+    write(tmp.path(), "b.txt", "two\n");
+    git(tmp.path(), &["add", "-A"]);
+    git(tmp.path(), &["commit", "-q", "-m", "second"]);
+    git(tmp.path(), &["tag", "-f", "v1"]);
+    let before = text(remote.path(), &["rev-parse", "v1"]);
+    assert!(quiet(|io| push_tags(&ctx(&tmp, &stores), io, "origin", Some("v1"))).is_err());
+    assert_eq!(text(remote.path(), &["rev-parse", "v1"]), before);
+}
+
 // ---------- cloning ----------
 
 #[test]

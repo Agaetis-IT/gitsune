@@ -14,7 +14,7 @@ import { type RepoTab, useWorkspace } from "@/composables/useWorkspace";
 const props = defineProps<{ tab: RepoTab }>();
 const workspace = useWorkspace();
 
-const REMOTE_TYPES = ["push", "pullStrategy", "deleteRemoteBranch"];
+const REMOTE_TYPES = ["push", "pullStrategy", "deleteRemoteBranch", "pushTags"];
 
 const dialog = computed(() => {
   const current = props.tab.dialog;
@@ -26,6 +26,7 @@ const setUpstream = ref(false);
 const force = ref(false);
 
 watch(dialog, (next) => {
+  if (next?.type === "pushTags") remote.value = next.remote;
   if (next?.type !== "push") return;
   remote.value = next.remote;
   setUpstream.value = next.setUpstream;
@@ -108,6 +109,37 @@ const SELECT_CLASS =
           >
             {{ force ? "Overwrite and push" : "Push" }}
           </Button>
+        </DialogFooter>
+      </form>
+
+      <!-- Push tags -->
+      <form
+        v-else-if="dialog.type === 'pushTags'"
+        class="space-y-4"
+        @submit.prevent="remote && !busy && workspace.pushTags(tab, remote, dialog.tag)"
+      >
+        <DialogHeader>
+          <DialogTitle>
+            {{ dialog.tag === null ? "Push all the tags" : `Push the tag ${dialog.tag}` }}
+          </DialogTitle>
+          <DialogDescription>
+            {{
+              dialog.tag === null
+                ? "Sends every tag of this repository that the remote does not have."
+                : "Sends this tag to a remote."
+            }}
+            A tag the remote already has at another commit is refused, never overwritten.
+          </DialogDescription>
+        </DialogHeader>
+        <label class="block text-sm">
+          Remote
+          <select v-model="remote" :class="[SELECT_CLASS, 'mt-1']" aria-label="Remote">
+            <option v-for="name in dialog.remotes" :key="name" :value="name">{{ name }}</option>
+          </select>
+        </label>
+        <DialogFooter>
+          <Button type="button" variant="outline" @click="close">Cancel</Button>
+          <Button type="submit" :disabled="!remote || busy">Push</Button>
         </DialogFooter>
       </form>
 

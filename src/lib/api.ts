@@ -734,6 +734,20 @@ export const deleteRemoteBranch = (repoId: string, opId: string, remote: string,
 
 export const listRemotes = (repoId: string) => gitInvoke<string[]>("list_remotes", { repoId });
 
+// The commands below give the remotes as they are afterwards.
+export const addRemote = (repoId: string, name: string, url: string) =>
+  gitInvoke<RemoteUrl[]>("add_remote", { repoId, name, url });
+export const renameRemote = (repoId: string, name: string, newName: string) =>
+  gitInvoke<RemoteUrl[]>("rename_remote", { repoId, name, newName });
+export const setRemoteUrl = (repoId: string, name: string, url: string) =>
+  gitInvoke<RemoteUrl[]>("set_remote_url", { repoId, name, url });
+export const removeRemote = (repoId: string, name: string) =>
+  gitInvoke<RemoteUrl[]>("remove_remote", { repoId, name });
+
+/** Pushes one tag to a remote, or every tag when `tag` is `null`. */
+export const pushTags = (repoId: string, opId: string, remote: string, tag: string | null) =>
+  gitInvoke<RemoteResult>("push_tags", { repoId, opId, remote, tag });
+
 /**
  * Clones `url` into the folder `name` of `parent` and gives the path of the new repository.
  * `ownerId` is the tab it was started from: the progress events carry it.

@@ -177,6 +177,7 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
   }
   return [
     write(ctx, { id: "checkout", label: "Checkout (detached HEAD)" }),
+    write(ctx, { id: "pushTag", label: "Push the tag to a remote…" }),
     write(ctx, { id: "deleteTag", label: "Delete the tag…", danger: true, separatorBefore: true }),
     copy,
   ];
