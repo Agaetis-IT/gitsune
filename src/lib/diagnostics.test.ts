@@ -71,7 +71,7 @@ describe("buildReport", () => {
   it("writes every section, in Markdown", () => {
     const report = buildReport(healthy(), settings);
     for (const heading of [
-      "# git-hydra diagnostics",
+      "# Gitsune diagnostics",
       "## To check",
       "## Tools",
       "## Folders searched for tools",

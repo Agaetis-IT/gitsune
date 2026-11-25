@@ -65,7 +65,7 @@ const cell = (text: string): string => text.replace(/\|/g, "\\|");
 /** The report as Markdown, ready to be pasted in a ticket. */
 export function buildReport(d: Diagnostics, settings: SettingsSnapshot): string {
   const lines: string[] = [];
-  lines.push("# git-hydra diagnostics", "");
+  lines.push("# Gitsune diagnostics", "");
   lines.push(`- Application: ${d.appVersion}`);
   lines.push(`- System: ${d.os} ${d.arch}`, "");
 

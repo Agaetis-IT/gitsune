@@ -115,7 +115,7 @@ export function buildMenuModel(state: AppMenuState): MenuNode[] {
   return [
     {
       kind: "submenu",
-      label: "git-hydra",
+      label: "Gitsune",
       items: [
         predefined("About"),
         separator,

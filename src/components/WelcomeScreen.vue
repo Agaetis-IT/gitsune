@@ -10,7 +10,7 @@ const emit = defineEmits<{ open: []; openRecent: [path: string]; forget: [path: 
 <template>
   <div class="flex h-full items-center justify-center p-8">
     <div class="w-full max-w-md">
-      <h1 class="text-2xl font-semibold tracking-tight">git-hydra</h1>
+      <h1 class="text-2xl font-semibold tracking-tight">Gitsune</h1>
       <p class="text-muted-foreground mt-1 text-sm">Browse the history of a git repository.</p>
 
       <Button class="mt-6" :disabled="busy" @click="emit('open')">

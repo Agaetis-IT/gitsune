@@ -176,7 +176,7 @@ pub fn default_branch(repo: &HostedRepo) -> Result<Option<String>, String> {
         .get(&default_branch_url(repo))
         .header("Authorization", &authorization)
         .header("Accept", "application/json")
-        .header("User-Agent", "git-hydra")
+        .header("User-Agent", "gitsune")
         .call()
         .map_err(|error| describe(&repo.host(), &error))?;
     if response.status().as_u16() >= 400 {
@@ -209,7 +209,7 @@ pub fn create_pull_request(repo: &HostedRepo, new: &NewPullRequest) -> Result<u6
         .post(&url)
         .header("Authorization", &authorization)
         .header("Accept", "application/json")
-        .header("User-Agent", "git-hydra")
+        .header("User-Agent", "gitsune")
         .send_json(body)
         .map_err(|error| describe(&host, &error))?;
     let status = response.status().as_u16();

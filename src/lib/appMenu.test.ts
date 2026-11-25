@@ -55,7 +55,7 @@ const enabled = (state: AppMenuState, label: string) => {
 describe("application menu", () => {
   it("has the menus in the usual order", () => {
     const labels = buildMenuModel(STATE).map((n) => (n.kind === "submenu" ? n.label : ""));
-    expect(labels).toEqual(["git-hydra", "File", "Edit", "Repository", "Branch", "View", "Window"]);
+    expect(labels).toEqual(["Gitsune", "File", "Edit", "Repository", "Branch", "View", "Window"]);
   });
 
   it("uses no accelerator twice", () => {

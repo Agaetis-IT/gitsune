@@ -526,7 +526,7 @@ pub fn find_pull_request(repo: &HostedRepo, branch: &str) -> Result<PullRequestL
         .get(&lookup_url(repo, branch))
         .header("Authorization", &authorization)
         .header("Accept", "application/json")
-        .header("User-Agent", "git-hydra")
+        .header("User-Agent", "gitsune")
         .call()
         .map_err(|error| describe(&host, &error))?;
     let answer: Value = response

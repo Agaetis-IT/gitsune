@@ -1,4 +1,4 @@
-# git-hydra
+# Gitsune
 
 A desktop git client built around a **metro-style branch graph**: one colored line per branch, commits as stations, merges as interchanges. Browsing history, searching and reading diffs are complete. Writing is in too (version 2): staging by file and hunk, committing and amending, discarding, branches, checkout, tags, fetch, pull, push, stash, cherry-pick, revert, reset, merge, conflict resolution and rebase (see [SPEC.md](SPEC.md), section 12). Every change the app makes goes through the `git` binary and is listed in an activity log; a read-only switch per repository refuses all writes.
 

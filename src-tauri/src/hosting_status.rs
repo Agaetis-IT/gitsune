@@ -234,7 +234,7 @@ fn get_json(agent: &ureq::Agent, url: &str, authorization: &str) -> Result<Value
         .get(url)
         .header("Authorization", authorization)
         .header("Accept", "application/json")
-        .header("User-Agent", "git-hydra")
+        .header("User-Agent", "gitsune")
         .call()?
         .body_mut()
         .read_json()
@@ -293,7 +293,7 @@ pub fn list_pull_requests(repo: &HostedRepo) -> Result<PullRequestList, String> 
             let answer: Value = agent
                 .post("https://api.github.com/graphql")
                 .header("Authorization", &authorization)
-                .header("User-Agent", "git-hydra")
+                .header("User-Agent", "gitsune")
                 .send_json(body)
                 .map_err(read_error)?
                 .body_mut()
