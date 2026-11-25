@@ -138,9 +138,15 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
           </div>
         </div>
 
-        <p v-if="active.error" class="text-destructive border-b px-3 py-2 text-sm" role="alert">
-          {{ active.error }}
-        </p>
+        <div
+          v-if="active.error"
+          class="flex items-center gap-2 border-b px-3 py-2 text-sm"
+          role="alert"
+        >
+          <span class="text-destructive min-w-0 flex-1 break-words">{{ active.error }}</span>
+          <Button size="sm" variant="outline" @click="workspace.retry(active)">Retry</Button>
+          <Button size="sm" variant="ghost" @click="active.error = ''">Dismiss</Button>
+        </div>
 
         <div class="relative min-h-0 flex-1">
           <MetroGraph
@@ -173,18 +179,25 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             @hide="hideFromPopover"
             @close="lanePopover = null"
           />
-          <p
+          <div
             v-else-if="!active.source || active.source.meta.total === 0"
-            class="text-muted-foreground absolute inset-0 flex items-center justify-center text-sm"
+            class="text-muted-foreground absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center text-sm"
           >
-            {{
-              active.loading
-                ? "Reading the history…"
-                : active.source
-                  ? "No commits to show."
-                  : "The graph is not available."
-            }}
-          </p>
+            <template v-if="active.loading">Reading the history…</template>
+            <template v-else-if="active.source && active.hidden.size > 0">
+              <p>Every branch and tag is hidden, so there is nothing to draw.</p>
+              <Button size="sm" @click="workspace.showAllRefs(active)">Show all refs</Button>
+            </template>
+            <template v-else-if="active.source">
+              <p>This repository has no commits yet.</p>
+            </template>
+            <template v-else>
+              <p>The graph is not available.</p>
+              <Button size="sm" variant="outline" @click="workspace.retry(active)"
+                >Try again</Button
+              >
+            </template>
+          </div>
           <DiffView
             v-if="active.openFile && active.selectedCommit"
             :key="`${active.selectedCommit.id}:${active.openFile.path}`"

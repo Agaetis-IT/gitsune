@@ -502,3 +502,139 @@ fn random_graphs_keep_every_invariant() {
         }
     }
 }
+
+// ---------- color assignment ----------
+
+use super::naming::assign_colors;
+
+/// Names whose hash colors collide, found by brute force so the test does not depend on the hash.
+fn colliding_names(count: usize) -> Vec<String> {
+    let mut by_color: std::collections::HashMap<u32, Vec<String>> =
+        std::collections::HashMap::new();
+    for n in 0.. {
+        let name = format!("feature/topic-{n}");
+        let group = by_color.entry(color_for(&name)).or_default();
+        group.push(name);
+        if group.len() == count {
+            return group.clone();
+        }
+    }
+    unreachable!()
+}
+
+#[test]
+fn a_name_keeps_the_color_it_asks_for_when_nothing_competes() {
+    let colors = assign_colors(&[("main", 0, 100), ("feature/x", 10, 20)]);
+    // Two names can still ask for the same color: avoiding that is the point of the next tests.
+    if color_for("main") != color_for("feature/x") {
+        assert_eq!(colors["main"], color_for("main"));
+        assert_eq!(colors["feature/x"], color_for("feature/x"));
+    }
+    let alone = assign_colors(&[("only", 0, 5)]);
+    assert_eq!(alone["only"], color_for("only"));
+}
+
+#[test]
+fn names_shown_at_the_same_time_get_different_colors() {
+    let names = colliding_names(4);
+    let entries: Vec<(&str, usize, usize)> = names.iter().map(|n| (n.as_str(), 0, 50)).collect();
+    let colors = assign_colors(&entries);
+    let distinct: std::collections::HashSet<u32> = colors.values().copied().collect();
+    assert_eq!(distinct.len(), 4, "{colors:?}");
+}
+
+#[test]
+fn names_that_never_meet_may_share_a_color() {
+    let names = colliding_names(2);
+    let colors = assign_colors(&[(names[0].as_str(), 0, 10), (names[1].as_str(), 11, 20)]);
+    assert_eq!(
+        colors[&names[0]], colors[&names[1]],
+        "no need to move a name that has no neighbour"
+    );
+    // Touching extents do overlap.
+    let touching = assign_colors(&[(names[0].as_str(), 0, 10), (names[1].as_str(), 10, 20)]);
+    assert_ne!(touching[&names[0]], touching[&names[1]]);
+}
+
+#[test]
+fn more_overlapping_names_than_colors_spread_evenly() {
+    let entries: Vec<(String, usize, usize)> =
+        (0..30).map(|n| (format!("branch-{n}"), 0, 100)).collect();
+    let borrowed: Vec<(&str, usize, usize)> = entries
+        .iter()
+        .map(|(n, a, b)| (n.as_str(), *a, *b))
+        .collect();
+    let colors = assign_colors(&borrowed);
+    let mut counts = [0u32; PALETTE_SIZE as usize];
+    for color in colors.values() {
+        assert!(*color < PALETTE_SIZE);
+        counts[*color as usize] += 1;
+    }
+    // 30 names over 12 colors: two or three per color, never a pile-up.
+    assert!(counts.iter().all(|&c| (2..=3).contains(&c)), "{counts:?}");
+}
+
+#[test]
+fn colors_do_not_depend_on_the_order_the_lanes_are_listed() {
+    let names = colliding_names(3);
+    let forward: Vec<(&str, usize, usize)> = names.iter().map(|n| (n.as_str(), 0, 9)).collect();
+    let mut backward = forward.clone();
+    backward.reverse();
+    assert_eq!(assign_colors(&forward), assign_colors(&backward));
+}
+
+#[test]
+fn a_name_on_several_lanes_has_one_color_and_one_merged_extent() {
+    // `main` and `origin/main` are two lanes with the same color name.
+    let colors = assign_colors(&[("main", 0, 10), ("main", 50, 60), ("other", 20, 30)]);
+    assert_eq!(colors.len(), 2);
+    // `other` sits inside the merged extent of `main`, so they must differ.
+    assert_ne!(colors["main"], colors["other"]);
+}
+
+#[test]
+fn the_layout_gives_overlapping_branches_different_colors() {
+    // Many parallel branches with colliding names, drawn on top of each other.
+    let names = colliding_names(5);
+    let mut spec: Vec<(String, Vec<String>)> = Vec::new();
+    for (i, _) in names.iter().enumerate() {
+        spec.push((format!("t{i}"), vec![format!("b{i}")]));
+    }
+    for i in 0..names.len() {
+        spec.push((format!("b{i}"), vec!["root".to_string()]));
+    }
+    spec.push(("root".to_string(), vec![]));
+    let borrowed: Vec<(&str, Vec<&str>)> = spec
+        .iter()
+        .map(|(n, p)| (n.as_str(), p.iter().map(String::as_str).collect()))
+        .collect();
+    let commits = graph(
+        &borrowed
+            .iter()
+            .map(|(n, p)| (*n, p.as_slice()))
+            .collect::<Vec<_>>(),
+    );
+    let refs: Vec<RefLabel> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| label(i, n, RefKind::Local, false))
+        .collect();
+
+    let layout = layout(&commits, &refs);
+    let colors: std::collections::HashSet<_> = layout
+        .lanes
+        .iter()
+        .filter(|l| l.name.is_some())
+        .map(|l| l.color)
+        .collect();
+    assert_eq!(
+        colors.len(),
+        5,
+        "{:?}",
+        layout
+            .lanes
+            .iter()
+            .map(|l| (&l.name, l.color))
+            .collect::<Vec<_>>()
+    );
+}

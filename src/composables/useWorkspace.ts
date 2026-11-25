@@ -81,6 +81,14 @@ export type DiffMode = "unified" | "split";
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+/** What to tell the user when a folder cannot be opened. */
+export function describeOpenError(path: string, error: unknown): string {
+  const text = message(error);
+  return text.includes("cannot open repository")
+    ? `${path} is not a git repository, or it cannot be read.`
+    : text;
+}
+
 export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
   const tabs = shallowRef<RepoTab[]>([]);
   const activeId = ref<string | null>(null);
@@ -250,7 +258,7 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
       recentRepos.value = recents.add({ path: info.path, name: info.name, openedAt: Date.now() });
       await loadGraph(tab);
     } catch (error) {
-      openError.value = message(error);
+      openError.value = describeOpenError(trimmed, error);
     } finally {
       opening.value = false;
     }
@@ -293,6 +301,9 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
     tab.hidden = next;
     await loadGraph(tab);
   }
+
+  /** Shows every hidden ref again. */
+  const showAllRefs = (tab: RepoTab): Promise<void> => setHidden(tab, [...tab.hidden], false);
 
   const toggleRef = (tab: RepoTab, fullName: string) =>
     setHidden(tab, [fullName], !tab.hidden.has(fullName));
@@ -424,6 +435,8 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
     opening,
     openPath,
     refreshGraph,
+    retry: loadGraph,
+    showAllRefs,
     watchRepos,
     pickAndOpen,
     closeTab,

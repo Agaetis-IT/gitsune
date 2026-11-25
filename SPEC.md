@@ -64,7 +64,7 @@ Clean transit-map style, inspired by GitKraken but not copying it:
 - A lane **keeps its column for its whole life**. When several lanes lead to the same commit (a fork point), they all run down to it and bend into the leftmost lane in the last span; the leftmost lane carries the commit.
 - Output per row: commit column, lane id, and only the **non-vertical connectors** (`Start` bend right after a merge commit, `End` bend right before the fork point). Vertical segments are implied by each lane's `col`, `firstRow` and `lastRow`, which keeps memory proportional to the number of bends rather than to rows x active lanes.
 - Lane name: best ref on the lane (HEAD branch, then local, then remote, then tag; earliest row wins ties), else the branch parsed from the merge commit subject that started the lane (`Merge branch 'x'`, `Merge remote-tracking branch 'origin/x'`, `Merge pull request #n from owner/x`), else anonymous.
-- Lane color: FNV-1a hash of the lane name (remote prefix removed, so `main` and `origin/main` match) modulo the 12-color palette. Anonymous lanes have no color.
+- Lane color: a name asks for the color given by its FNV-1a hash (remote prefix removed, so `main` and `origin/main` match) modulo the 12-color palette, and keeps it unless a name shown at the same time (overlapping rows) already took it; then it gets the next free color. When more names overlap than there are colors, the least used one is taken. Names are handled in hash order, so the result does not depend on the order of the lanes. Anonymous lanes have no color. (M9: a plain hash gave two simultaneous branches the same color, `main` included.)
 - Measured on the 100,000-commit synthetic repository (1,199 refs): read and order the graph 145 ms, layout 13 ms. The synthetic repo keeps ~1,180 unmerged branches alive, which gives 1,539 columns; real repositories are far narrower, and very wide graphs are handled by branch hiding (M7).
 
 ### 4.2.2 Renderer (M4, `src/lib/metro`, `src/components/graph/MetroGraph.vue`)
@@ -162,11 +162,19 @@ Search runs in Rust over the commit index (message, author, hash prefix). Result
 ### 5.5 Diff
 Computed in Rust, sent as structured hunks. The Vue component renders unified and side-by-side modes with light syntax highlighting. Large or binary files are collapsed with a "load anyway" action.
 
-## 6. Performance targets
-- Open a 100k-commit repository and show the first screen in under 1 s (first page only).
-- Scrolling stays at 60 fps (only visible rows drawn).
-- Incremental refresh after a new commit under 100 ms.
-- Memory: the frontend holds a bounded window of rows, not the whole history.
+## 6. Performance targets and results
+
+Measured at M9 on an Apple Silicon Mac, release build, on the synthetic repository (100,000 commits, 1,199 refs, ~4,000 lanes, 1,539 columns: a deliberately extreme shape) unless said otherwise.
+
+| Target | Result |
+|---|---|
+| Open a 100k-commit repository and show the first screen in under 1 s | Graph built in 0.4 to 0.6 s (cold: reading the 1,199 loose refs is the slow part), then the first page in under 1 ms |
+| Scrolling at 60 fps (only visible rows drawn) | Drawing one frame costs about 0.2 ms of CPU (95th percentile 0.3 ms) at 1000x800 and 2x pixel density, in compact and detailed modes, also with a highlight. Measured on the 500-commit demo graph; the cost depends on the rows on screen and on the number of lanes, not on the history length. The GPU side and a real 100k graph in the UI were not measured |
+| Refresh after a new commit under 100 ms | 64 to 75 ms with 22 refs; 89 to 91 ms with the 1,199 refs of the stress repository (113 ms before the collision-free colors cost ~19 ms of layout there) |
+| Bounded memory in the frontend | At most 30 chunks of 200 rows are kept (6,000 rows) |
+| Search | 3 to 5 ms per query once the index exists (273 ms to build it, once) |
+
+Known ceilings: a diff is a plain table, so about 5,000 lines is the practical limit; the layout colors cost grows with the square of the number of distinct branch names (negligible below a few hundred, ~19 ms at 4,000).
 
 ## 7. Testing strategy
 - **Rust unit tests** for the lane algorithm on **synthetic repositories created by script** (linear history, fork/merge, octopus merge, deleted merged branches, many parallel branches). All data is invented; no real repositories in fixtures.
@@ -181,6 +189,8 @@ Computed in Rust, sent as structured hunks. The Vue component renders unified an
 - Work on feature branches only; commits happen only when explicitly requested.
 
 ## 9. Plan
+
+Status: M0 to M9 are done (see the sections above for what each one settled).
 
 Each milestone ends with lint and tests passing and a short demo.
 
@@ -222,9 +232,9 @@ Each milestone ends with lint and tests passing and a short demo.
 **M9 — Polish**
 - Visual tuning of the palette and metro style in both themes, empty/error states, performance pass against the targets in section 6, macOS packaging (unsigned build is enough for personal use).
 
-## 10. Open questions (to settle during the milestones)
-- Exact palette and line thickness: tuned at M4/M9.
-- Lane colors come from a hash of the name modulo 12, so two branches can share a color (seen on the demo graph: `main` and a merged feature branch). Options if it bothers in practice: bigger palette, or assign colors first-come per repository while keeping them stable across sessions.
+## 10. Open questions
+
+- None left from the plan. Ideas not done, in no particular order: panes that can be resized, restoring the open tabs at launch, a keyboard shortcut to open a repository, virtualising very long diffs, symbolic (non-hash) colors a user can pick per branch.
 
 ## 11. Decisions
 
