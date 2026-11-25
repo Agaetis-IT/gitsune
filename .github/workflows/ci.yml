@@ -1,9 +1,18 @@
 name: CI
 
 on:
+  # A branch with a pull request is tested once, by the pull request; the long-lived branches
+  # are tested on every push, and a version tag also builds the packages.
   push:
+    branches: [main, develop]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+
+# A new push to the same branch makes the run still going for the previous one useless.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
