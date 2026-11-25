@@ -37,17 +37,10 @@ export function pullRequestTitle(
 }
 
 /**
- * The description: the commits as a list, oldest first. On Azure DevOps it starts with the
- * ticket reference, which links the work item to the pull request.
+ * The description: empty, except on Azure DevOps where it starts with the ticket reference that
+ * links the work item to the pull request. The commits are not listed: the host shows them.
  */
-export function pullRequestDescription(
-  branch: string,
-  commits: readonly RangeCommit[],
-  repo: HostedRepo,
-): string {
+export function pullRequestDescription(branch: string, repo: HostedRepo): string {
   const ticket = ticketFromBranch(branch);
-  const parts: string[] = [];
-  if (ticket && repo.kind === "azure") parts.push(`${ticketPrefix(repo)}${ticket}`);
-  if (commits.length > 1) parts.push(commits.map((commit) => `- ${commit.summary}`).join("\n"));
-  return parts.join("\n\n");
+  return ticket && repo.kind === "azure" ? `${ticketPrefix(repo)}${ticket}` : "";
 }

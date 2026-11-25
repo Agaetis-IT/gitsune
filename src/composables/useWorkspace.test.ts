@@ -3280,7 +3280,7 @@ describe("opening things outside the application", () => {
       );
     });
 
-    it("fills the dialog with the target, the title and the commits", async () => {
+    it("fills the dialog with the target and the title, and leaves the commits out", async () => {
       const { workspace, tab } = await ready({
         defaultBranch: vi.fn(async () => "develop" as string | null),
         commitsBetween: vi.fn(async () => [
@@ -3295,7 +3295,7 @@ describe("opening things outside the application", () => {
         remote: "origin",
         target: "develop",
         title: "AB#5310 Login",
-        description: "AB#5310\n\n- Add the form\n- Style the form",
+        description: "AB#5310",
         needsPush: true,
         newOnRemote: true,
       });
@@ -3331,7 +3331,7 @@ describe("opening things outside the application", () => {
       );
     });
 
-    it("lists the commits of another target when the target changes", async () => {
+    it("makes the title again for another target (one commit gives its message)", async () => {
       const { workspace, tab } = await ready({
         commitsBetween: vi.fn(async (_id: string, base: string) =>
           base === "origin/develop"

@@ -2502,7 +2502,7 @@ export function createWorkspace(
       targets: targets.includes(target) ? targets : [target, ...targets],
       target,
       title: pullRequestTitle(branch, commits, hosted),
-      description: pullRequestDescription(branch, commits, hosted),
+      description: pullRequestDescription(branch, hosted),
       needsPush: !onRemote || (!!local && onRemote.target !== local.target),
       newOnRemote: !onRemote,
       error: null,
@@ -2526,7 +2526,7 @@ export function createWorkspace(
     if (!commits) return null;
     return {
       title: pullRequestTitle(dialog.branch, commits, hosted),
-      description: pullRequestDescription(dialog.branch, commits, hosted),
+      description: pullRequestDescription(dialog.branch, hosted),
     };
   }
 
