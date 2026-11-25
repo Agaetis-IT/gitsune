@@ -187,6 +187,9 @@ impl Runner<'_> {
             command.env("GIT_OPTIONAL_LOCKS", "0");
         }
         command.env("PATH", tool_path());
+        if let Some(socket) = ssh_agent_socket() {
+            command.env("SSH_AUTH_SOCK", socket);
+        }
         for (key, value) in self.env {
             command.env(key, value);
         }
@@ -301,21 +304,28 @@ fn askpass_env(dir: &Path) -> Result<Vec<(String, String)>, GitError> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).map_err(fail)?;
     }
-    let script = script.to_string_lossy().into_owned();
-    Ok(vec![
-        ("GIT_ASKPASS".into(), script.clone()),
-        ("SSH_ASKPASS".into(), script),
-        ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
+    let os = crate::platform::Os::current();
+    // git runs the helper through `sh`, which reads a Windows path with slashes.
+    let script = crate::platform::shell_path(os, &script.to_string_lossy());
+    let mut env = vec![
+        ("GIT_ASKPASS".to_string(), script.clone()),
         (
-            "GIT_HYDRA_ASKPASS_DIR".into(),
-            dir.to_string_lossy().into_owned(),
+            "GIT_HYDRA_ASKPASS_DIR".to_string(),
+            crate::platform::shell_path(os, &dir.to_string_lossy()),
         ),
+    ];
+    // The ssh of Windows cannot run a shell script: there, a passphrase is not asked (the
+    // command fails and the user fetches from a terminal or loads the key in the agent).
+    if os != crate::platform::Os::Windows {
+        env.push(("SSH_ASKPASS".to_string(), script));
+        env.push(("SSH_ASKPASS_REQUIRE".to_string(), "force".to_string()));
         // Older ssh only uses SSH_ASKPASS when it believes a display exists.
-        (
-            "DISPLAY".into(),
+        env.push((
+            "DISPLAY".to_string(),
             std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into()),
-        ),
-    ])
+        ));
+    }
+    Ok(env)
 }
 
 /// Answers a question asked through the askpass helper; `None` refuses (the command then fails).
@@ -508,29 +518,70 @@ impl Runner<'_> {
     }
 }
 
-/// Folders where the tools git calls (hooks, `gpg`, `ssh`, `node`...) usually are on a Mac.
-const COMMON_TOOL_DIRS: [&str; 4] = [
-    "/opt/homebrew/bin",
-    "/opt/homebrew/sbin",
-    "/usr/local/bin",
-    "/usr/local/sbin",
-];
-
-/// `path` with the usual tool folders added at the end when they are missing. An application
-/// started from the Finder gets a short `PATH` without them, so hooks and commit signing that
-/// work in a terminal would fail from the app (a rebase replays every commit, hooks and
-/// signing included).
+/// `path` with the usual tool folders of the system added at the end when they are missing. An
+/// application started from the Finder (or a desktop launcher) gets a short `PATH` without them,
+/// so hooks and commit signing that work in a terminal would fail from the app (a rebase
+/// replays every commit, hooks and signing included).
 pub fn with_common_tool_dirs(path: &str) -> String {
-    let mut parts: Vec<&str> = path.split(':').filter(|p| !p.is_empty()).collect();
-    for dir in COMMON_TOOL_DIRS {
-        if !parts.contains(&dir) {
-            parts.push(dir);
-        }
-    }
-    parts.join(":")
+    crate::platform::extend_path(
+        crate::platform::Os::current(),
+        &crate::platform::home_dir(),
+        path,
+    )
 }
 
-fn tool_path() -> &'static str {
+/// The `IdentityAgent` of an ssh configuration (the first one), with `~` expanded and the quotes
+/// removed. `ssh` reads it by itself, but `ssh-keygen`, which signs commits, only looks at
+/// `SSH_AUTH_SOCK`.
+pub fn identity_agent(config: &str, home: &str) -> Option<String> {
+    config.lines().find_map(|line| {
+        let line = line.trim();
+        let (key, value) = line.split_once(|c: char| c.is_whitespace() || c == '=')?;
+        if !key.eq_ignore_ascii_case("IdentityAgent") {
+            return None;
+        }
+        let value = value.trim_start_matches(|c: char| c.is_whitespace() || c == '=');
+        let value = value.trim().trim_matches('"');
+        if value.is_empty() || value.eq_ignore_ascii_case("none") || value == "SSH_AUTH_SOCK" {
+            return None;
+        }
+        Some(match value.strip_prefix("~/") {
+            Some(rest) => format!("{}/{rest}", home.trim_end_matches('/')),
+            None => value.to_string(),
+        })
+    })
+}
+
+/// The ssh agent to give git: an application started from the Finder gets the system agent,
+/// which has none of the user's keys, so signing commits (every commit a rebase replays) fails
+/// with "Couldn't find key in agent". The agent the user's ssh configuration names (for example
+/// the one of 1Password) is used then. `None` leaves the environment as it is.
+pub fn ssh_agent_socket() -> Option<&'static str> {
+    static SOCKET: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    SOCKET
+        .get_or_init(|| {
+            // Only the macOS Finder hands an application the system agent in place of the user's.
+            if crate::platform::Os::current() != crate::platform::Os::Mac {
+                return None;
+            }
+            let current = std::env::var("SSH_AUTH_SOCK").unwrap_or_default();
+            if !current.is_empty() && !current.contains("com.apple.launchd") {
+                return None;
+            }
+            let home = std::env::var("HOME").ok()?; // only reached on a Mac
+            let config = std::fs::read_to_string(format!("{home}/.ssh/config")).unwrap_or_default();
+            let named = identity_agent(&config, &home);
+            let onepassword =
+                format!("{home}/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock");
+            named
+                .into_iter()
+                .chain(std::iter::once(onepassword))
+                .find(|path| std::path::Path::new(path).exists())
+        })
+        .as_deref()
+}
+
+pub fn tool_path() -> &'static str {
     static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     PATH.get_or_init(|| with_common_tool_dirs(&std::env::var("PATH").unwrap_or_default()))
 }

@@ -181,3 +181,74 @@ describe("themes", () => {
     expect(document.documentElement.style.getPropertyValue("--background")).not.toBe("#abcdef");
   });
 });
+
+describe("themes for a light and a dark system", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    localStorage.clear();
+    document.documentElement.classList.remove("dark");
+    document.documentElement.removeAttribute("style");
+  });
+
+  it("uses the theme set for the system in system mode and the chosen one otherwise", async () => {
+    stubMatchMedia(true);
+    const { useTheme } = await import("./useTheme");
+    const t = useTheme();
+    t.setTheme("nord");
+    t.setSystemTheme("light", "catppuccin-latte");
+    t.setSystemTheme("dark", "catppuccin-mocha");
+    expect(t.theme.value.id).toBe("catppuccin-mocha");
+    t.setMode("light");
+    expect(t.theme.value.id).toBe("nord");
+    t.setMode("system");
+    expect(t.theme.value.id).toBe("catppuccin-mocha");
+    t.setSystemTheme("dark", null);
+    expect(t.theme.value.id).toBe("nord");
+    expect(localStorage.getItem("git-hydra:theme-id-dark")).toBeNull();
+    expect(localStorage.getItem("git-hydra:theme-id-light")).toBe("catppuccin-latte");
+  });
+
+  it("ignores an unknown theme and forgets a deleted one", async () => {
+    stubMatchMedia(false);
+    const { useTheme } = await import("./useTheme");
+    const t = useTheme();
+    t.setSystemTheme("light", "nope");
+    expect(t.lightThemeId.value).toBeNull();
+    const copy = t.createFrom("nord");
+    t.setSystemTheme("light", copy.id);
+    expect(t.theme.value.id).toBe(copy.id);
+    t.removeCustom(copy.id);
+    expect(t.lightThemeId.value).toBeNull();
+    expect(t.theme.value.id).toBe("default");
+  });
+});
+
+describe("syntax colors and fonts on the page", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    localStorage.clear();
+    document.documentElement.removeAttribute("style");
+    stubMatchMedia(false);
+  });
+
+  it("puts the syntax colors on the page, and the fonts only when the theme sets them", async () => {
+    const { useTheme } = await import("./useTheme");
+    const t = useTheme();
+    await Promise.resolve();
+    const root = document.documentElement;
+    expect(root.style.getPropertyValue("--syntax-keyword")).toMatch(/^#/);
+    expect(root.style.getPropertyValue("--app-font-ui")).toBe("");
+
+    const copy = t.createFrom("nord");
+    t.saveCustom({ ...copy, fonts: { ui: "Inter, sans-serif", size: 14 } });
+    await Promise.resolve();
+    expect(root.style.getPropertyValue("--app-font-ui")).toBe("Inter, sans-serif");
+    expect(root.style.getPropertyValue("--app-font-size")).toBe("14px");
+    expect(root.style.getPropertyValue("--app-font-code")).toBe("");
+
+    t.setTheme("default");
+    await Promise.resolve();
+    expect(root.style.getPropertyValue("--app-font-ui")).toBe("");
+    expect(root.style.getPropertyValue("--app-font-size")).toBe("");
+  });
+});

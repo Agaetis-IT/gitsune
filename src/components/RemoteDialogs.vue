@@ -59,7 +59,12 @@ const SELECT_CLASS =
 </script>
 
 <template>
-  <Dialog :open="dialog !== null" @update:open="(value) => !value && close()">
+  <!-- Hidden while the operation runs, so that its progress (bottom of the graph) is visible;
+       it comes back if the operation fails, and is closed when it succeeds. -->
+  <Dialog
+    :open="dialog !== null && tab.remote === null"
+    @update:open="(value) => !value && close()"
+  >
     <DialogContent v-if="dialog">
       <!-- Push -->
       <form v-if="dialog.type === 'push'" class="space-y-4" @submit.prevent="submitPush">

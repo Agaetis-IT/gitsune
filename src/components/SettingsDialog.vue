@@ -1,23 +1,83 @@
 <script setup lang="ts">
-import { Check, Monitor, Moon, Palette, Sun } from "@lucide/vue";
+import {
+  Check,
+  ExternalLink,
+  GitBranch,
+  Monitor,
+  Moon,
+  Palette,
+  SlidersHorizontal,
+  Sun,
+} from "@lucide/vue";
 import { computed, ref, watch } from "vue";
+import IntegrationsSettings from "@/components/IntegrationsSettings.vue";
 import ThemeEditor from "@/components/ThemeEditor.vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useSettings } from "@/composables/useSettings";
+import { useDiagnostics } from "@/composables/useDiagnostics";
+import { useGeneralSettings } from "@/composables/useGeneralSettings";
+import { AUTO_FETCH_CHOICES } from "@/lib/autoFetch";
+import { ensureNotificationPermission } from "@/lib/desktopNotify";
 import { useGraphSettings } from "@/composables/useGraphSettings";
+import { useWorkspace } from "@/composables/useWorkspace";
+import { defaultRemoteIcon, REMOTE_ICON_CHOICES, type IconName } from "@/lib/metro/icons";
+import { remoteOf } from "@/lib/metro/refGroups";
 import { type ThemeMode, useTheme } from "@/composables/useTheme";
 import { exportTheme, type Theme } from "@/lib/theme/types";
 
 const { open, closeSettings } = useSettings();
-const { showInitials, setShowInitials } = useGraphSettings();
-const { mode, setMode, themes, themeId, setTheme, createFrom, removeCustom, importTheme, dark } =
-  useTheme();
+const {
+  showInitials,
+  setShowInitials,
+  density,
+  setDensity,
+  columns,
+  setColumn,
+  remoteIcons,
+  setRemoteIcon,
+} = useGraphSettings();
+const workspace = useWorkspace();
+const {
+  restoreTabs,
+  setRestoreTabs,
+  ticketPrefill,
+  setTicketPrefill,
+  autoFetchMinutes,
+  setAutoFetchMinutes,
+} = useGeneralSettings();
+/** The system refused notifications: only the badge on the tab tells about new commits. */
+const { openDiagnostics } = useDiagnostics();
+const notificationsDenied = ref(false);
 
-/** Only one section for now; the window is laid out for more. */
-const SECTIONS = [{ id: "appearance", label: "Appearance", icon: Palette }] as const;
-const section = ref<(typeof SECTIONS)[number]["id"]>("appearance");
+async function chooseAutoFetch(minutes: number) {
+  setAutoFetchMinutes(minutes);
+  // The system is asked once, when the user switches the option on.
+  notificationsDenied.value = minutes > 0 && !(await ensureNotificationPermission());
+}
+const {
+  mode,
+  setMode,
+  themes,
+  themeId,
+  setTheme,
+  createFrom,
+  removeCustom,
+  importTheme,
+  dark,
+  lightThemeId,
+  darkThemeId,
+  setSystemTheme,
+} = useTheme();
+
+const SECTIONS = [
+  { id: "general", label: "General", icon: SlidersHorizontal },
+  { id: "appearance", label: "Appearance", icon: Palette },
+  { id: "graph", label: "Graph", icon: GitBranch },
+  { id: "integrations", label: "Integrations", icon: ExternalLink },
+] as const;
+const section = ref<(typeof SECTIONS)[number]["id"]>("general");
 
 const MODES: Array<{ mode: ThemeMode; label: string; icon: typeof Sun }> = [
   { mode: "system", label: "System", icon: Monitor },
@@ -32,6 +92,26 @@ const importing = ref(false);
 const importText = ref("");
 const message = ref("");
 const exported = ref("");
+
+/** The remotes to set an icon for: those of the open repository, and those already set. */
+const remoteNames = computed(() => {
+  const names = new Set(Object.keys(remoteIcons.value));
+  for (const ref of workspace.active.value?.refs ?? []) {
+    if (ref.kind === "remote") names.add(remoteOf(ref));
+  }
+  return [...names].sort();
+});
+
+const COLUMN_LABELS = [
+  ["author", "Author"],
+  ["date", "Date"],
+  ["sha", "Commit id"],
+] as const;
+
+function onRemoteIcon(remote: string, event: Event) {
+  const value = (event.target as HTMLSelectElement).value;
+  setRemoteIcon(remote, value === "" ? null : (value as IconName));
+}
 
 const selected = computed(() => themes.value.find((t) => t.id === themeId.value));
 
@@ -84,6 +164,27 @@ async function doExport() {
   }
 }
 
+const fileInput = ref<HTMLInputElement>();
+
+/** Imports a theme from a JSON file chosen by the user. */
+async function importFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  if (file.size > 256 * 1024) {
+    message.value = "This file is too big to be a theme.";
+    return;
+  }
+  const result = importTheme(await file.text());
+  message.value = "error" in result ? result.error : `Imported “${result.theme.name}”.`;
+}
+
+function onSystemTheme(which: "light" | "dark", event: Event) {
+  const value = (event.target as HTMLSelectElement).value;
+  setSystemTheme(which, value === "" ? null : value);
+}
+
 function onOpenChange(value: boolean) {
   if (!value) closeSettings();
 }
@@ -111,7 +212,83 @@ function onOpenChange(value: boolean) {
         </nav>
 
         <div class="min-h-0 flex-1 overflow-y-auto p-5">
-          <template v-if="section === 'appearance'">
+          <template v-if="section === 'general'">
+            <h2 class="text-base font-semibold">General</h2>
+            <label class="mt-4 flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                class="mt-1"
+                :checked="restoreTabs"
+                @change="setRestoreTabs(($event.target as HTMLInputElement).checked)"
+              />
+              <span>
+                Restore the tabs at start
+                <span class="text-muted-foreground block text-xs">
+                  The repositories that were open when the application was closed are opened again,
+                  with the tab that was shown and the branches hidden from the graph.
+                </span>
+              </span>
+            </label>
+            <div class="mt-4 text-sm">
+              <label class="flex items-center gap-2">
+                Fetch the remotes in the background
+                <select
+                  class="border-input bg-background h-8 rounded-md border px-2 text-sm"
+                  :value="autoFetchMinutes"
+                  aria-label="Automatic fetch"
+                  @change="chooseAutoFetch(Number(($event.target as HTMLSelectElement).value))"
+                >
+                  <option v-for="minutes in AUTO_FETCH_CHOICES" :key="minutes" :value="minutes">
+                    {{ minutes === 0 ? "Never" : `Every ${minutes} min` }}
+                  </option>
+                </select>
+              </label>
+              <span class="text-muted-foreground mt-1 block text-xs">
+                Every open repository, while the window is shown. It never asks for a password: a
+                fetch that needs one fails quietly and you fetch by hand. A notification tells when
+                a branch you follow received commits; a badge on the tab counts those waiting.
+              </span>
+              <span v-if="notificationsDenied" class="text-destructive mt-1 block text-xs">
+                Notifications are not allowed for this app in the system settings: only the badge on
+                the tab will show new commits.
+              </span>
+            </div>
+            <label class="mt-4 flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                class="mt-1"
+                :checked="ticketPrefill"
+                @change="setTicketPrefill(($event.target as HTMLInputElement).checked)"
+              />
+              <span>
+                Start commit messages with the ticket of the branch
+                <span class="text-muted-foreground block text-xs">
+                  A branch named like <code>feat/login/5310</code> fills an empty summary with
+                  <code>AB#5310</code> on Azure DevOps, or <code>#5310</code> elsewhere.
+                </span>
+              </span>
+            </label>
+            <div class="mt-6 border-t pt-4 text-sm">
+              <h3 class="font-medium">Something does not work as in your terminal?</h3>
+              <p class="text-muted-foreground mt-1 text-xs">
+                A report of the tools, the folders searched, the ssh agent and the sign-ins the
+                application sees, with nothing personal in it, to paste in a ticket.
+              </p>
+              <Button
+                class="mt-2"
+                size="sm"
+                variant="outline"
+                @click="
+                  closeSettings();
+                  openDiagnostics();
+                "
+              >
+                Diagnostics…
+              </Button>
+            </div>
+          </template>
+
+          <template v-else-if="section === 'appearance'">
             <!-- The editor of a custom theme -->
             <template v-if="editing">
               <h2 class="mb-3 text-base font-semibold">Edit the theme</h2>
@@ -142,23 +319,35 @@ function onOpenChange(value: boolean) {
                 </div>
               </fieldset>
 
-              <fieldset class="mt-6">
-                <legend class="text-sm font-medium">Graph</legend>
-                <label class="mt-2 flex items-start gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    class="mt-1"
-                    :checked="showInitials"
-                    @change="setShowInitials(($event.target as HTMLInputElement).checked)"
-                  />
-                  <span>
-                    Show the initials of the author in the stations
-                    <span class="text-muted-foreground block text-xs">
-                      Each person has a color of their own; the ring keeps the color of the branch.
-                      The stations are a little bigger.
-                    </span>
-                  </span>
-                </label>
+              <fieldset v-if="mode === 'system'" class="mt-4">
+                <legend class="text-sm font-medium">Theme for each look of the system</legend>
+                <p class="text-muted-foreground mb-2 text-xs">
+                  Follow the system with a different theme when it is light and when it is dark.
+                </p>
+                <div class="flex flex-wrap gap-4">
+                  <label class="flex items-center gap-2 text-sm">
+                    Light
+                    <select
+                      class="bg-background h-8 rounded-md border px-2 text-sm"
+                      :value="lightThemeId ?? ''"
+                      @change="onSystemTheme('light', $event)"
+                    >
+                      <option value="">Same as the selected theme</option>
+                      <option v-for="t in themes" :key="t.id" :value="t.id">{{ t.name }}</option>
+                    </select>
+                  </label>
+                  <label class="flex items-center gap-2 text-sm">
+                    Dark
+                    <select
+                      class="bg-background h-8 rounded-md border px-2 text-sm"
+                      :value="darkThemeId ?? ''"
+                      @change="onSystemTheme('dark', $event)"
+                    >
+                      <option value="">Same as the selected theme</option>
+                      <option v-for="t in themes" :key="t.id" :value="t.id">{{ t.name }}</option>
+                    </select>
+                  </label>
+                </div>
               </fieldset>
 
               <section class="mt-6">
@@ -226,6 +415,17 @@ function onOpenChange(value: boolean) {
                   <Button size="sm" variant="outline" @click="importing = !importing">
                     Import…
                   </Button>
+                  <Button size="sm" variant="outline" @click="fileInput?.click()">
+                    Import from a file…
+                  </Button>
+                  <input
+                    ref="fileInput"
+                    type="file"
+                    accept=".json,application/json"
+                    class="hidden"
+                    aria-label="Theme file"
+                    @change="importFile"
+                  />
                   <template v-if="selected && !selected.builtin">
                     <Button
                       v-if="!confirmDelete"
@@ -274,6 +474,91 @@ function onOpenChange(value: boolean) {
                 </div>
               </section>
             </template>
+          </template>
+          <IntegrationsSettings v-else-if="section === 'integrations'" />
+
+          <template v-else-if="section === 'graph'">
+            <h2 class="text-base font-semibold">Graph</h2>
+            <fieldset class="mt-6">
+              <legend class="text-sm font-medium">Rows</legend>
+              <p class="text-muted-foreground mt-1 text-xs">
+                Compact: one line per commit. Detailed: the author, the date and the id under each
+                line.
+              </p>
+              <div class="mt-2 flex gap-2" role="radiogroup" aria-label="Density of the graph">
+                <Button
+                  v-for="d in ['compact', 'detailed'] as const"
+                  :key="d"
+                  size="sm"
+                  role="radio"
+                  :aria-checked="density === d"
+                  :variant="density === d ? 'default' : 'outline'"
+                  @click="setDensity(d)"
+                >
+                  {{ d === "compact" ? "Compact" : "Detailed" }}
+                </Button>
+              </div>
+              <label class="mt-2 flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  class="mt-1"
+                  :checked="showInitials"
+                  @change="setShowInitials(($event.target as HTMLInputElement).checked)"
+                />
+                <span>
+                  Show the initials of the author in the stations
+                  <span class="text-muted-foreground block text-xs">
+                    Each person has a color of their own; the ring keeps the color of the branch.
+                    The stations are a little bigger.
+                  </span>
+                </span>
+              </label>
+            </fieldset>
+
+            <fieldset class="mt-6">
+              <legend class="text-sm font-medium">Columns</legend>
+              <p class="text-muted-foreground mt-1 text-xs">
+                Shown to the right of the commit message. The widths of the branch and graph columns
+                are set by dragging the dividers in the header of the graph (double click to reset).
+              </p>
+              <div class="mt-2 flex flex-wrap gap-4">
+                <label v-for="[key, label] in COLUMN_LABELS" :key="key" class="flex gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    :checked="columns[key]"
+                    @change="setColumn(key, ($event.target as HTMLInputElement).checked)"
+                  />
+                  {{ label }}
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="mt-6">
+              <legend class="text-sm font-medium">Remote icons</legend>
+              <p class="text-muted-foreground mt-1 text-xs">
+                A branch label shows a laptop when the branch exists on this computer, and one icon
+                for each remote that has it. Pick the icon of each remote.
+              </p>
+              <p v-if="remoteNames.length === 0" class="text-muted-foreground mt-2 text-sm">
+                Open a repository with remotes to set their icons.
+              </p>
+              <ul v-else class="mt-2 space-y-2">
+                <li v-for="remote in remoteNames" :key="remote" class="flex items-center gap-3">
+                  <span class="w-40 truncate font-mono text-sm">{{ remote }}</span>
+                  <select
+                    class="bg-background h-8 rounded-md border px-2 text-sm"
+                    :aria-label="`Icon of ${remote}`"
+                    :value="remoteIcons[remote] ?? ''"
+                    @change="onRemoteIcon(remote, $event)"
+                  >
+                    <option value="">Default ({{ defaultRemoteIcon(remote) }})</option>
+                    <option v-for="icon in REMOTE_ICON_CHOICES" :key="icon.name" :value="icon.name">
+                      {{ icon.label }}
+                    </option>
+                  </select>
+                </li>
+              </ul>
+            </fieldset>
           </template>
         </div>
       </div>

@@ -35,7 +35,7 @@ function refuse() {
 <template>
   <div
     v-if="op"
-    class="bg-popover text-popover-foreground absolute bottom-3 left-3 z-40 w-72 rounded-md border p-3 shadow-md"
+    class="bg-popover text-popover-foreground absolute bottom-3 left-1/2 z-40 w-80 max-w-[calc(100%-1.5rem)] -translate-x-1/2 rounded-md border p-3 shadow-md"
     role="status"
     aria-live="polite"
   >

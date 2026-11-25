@@ -1,6 +1,9 @@
-import { computed, ref, shallowReactive, shallowRef } from "vue";
+import { computed, ref, shallowReactive, shallowRef, watch } from "vue";
 import {
   type ActivityEntry,
+  type AuthorCount,
+  type AutoFetchResult,
+  type BranchPr,
   type Area,
   type CheckoutTarget,
   type CommitDetail,
@@ -14,10 +17,12 @@ import {
   MAX_SEARCH_RESULTS,
   type MergeInfo,
   type MergeMode,
+  type ReflogEntry,
   type Side,
   type PullStrategy,
   type RebasePlan,
   type TodoItem,
+  type Worktree,
   type PushOptions,
   type RefInfo,
   type RemoteResult,
@@ -32,8 +37,20 @@ import {
 import { refsOfBranch } from "@/lib/branchRefs";
 import { type GraphSource, type RepoBackend } from "@/lib/backend";
 import type { Density } from "@/lib/metro/metrics";
+import { dueForFetch } from "@/lib/autoFetch";
+import { folderName, freeBranches, samePath, worktreeOfRefusal } from "@/lib/worktrees";
+import { personKey } from "@/lib/metro/people";
 import { createReadOnlyStore, type ReadOnlyStore } from "@/lib/readOnly";
 import { createRecentStore, type RecentRepo, type RecentStore } from "@/lib/recents";
+import {
+  createPullRequestUrl,
+  type HostedRepo,
+  pickHostedRepo,
+  pullRequestUrl,
+} from "@/lib/remoteUrl";
+import { pullRequestDescription, pullRequestTitle } from "@/lib/pullRequestText";
+import { ticketFromBranch, ticketPrefix, ticketUrl } from "@/lib/tickets";
+import { createSessionStore, type Session, type SessionStore } from "@/lib/session";
 
 /** Result of the commit search of a tab. */
 export interface SearchState {
@@ -86,6 +103,25 @@ export interface CommitTarget {
 
 /** The question the branch and tag dialogs ask. */
 export type BranchDialog =
+  /** A new working tree: the local branches free to take; `error` is what git said. */
+  | { type: "createWorktree"; branches: string[]; branch: string | null; error: string | null }
+  /** Remove a working tree; `error` is git's refusal (changes there), which `force` overrides. */
+  | { type: "removeWorktree"; worktree: Worktree; error: string | null }
+  /** Create a pull request from `branch`; `error` is what the host or the push said. */
+  | {
+      type: "createPullRequest";
+      branch: string;
+      remote: string;
+      targets: string[];
+      target: string;
+      title: string;
+      description: string;
+      /** The branch is not on the remote, or the remote is at another commit. */
+      needsPush: boolean;
+      /** The branch has no counterpart on the remote yet, so the push makes it the upstream. */
+      newOnRemote: boolean;
+      error: string | null;
+    }
   | { type: "createBranch"; start: CommitTarget | null }
   | { type: "renameBranch"; name: string }
   /** `unmerged` holds git's warning once it refused to delete a branch with unmerged commits. */
@@ -200,6 +236,32 @@ export interface RepoTab {
   /** A commit needs `user.name` / `user.email`: the identity dialog is shown. */
   identityRequired: boolean;
   snapshots: Snapshot[];
+  /** The positions HEAD went through, for the history panel. */
+  reflog: ReflogEntry[];
+  /** The hosting service of the first known remote, for ticket links. */
+  hosted: HostedRepo | null;
+  /** The open pull requests of the repository, by source branch (for the badges). */
+  pullRequests: BranchPr[];
+  /** The last refresh of the pull requests failed: what is shown may be out of date. */
+  prStale: boolean;
+  prLoading: boolean;
+  /** The user is not signed in with the tool of the host: nothing can be asked of it. */
+  prSignedOut: boolean;
+  /** The authors of the repository, for the focus selector. */
+  authors: AuthorCount[];
+  /** The working trees of the repository (the main one first), for the sidebar. */
+  worktrees: Worktree[];
+  /** When the last automatic fetch ended (milliseconds since the Unix epoch, 0: never). */
+  autoFetchedAt: number;
+  autoFetching: boolean;
+  /** The last automatic fetch failed (it never asks questions: fetch by hand to see why). */
+  autoFetchFailed: boolean;
+  /** Commits waiting to be pulled over the branches that have an upstream, as of the last fetch. */
+  incoming: number;
+  /** The author the graph is focused on (`personKey` of the name), `null` for everyone. */
+  focusAuthor: string | null;
+  /** When the pull requests were last asked for (milliseconds since the Unix epoch). */
+  prLoadedAt: number;
   activity: ActivityEntry[];
   /** The branch or tag dialog being shown, if any. */
   dialog: BranchDialog | null;
@@ -232,6 +294,7 @@ export function createWorkspace(
   backend: RepoBackend,
   recents: RecentStore,
   readOnlyStore: ReadOnlyStore = createReadOnlyStore(null),
+  sessionStore: SessionStore = createSessionStore(null),
 ) {
   const tabs = shallowRef<RepoTab[]>([]);
   const activeId = ref<string | null>(null);
@@ -243,6 +306,27 @@ export function createWorkspace(
   const opening = ref(false);
 
   const active = computed(() => tabs.value.find((tab) => tab.id === activeId.value) ?? null);
+
+  // ---------- session: the tabs come back at the next start ----------
+
+  /** Set while the tabs of the last session are reopened, so a partial state is not saved. */
+  let restoring = false;
+
+  const currentSession = (): Session => ({
+    paths: tabs.value.map((tab) => tab.path),
+    active: active.value?.path ?? null,
+    hidden: Object.fromEntries(
+      tabs.value.filter((tab) => tab.hidden.size > 0).map((tab) => [tab.path, [...tab.hidden]]),
+    ),
+  });
+
+  watch(
+    () => JSON.stringify(currentSession()),
+    () => {
+      if (!restoring) sessionStore.write(currentSession());
+    },
+    { flush: "sync" },
+  );
 
   async function loadGraph(tab: RepoTab): Promise<void> {
     const request = ++tab.request;
@@ -291,6 +375,7 @@ export function createWorkspace(
 
   async function refreshOnce(tab: RepoTab): Promise<void> {
     void loadStashes(tab);
+    void loadWorktrees(tab);
     const request = ++tab.request;
     const selectedId = tab.selectedCommit?.id ?? null;
     const top = tab.topAnchor;
@@ -323,6 +408,8 @@ export function createWorkspace(
       }
 
       tab.refs = refs;
+      // The branch checked out changes with a checkout, a rename or a deletion.
+      tab.headBranch = refs.find((ref) => ref.kind === "local" && ref.isHead)?.name ?? null;
       tab.source = source;
       if (atTop) tab.anchor = { row: 0, offset: 0 };
       else if (topRow !== null && top) tab.anchor = { row: topRow, offset: top.offset };
@@ -392,6 +479,7 @@ export function createWorkspace(
   const notices = ref<Notice[]>([]);
   let noticeCount = 0;
   const activityOpen = ref(false);
+  const historyOpen = ref(false);
 
   function dismissNotice(id: number): void {
     notices.value = notices.value.filter((notice) => notice.id !== id);
@@ -568,6 +656,21 @@ export function createWorkspace(
   const unstageHunk = (tab: RepoTab, path: string, hunkId: string) =>
     writeStatus(tab, () => backend.unstageHunk(tab.id, path, hunkId));
 
+  const stageLines = (tab: RepoTab, path: string, hunkId: string, lines: number[]) =>
+    writeStatus(tab, () => backend.stageLines(tab.id, path, hunkId, lines));
+  const unstageLines = (tab: RepoTab, path: string, hunkId: string, lines: number[]) =>
+    writeStatus(tab, () => backend.unstageLines(tab.id, path, hunkId, lines));
+
+  /** Who wrote each line of a file, as of a commit (`null`: the working tree). */
+  const blame = (tab: RepoTab, commit: string | null, path: string) =>
+    backend.blame(tab.id, commit, path);
+
+  /** The row of a commit in the graph, `null` when it is not drawn. */
+  async function locateCommit(tab: RepoTab, id: string): Promise<number | null> {
+    const found = await backend.locate(tab.id, [id]).catch(() => [null]);
+    return found[0] ?? null;
+  }
+
   /** Throws away the unstaged changes of files; Undo (in the notice) brings them back. */
   async function discard(tab: RepoTab, paths: string[]): Promise<void> {
     const result = await write(tab, () => backend.discard(tab.id, paths));
@@ -599,6 +702,11 @@ export function createWorkspace(
     }
   }
 
+  /** What the last prefill wrote, per tab: it can be replaced when the branch changes. */
+  const prefilled = new Map<string, string>();
+  /** Whether an empty commit box starts with the ticket of the branch. */
+  const ticketPrefill = ref(true);
+
   /** Changes the summary or the description in the commit box. */
   const updateDraft = (
     tab: RepoTab,
@@ -614,6 +722,8 @@ export function createWorkspace(
     if (!result) return;
     applyStatus(tab, result.status);
     tab.draft = emptyDraft();
+    prefilled.delete(tab.id);
+    prefillTicket(tab);
     const short = result.id.slice(0, 7);
     notify("info", `${amend ? "Amended" : "Committed"} ${short}.`, {
       label: "Undo",
@@ -715,6 +825,16 @@ export function createWorkspace(
           files: failure.files,
           message: failure.message,
         };
+      }
+      const elsewhere = failure ? worktreeOfRefusal(failure.message) : null;
+      if (elsewhere) {
+        // The branch is open in another working tree: say so, and offer to go there.
+        tab.writeError = null;
+        notify(
+          "error",
+          `${targetLabel(target)} is checked out in another working tree (${folderName(elsewhere)}), so it cannot be checked out here.`,
+          { label: "Open it", run: () => openPath(elsewhere) },
+        );
       }
       return;
     }
@@ -906,6 +1026,8 @@ export function createWorkspace(
         "info",
         result.summary.trim() ? "Fetched the remotes." : "Nothing new on the remotes.",
       );
+      void loadPullRequests(tab, true);
+      void autoFetch(tab);
     }
   }
 
@@ -921,6 +1043,7 @@ export function createWorkspace(
           ? "Already up to date."
           : "Pulled the latest changes.",
       );
+      void autoFetch(tab);
       return;
     }
     const failure = remoteFailure(tab);
@@ -1435,6 +1558,32 @@ export function createWorkspace(
     }
   }
 
+  async function loadReflog(tab: RepoTab): Promise<void> {
+    try {
+      tab.reflog = await backend.reflog(tab.id);
+    } catch {
+      tab.reflog = [];
+    }
+  }
+
+  /** Takes back the last operation that moved HEAD; the notice offers to take it back again. */
+  async function undoLast(tab: RepoTab): Promise<void> {
+    const result = await write(tab, () => backend.undoLast(tab.id));
+    if (!result) return reportInline(tab);
+    applyStatus(tab, result.status, true);
+    notify("info", `Undid ${result.undone}.`, { label: "Redo", run: () => undoLast(tab) });
+    if (historyOpen.value) void loadReflog(tab);
+  }
+
+  /** Puts the branch back where it was at a point of the history. */
+  async function restoreHead(tab: RepoTab, entry: ReflogEntry): Promise<void> {
+    const status = await write(tab, () => backend.restoreHead(tab.id, entry.id));
+    if (!status) return reportInline(tab);
+    applyStatus(tab, status, true);
+    notify("info", `Moved ${tab.headBranch ?? "HEAD"} back to ${entry.id.slice(0, 7)}.`);
+    void loadReflog(tab);
+  }
+
   async function loadActivity(tab: RepoTab): Promise<void> {
     try {
       tab.activity = await backend.activity(tab.id);
@@ -1448,7 +1597,7 @@ export function createWorkspace(
     tab.activity = [];
   }
 
-  async function openPath(path: string): Promise<void> {
+  async function openPath(path: string, hidden: readonly string[] = []): Promise<void> {
     const trimmed = path.trim();
     if (!trimmed) return;
     opening.value = true;
@@ -1462,11 +1611,11 @@ export function createWorkspace(
       }
       const tab = shallowReactive<RepoTab>({
         id: info.id,
-        name: info.name,
+        name: info.isLinked && info.headBranch ? `${info.name} (${info.headBranch})` : info.name,
         path: info.path,
         headBranch: info.headBranch,
         refs,
-        hidden: new Set(),
+        hidden: new Set(hidden),
         source: null,
         loading: false,
         error: "",
@@ -1497,6 +1646,20 @@ export function createWorkspace(
         writeError: null,
         identityRequired: false,
         snapshots: [],
+        reflog: [],
+        hosted: null,
+        pullRequests: [],
+        prStale: false,
+        prLoading: false,
+        prSignedOut: false,
+        authors: [],
+        worktrees: [],
+        autoFetchedAt: 0,
+        autoFetching: false,
+        autoFetchFailed: false,
+        incoming: 0,
+        focusAuthor: null,
+        prLoadedAt: 0,
         activity: [],
         dialog: null,
         remote: null,
@@ -1511,11 +1674,41 @@ export function createWorkspace(
       if (tab.readOnly) void backend.setReadOnly(tab.id, true).catch(() => {});
       void refreshStatus(tab);
       void loadStashes(tab);
+      void loadWorktrees(tab);
       await loadGraph(tab);
     } catch (error) {
       openError.value = describeOpenError(trimmed, error);
     } finally {
       opening.value = false;
+    }
+  }
+
+  /**
+   * Reopens the tabs of the last session, with the branches they hid, and shows the tab that
+   * was shown. A repository that cannot be opened any more is left out, with one notice.
+   */
+  async function restoreSession(): Promise<void> {
+    const session = sessionStore.read();
+    if (session.paths.length === 0) return;
+    restoring = true;
+    const missing: string[] = [];
+    try {
+      for (const path of session.paths) {
+        await openPath(path, session.hidden[path] ?? []);
+        if (openError.value) missing.push(path.split("/").filter(Boolean).pop() ?? path);
+      }
+      openError.value = "";
+      const shown = tabs.value.find((tab) => tab.path === session.active);
+      if (shown) activeId.value = shown.id;
+    } finally {
+      restoring = false;
+      sessionStore.write(currentSession());
+    }
+    if (missing.length > 0) {
+      notify(
+        "error",
+        `${missing.length === 1 ? "1 repository" : `${missing.length} repositories`} could not be reopened: ${missing.join(", ")}.`,
+      );
     }
   }
 
@@ -1574,6 +1767,175 @@ export function createWorkspace(
     const names = tab.refs.filter((ref) => ref.kind === kind).map((ref) => ref.fullName);
     const allHidden = names.every((name) => tab.hidden.has(name));
     return setHidden(tab, names, !allHidden);
+  }
+
+  /**
+   * Fetches in the background, never asking a question. A failure is only marked on the tab.
+   * Returns what the fetch brought, `null` when it did not run or failed.
+   */
+  async function autoFetch(tab: RepoTab): Promise<AutoFetchResult | null> {
+    if (tab.autoFetching || tab.remote !== null) return null;
+    tab.autoFetching = true;
+    try {
+      const result = await backend.autoFetch(tab.id);
+      tab.incoming = result.behindTotal;
+      tab.autoFetchFailed = false;
+      if (result.updates.length > 0) void refreshGraph(tab);
+      return result;
+    } catch {
+      tab.autoFetchFailed = true;
+      return null;
+    } finally {
+      tab.autoFetching = false;
+      tab.autoFetchedAt = Date.now();
+    }
+  }
+
+  /** The repositories an automatic fetch is due for. */
+  function autoFetchDue(minutes: number, now = Date.now()): RepoTab[] {
+    return dueForFetch(
+      tabs.value.map((tab) => ({
+        tab,
+        autoFetchedAt: tab.autoFetchedAt,
+        autoFetching: tab.autoFetching,
+        remoteBusy: tab.remote !== null,
+        busy: tab.busy,
+      })),
+      minutes,
+      now,
+    ).map((entry) => entry.tab);
+  }
+
+  async function loadWorktrees(tab: RepoTab): Promise<void> {
+    try {
+      tab.worktrees = await backend.worktrees(tab.id);
+    } catch {
+      tab.worktrees = [];
+    }
+  }
+
+  /** Opens a working tree in its own tab (or shows the one that is open). */
+  const openWorktree = (tree: Worktree): Promise<void> => openPath(tree.path);
+
+  /**
+   * Opens a working tree in the editor or the terminal. These act on a repository, so the working
+   * tree is opened in its own tab first (which then shows).
+   */
+  async function openWorktreeIn(
+    tree: Worktree,
+    kind: "editor" | "terminal",
+    app: string,
+  ): Promise<void> {
+    await openPath(tree.path);
+    const opened = tabs.value.find((tab) => samePath(tab.path, tree.path));
+    if (!opened) return;
+    if (kind === "editor") await openInEditor(opened, app, null);
+    else await openInTerminal(opened, app);
+  }
+
+  /** Asks where to put a new working tree, for `branch` when given. */
+  function askCreateWorktree(tab: RepoTab, branch: string | null = null): void {
+    tab.writeError = null;
+    tab.dialog = {
+      type: "createWorktree",
+      branches: freeBranches(tab.refs, tab.worktrees),
+      branch,
+      error: null,
+    };
+  }
+
+  /**
+   * Creates the working tree and, when asked, opens it. A refusal of git stays in the dialog.
+   * `branch` is existing unless `newBranch`, which creates it from `start` (HEAD when empty).
+   */
+  async function createWorktree(
+    tab: RepoTab,
+    form: { path: string; branch: string; newBranch: boolean; start: string; open: boolean },
+  ): Promise<void> {
+    const dialog = tab.dialog;
+    if (dialog?.type !== "createWorktree" || tab.busy) return;
+    tab.busy = true;
+    try {
+      await backend.addWorktree(
+        tab.id,
+        form.path.trim(),
+        form.branch.trim(),
+        form.newBranch,
+        form.newBranch && form.start.trim() ? form.start.trim() : null,
+      );
+    } catch (error) {
+      if (tab.dialog === dialog) tab.dialog = { ...dialog, error: message(error) };
+      return;
+    } finally {
+      tab.busy = false;
+    }
+    closeDialog(tab);
+    notify("info", `Created the working tree ${folderName(form.path)}.`);
+    await loadWorktrees(tab);
+    if (form.open) await openPath(form.path.trim());
+  }
+
+  function askRemoveWorktree(tab: RepoTab, tree: Worktree): void {
+    if (tree.isMain) return;
+    tab.writeError = null;
+    tab.dialog = { type: "removeWorktree", worktree: tree, error: null };
+  }
+
+  /** Removes the folder with `git worktree remove`; changes there make git refuse unless `force`. */
+  async function removeWorktree(tab: RepoTab, tree: Worktree, force: boolean): Promise<void> {
+    const dialog = tab.dialog;
+    if (tab.busy) return;
+    tab.busy = true;
+    try {
+      await backend.removeWorktree(tab.id, tree.path, force);
+    } catch (error) {
+      if (dialog?.type === "removeWorktree" && tab.dialog === dialog) {
+        tab.dialog = { ...dialog, error: message(error) };
+      } else {
+        notify("error", message(error));
+      }
+      return;
+    } finally {
+      tab.busy = false;
+    }
+    closeDialog(tab);
+    // A tab open on the removed folder has nothing left to show.
+    const open = tabs.value.find((other) => samePath(other.path, tree.path));
+    if (open) void closeTab(open.id);
+    notify("info", `Removed the working tree ${folderName(tree.path)}.`);
+    await loadWorktrees(tab);
+  }
+
+  async function toggleLockWorktree(tab: RepoTab, tree: Worktree): Promise<void> {
+    try {
+      await backend.lockWorktree(tab.id, tree.path, tree.locked === null);
+    } catch (error) {
+      notify("error", message(error));
+    }
+    await loadWorktrees(tab);
+  }
+
+  async function pruneWorktrees(tab: RepoTab): Promise<void> {
+    try {
+      await backend.pruneWorktrees(tab.id);
+      notify("info", "Forgot the working trees whose folder is gone.");
+    } catch (error) {
+      notify("error", message(error));
+    }
+    await loadWorktrees(tab);
+  }
+
+  async function loadAuthors(tab: RepoTab): Promise<void> {
+    try {
+      tab.authors = await backend.authors(tab.id);
+    } catch {
+      tab.authors = [];
+    }
+  }
+
+  /** Fades everything but the commits of an author (`null` brings everyone back). */
+  function setFocusAuthor(tab: RepoTab, author: string | null): void {
+    tab.focusAuthor = author === null || author === "" ? null : personKey(author);
   }
 
   function clearSelection(tab: RepoTab): void {
@@ -1683,6 +2045,253 @@ export function createWorkspace(
     return backend.fileDiff(tab.id, tab.selectedCommit.id, tab.openFile, force);
   }
 
+  // ---------- outside the application: pull requests, editor, terminal ----------
+
+  /**
+   * Opens the pull request of a branch in the browser: the open one when the host says there is
+   * one (it needs a token), otherwise the page that starts one. A failed lookup is reported and
+   * the page that starts one is opened anyway.
+   */
+  async function openPullRequest(tab: RepoTab, branch: string): Promise<void> {
+    const remotes = await backend.remoteUrls(tab.id).catch(() => []);
+    const hosted = pickHostedRepo(remotes);
+    if (!hosted) {
+      notify(
+        "error",
+        "No remote of this repository is on GitHub or Azure DevOps: there is no pull request page to open.",
+      );
+      return;
+    }
+    let url = createPullRequestUrl(hosted.repo, branch);
+    try {
+      const lookup = await backend.findPullRequest(hosted.repo, branch);
+      if (lookup.state === "found") {
+        url = pullRequestUrl(hosted.repo, lookup.id);
+        notify("info", `Pull request ${lookup.id}: ${lookup.title}`);
+      }
+    } catch (error) {
+      notify("error", `${message(error)} Opening the page to create one instead.`);
+    }
+    try {
+      await backend.openExternal(url);
+    } catch (error) {
+      notify("error", message(error));
+    }
+  }
+
+  /** Reads which hosting service the remotes are on (ticket links need it). */
+  async function loadHosted(tab: RepoTab): Promise<void> {
+    const remotes = await backend.remoteUrls(tab.id).catch(() => []);
+    tab.hosted = pickHostedRepo(remotes)?.repo ?? null;
+  }
+
+  /** One notice per session for a failed read of the pull requests, so a bad network is not noisy. */
+  let prErrorShown = false;
+
+  /**
+   * Reads the open pull requests with their review and build state. Asked at most every 30
+   * seconds unless `force`; without a sign-in nothing is shown; a failure keeps what was
+   * shown, marked as out of date.
+   */
+  async function loadPullRequests(tab: RepoTab, force = false): Promise<void> {
+    if (tab.prLoading || (!force && Date.now() - tab.prLoadedAt < 30_000)) return;
+    if (!tab.hosted) await loadHosted(tab);
+    const hosted = tab.hosted;
+    if (!hosted) {
+      tab.pullRequests = [];
+      return;
+    }
+    tab.prLoading = true;
+    try {
+      const list = await backend.listPullRequests(hosted);
+      tab.pullRequests = list.state === "listed" ? list.items : [];
+      tab.prSignedOut = list.state === "signedOut";
+      tab.prStale = false;
+    } catch (error) {
+      tab.prStale = tab.pullRequests.length > 0;
+      if (!prErrorShown) {
+        prErrorShown = true;
+        notify("error", `Pull request status: ${message(error)}`);
+      }
+    } finally {
+      tab.prLoading = false;
+      tab.prLoadedAt = Date.now();
+    }
+  }
+
+  /**
+   * What "pull request" does for a branch: open the one that exists; otherwise ask for the text
+   * of a new one and create it here (the user is signed in with the tool of the host), or open the
+   * page of the host that starts one.
+   */
+  async function pullRequestAction(tab: RepoTab, branch: string): Promise<void> {
+    if (!tab.hosted) await loadHosted(tab);
+    if (tab.prLoadedAt === 0) await loadPullRequests(tab);
+    const existing = tab.pullRequests.find((pr) => pr.branch === branch);
+    if (existing) return openPullRequestPage(tab, existing.id);
+    if (!tab.hosted || tab.prSignedOut || tab.readOnly) return openPullRequest(tab, branch);
+    return askCreatePullRequest(tab, branch, tab.hosted);
+  }
+
+  /** Opens the dialog of a new pull request with the target, the title and the text filled in. */
+  async function askCreatePullRequest(
+    tab: RepoTab,
+    branch: string,
+    hosted: HostedRepo,
+  ): Promise<void> {
+    const remotes = await backend.remoteUrls(tab.id).catch(() => []);
+    const remote = pickHostedRepo(remotes)?.remote ?? remotes[0]?.name ?? "origin";
+    const prefix = `${remote}/`;
+    const targets = tab.refs
+      .filter((ref) => ref.kind === "remote" && ref.name.startsWith(prefix))
+      .map((ref) => ref.name.slice(prefix.length))
+      .filter((name) => name !== "HEAD" && name !== branch);
+    const asked = await backend.defaultBranch(hosted).catch(() => null);
+    const target =
+      [asked, "main", "master", "develop"].find(
+        (name): name is string => !!name && name !== branch && targets.includes(name),
+      ) ??
+      targets[0] ??
+      asked ??
+      "main";
+    const commits = await backend
+      .commitsBetween(tab.id, `${prefix}${target}`, branch)
+      .catch(() => []);
+    const local = tab.refs.find((ref) => ref.kind === "local" && ref.name === branch);
+    const onRemote = tab.refs.find(
+      (ref) => ref.kind === "remote" && ref.name === `${prefix}${branch}`,
+    );
+    tab.writeError = null;
+    tab.dialog = {
+      type: "createPullRequest",
+      branch,
+      remote,
+      targets: targets.includes(target) ? targets : [target, ...targets],
+      target,
+      title: pullRequestTitle(branch, commits, hosted),
+      description: pullRequestDescription(branch, commits, hosted),
+      needsPush: !onRemote || (!!local && onRemote.target !== local.target),
+      newOnRemote: !onRemote,
+      error: null,
+    };
+  }
+
+  /**
+   * Creates the pull request, pushing the branch first when asked. A refusal (of the push or of
+   * the host) stays in the dialog so the text is not lost.
+   */
+  async function createPullRequest(
+    tab: RepoTab,
+    form: { target: string; title: string; description: string; draft: boolean; push: boolean },
+  ): Promise<void> {
+    const dialog = tab.dialog;
+    const hosted = tab.hosted;
+    if (dialog?.type !== "createPullRequest" || !hosted || tab.busy) return;
+    const fail = (error: string) => {
+      if (tab.dialog === dialog) tab.dialog = { ...dialog, error };
+    };
+    if (form.push) {
+      const pushed = await runRemote(tab, "push", `Pushing ${dialog.branch}…`, (opId) =>
+        backend.push(tab.id, opId, {
+          remote: dialog.remote,
+          branch: dialog.branch,
+          setUpstream: dialog.newOnRemote,
+          forceWithLease: false,
+        }),
+      );
+      if (!pushed) {
+        const failure = tab.writeError;
+        tab.writeError = null;
+        return fail(`The push failed: ${failure?.message ?? "see the activity log."}`);
+      }
+    }
+    tab.busy = true;
+    try {
+      const id = await backend.createPullRequest(hosted, {
+        source: dialog.branch,
+        target: form.target,
+        title: form.title.trim(),
+        description: form.description.trim(),
+        draft: form.draft,
+      });
+      closeDialog(tab);
+      notify("info", `Created pull request ${id}.`);
+      void loadPullRequests(tab, true);
+      await backend.openExternal(pullRequestUrl(hosted, id)).catch(() => {});
+    } catch (error) {
+      fail(message(error));
+    } finally {
+      tab.busy = false;
+    }
+  }
+
+  /** Opens a pull request, from its number, in the browser. */
+  async function openPullRequestPage(tab: RepoTab, id: number): Promise<void> {
+    if (!tab.hosted) return;
+    try {
+      await backend.openExternal(pullRequestUrl(tab.hosted, id));
+    } catch (error) {
+      notify("error", message(error));
+    }
+  }
+
+  /** Opens a ticket of the hosting service in the browser. */
+  async function openTicket(tab: RepoTab, ticket: string): Promise<void> {
+    if (!tab.hosted) await loadHosted(tab);
+    if (!tab.hosted) {
+      notify("error", "No remote of this repository is on a known host: there is no ticket page.");
+      return;
+    }
+    try {
+      await backend.openExternal(ticketUrl(tab.hosted, ticket));
+    } catch (error) {
+      notify("error", message(error));
+    }
+  }
+
+  /**
+   * Starts the summary with the ticket of the branch (`AB#5310 `) when the box is empty. A text
+   * the user wrote, an amend and a branch without a ticket are left alone.
+   */
+  function prefillTicket(tab: RepoTab): void {
+    const previous = prefilled.get(tab.id);
+    const { summary, body, amend } = tab.draft;
+    if (!ticketPrefill.value || amend || !tab.hosted || !tab.headBranch) return;
+    const ticket = ticketFromBranch(tab.headBranch);
+    const untouched = summary.trim() === "" || summary === previous;
+    if (!untouched || body.trim() !== "") return;
+    if (!ticket) {
+      if (previous !== undefined && summary === previous) updateDraft(tab, { summary: "" });
+      prefilled.delete(tab.id);
+      return;
+    }
+    const text = `${ticketPrefix(tab.hosted)}${ticket} `;
+    prefilled.set(tab.id, text);
+    if (summary !== text) updateDraft(tab, { summary: text });
+  }
+
+  /** Opens the repository, or one file of it, in the editor. */
+  async function openInEditor(tab: RepoTab, editor: string, path: string | null): Promise<void> {
+    try {
+      await backend.openInEditor(tab.id, editor, path);
+    } catch (error) {
+      notify("error", message(error));
+    }
+  }
+
+  /** Opens a terminal in the repository. */
+  async function openInTerminal(tab: RepoTab, terminal: string): Promise<void> {
+    try {
+      await backend.openInTerminal(tab.id, terminal);
+    } catch (error) {
+      notify("error", message(error));
+    }
+  }
+
+  function clearRecents(): void {
+    recentRepos.value = recents.clear();
+  }
+
   function forgetRecent(path: string): void {
     recentRepos.value = recents.remove(path);
   }
@@ -1735,6 +2344,36 @@ export function createWorkspace(
     deleteTag,
     notices,
     activityOpen,
+    historyOpen,
+    loadReflog,
+    undoLast,
+    restoreHead,
+    stageLines,
+    unstageLines,
+    blame,
+    locateCommit,
+    pickFolder: () => backend.pickFolder(),
+    loadWorktrees,
+    openWorktree,
+    openWorktreeIn,
+    askCreateWorktree,
+    createWorktree,
+    askRemoveWorktree,
+    removeWorktree,
+    toggleLockWorktree,
+    pruneWorktrees,
+    autoFetch,
+    autoFetchDue,
+    loadAuthors,
+    setFocusAuthor,
+    loadHosted,
+    loadPullRequests,
+    pullRequestAction,
+    createPullRequest,
+    openPullRequestPage,
+    openTicket,
+    prefillTicket,
+    ticketPrefill,
     notify,
     dismissNotice,
     refreshStatus,
@@ -1787,6 +2426,11 @@ export function createWorkspace(
     clearHighlight,
     hideBranch,
     forgetRecent,
+    clearRecents,
+    restoreSession,
+    openPullRequest,
+    openInEditor,
+    openInTerminal,
   };
 }
 
@@ -1804,7 +2448,12 @@ export function useWorkspace(backend?: RepoBackend): Workspace {
     } catch {
       storage = null;
     }
-    shared = createWorkspace(backend, createRecentStore(storage), createReadOnlyStore(storage));
+    shared = createWorkspace(
+      backend,
+      createRecentStore(storage),
+      createReadOnlyStore(storage),
+      createSessionStore(storage),
+    );
   }
   return shared;
 }

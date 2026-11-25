@@ -61,3 +61,66 @@ export const toItems = (rows: TodoRow[]): TodoItem[] =>
 
 export const dropCount = (rows: TodoRow[]): number =>
   rows.filter((row) => row.action === "drop").length;
+
+/**
+ * Moves a row to an insertion point between rows (`to` counts the gaps: 0 is above the first row,
+ * `rows.length` below the last), as a drop does. Dropping a row where it already is changes nothing.
+ */
+export function moveRowTo(rows: TodoRow[], from: number, to: number): TodoRow[] {
+  if (from < 0 || from >= rows.length || to < 0 || to > rows.length) return rows;
+  if (to === from || to === from + 1) return rows;
+  const next = [...rows];
+  const [row] = next.splice(from, 1);
+  next.splice(to > from ? to - 1 : to, 0, row);
+  return next;
+}
+
+/** A commit of the result: what the rebase will leave, in order. */
+export interface PreviewCommit {
+  /** The commits that make it up: the first one, then those folded into it. */
+  ids: string[];
+  title: string;
+  /** Messages of folded commits that a squash keeps next to the title. */
+  extra: string[];
+  reworded: boolean;
+  /** The rebase stops after this commit so it can be changed. */
+  edit: boolean;
+}
+
+const firstLine = (text: string): string => text.trim().split("\n")[0];
+
+/**
+ * The commits as they will be once the list has run: dropped ones gone, squashed and fixed-up
+ * ones folded into the commit above, rewords with their new message. Nothing is run to get it.
+ */
+export function previewOf(rows: TodoRow[]): PreviewCommit[] {
+  const result: PreviewCommit[] = [];
+  for (const row of rows) {
+    if (row.action === "drop") continue;
+    if (row.action === "squash" || row.action === "fixup") {
+      const target = result[result.length - 1];
+      if (!target) continue; // The list is refused: there is nothing above to fold into.
+      target.ids.push(row.id);
+      if (row.action === "squash") {
+        // A combined message replaces the messages; without one git keeps them all.
+        if (row.message.trim()) {
+          target.title = firstLine(row.message);
+          target.extra = [];
+          target.reworded = true;
+        } else {
+          target.extra.push(row.summary);
+        }
+      }
+      continue;
+    }
+    const reworded = row.action === "reword" && row.message.trim() !== "";
+    result.push({
+      ids: [row.id],
+      title: reworded ? firstLine(row.message) : row.summary,
+      extra: [],
+      reworded,
+      edit: row.action === "edit",
+    });
+  }
+  return result;
+}

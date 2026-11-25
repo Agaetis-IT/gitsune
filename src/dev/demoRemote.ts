@@ -6,6 +6,7 @@ import {
   type RemoteProgressEvent,
   type RemoteResult,
   type WorkingStatus,
+  type Worktree,
 } from "@/lib/api";
 
 interface Hooks {
@@ -88,8 +89,97 @@ export function createDemoRemote(hooks: Hooks) {
     return { status: await hooks.status(), summary };
   }
 
+  // A main working tree and one more, so the sidebar group and its dialogs can be tried.
+  let trees: Worktree[] = [
+    {
+      path: "/work/demo-repo",
+      head: "a".repeat(40),
+      branch: "main",
+      detached: false,
+      bare: false,
+      isMain: true,
+      locked: null,
+      prunable: null,
+      dirty: false,
+    },
+    {
+      path: "/work/demo-repo-search",
+      head: "b".repeat(40),
+      branch: "feature/api-15",
+      detached: false,
+      bare: false,
+      isMain: false,
+      locked: null,
+      prunable: null,
+      dirty: true,
+    },
+  ];
+
   return {
+    worktrees: async () => structuredClone(trees),
+    addWorktree: async (_repoId: string, path: string, branch: string) => {
+      trees = [
+        ...trees,
+        {
+          path,
+          head: "c".repeat(40),
+          branch,
+          detached: false,
+          bare: false,
+          isMain: false,
+          locked: null,
+          prunable: null,
+          dirty: false,
+        },
+      ];
+    },
+    removeWorktree: async (_repoId: string, path: string, force: boolean) => {
+      const tree = trees.find((t) => t.path === path);
+      if (tree?.dirty && !force) {
+        throw new GitCommandError(
+          "other",
+          `fatal: '${path}' contains modified or untracked files, use --force to delete it`,
+        );
+      }
+      trees = trees.filter((t) => t.path !== path);
+    },
+    lockWorktree: async (_repoId: string, path: string, lock: boolean) => {
+      trees = trees.map((t) => (t.path === path ? { ...t, locked: lock ? "" : null } : t));
+    },
+    pruneWorktrees: async () => {
+      trees = trees.filter((t) => t.prunable === null);
+    },
     remotes: async () => ["origin"],
+    remoteUrls: async () => [{ name: "origin", url: "git@ssh.dev.azure.com:v3/acme/Demo/demo-repo" }],
+    openExternal: async (url: string) => void window.open(url, "_blank", "noopener"),
+    openInEditor: async () => {},
+    openInTerminal: async () => {},
+    findPullRequest: async () => ({ state: "signedOut" as const }),
+    defaultBranch: async () => "main" as string | null,
+    createPullRequest: async () => 99,
+    autoFetch: async () => ({
+      behindTotal: 3,
+      updates: [{ branch: "main", upstream: "origin/main", newCommits: 3 }],
+    }),
+    authors: async () => [
+      { name: "Dan Testuser", count: 40 },
+      { name: "Eve Example", count: 12 },
+      { name: "Sam Sample", count: 7 },
+    ],
+    commitsBetween: async () => [
+      { id: "a".repeat(40), summary: "Add the search overlay" },
+      { id: "b".repeat(40), summary: "Fix the overlay focus" },
+    ],
+    listPullRequests: async () => ({
+      state: "listed" as const,
+      items: [
+        { branch: "feature/api-10", id: 41, title: "Rework the API", draft: false, review: "approved" as const, checks: "success" as const },
+        { branch: "feature/auth-16", id: 42, title: "Auth refresh", draft: false, review: "none" as const, checks: "failure" as const },
+        { branch: "feature/auth-18", id: 43, title: "Auth cleanup", draft: true, review: "none" as const, checks: "pending" as const },
+        { branch: "feature/docs-1", id: 44, title: "Docs", draft: false, review: "changesRequested" as const, checks: "none" as const },
+        { branch: "main", id: 45, title: "Release", draft: false, review: "none" as const, checks: "none" as const },
+      ],
+    }),
     fetch: (_repoId: string, opId: string) =>
       track(opId, async (op) => {
         await play(opId, op, transfer("Receiving"));

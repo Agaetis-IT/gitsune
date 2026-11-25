@@ -4,7 +4,9 @@ import {
   type DroppedStash,
   GitCommandError,
   type ResetMode,
+  type ReflogEntry,
   type ResetResult,
+  type UndoResult,
   type StashEntry,
   type WorkingStatus,
 } from "@/lib/api";
@@ -133,6 +135,23 @@ export function createDemoStash(hooks: Hooks) {
             }
           : null;
       return { status, before: status.head ?? id("be"), after: target, snapshot };
+    },
+    reflog: async (): Promise<ReflogEntry[]> => {
+      const now = Math.floor(Date.now() / 1000);
+      return [
+        { id: id("c1"), message: "commit: Add the search overlay", time: now - 120, current: true },
+        { id: id("c2"), message: "checkout: moving from main to feat/search", time: now - 3600, current: false },
+        { id: id("c3"), message: "pull: Fast-forward", time: now - 86400, current: false },
+        { id: id("c4"), message: "rebase (finish): returning to refs/heads/main", time: now - 172800, current: false },
+      ];
+    },
+    restoreHead: async (): Promise<WorkingStatus> => {
+      guard();
+      return hooks.status();
+    },
+    undoLast: async (): Promise<UndoResult> => {
+      guard();
+      return { status: await hooks.status(), undone: "the commit" };
     },
     undoReset: async (): Promise<DiscardResult> => {
       guard();

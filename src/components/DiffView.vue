@@ -2,7 +2,10 @@
 import { ArrowLeft, Loader } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { Button } from "@/components/ui/button";
-import type { DiffHunk, FileChange, FileDiff } from "@/lib/api";
+import type { Blame, DiffHunk, FileChange, FileDiff } from "@/lib/api";
+import { blameRows, isDarkCssColor, relativeTime } from "@/lib/blameRows";
+import { canPickLines, sortedSelection, toggled, toggledAll } from "@/lib/lineSelection";
+import { personColor } from "@/lib/metro/people";
 import { toSplitRows } from "@/lib/diffRows";
 import { escapeHtml, highlighterFor, type LineHighlighter } from "@/lib/highlight";
 import type { DiffMode } from "@/composables/useWorkspace";
@@ -17,10 +20,26 @@ const props = defineProps<{
   version?: number;
   /** A button in the header of each hunk (stage or unstage it). */
   hunkAction?: { label: string; run: (hunkId: string) => void; disabled?: boolean } | null;
+  /**
+   * A button in the header of a hunk that acts on the lines ticked in the margin (unified layout
+   * only), e.g. "Stage lines".
+   */
+  lineAction?: {
+    label: string;
+    run: (hunkId: string, lines: number[]) => void;
+    disabled?: boolean;
+  } | null;
+  /** Reads who wrote each line; when set, a *Blame* button swaps the diff for that view. */
+  blame?: { load: () => Promise<Blame> } | null;
   /** Small label next to the path (e.g. "Staged changes"). */
   heading?: string;
 }>();
-const emit = defineEmits<{ close: []; "update:mode": [mode: DiffMode] }>();
+const emit = defineEmits<{
+  close: [];
+  "update:mode": [mode: DiffMode];
+  /** The author of a line of the blame was clicked: show that commit. */
+  openCommit: [id: string];
+}>();
 
 /** Above this many lines the diff is shown without highlighting, to stay responsive. */
 const HIGHLIGHT_LIMIT = 3000;
@@ -29,6 +48,9 @@ const diff = shallowRef<FileDiff | null>(null);
 const loading = ref(false);
 const error = ref("");
 const highlighter = shallowRef<LineHighlighter | null>(null);
+/** The blame view is shown instead of the diff (declared before the watchers that reset it). */
+const showBlame = ref(false);
+const blameData = shallowRef<Blame | null>(null);
 let request = 0;
 
 async function fetchDiff(force = false, silent = false) {
@@ -53,11 +75,75 @@ async function fetchDiff(force = false, silent = false) {
 
 watch(
   () => [props.commitId, props.file.path, props.file.oldPath],
-  () => fetchDiff(),
+  () => {
+    showBlame.value = false;
+    blameData.value = null;
+    void fetchDiff();
+  },
   {
     immediate: true,
   },
 );
+
+// ---------- lines ticked in the margin ----------
+
+const selection = ref<Record<string, ReadonlySet<number>>>({});
+// A new diff (the file changed, a hunk was staged) starts without a selection.
+watch(diff, () => (selection.value = {}));
+
+const selectionOf = (hunk: DiffHunk): ReadonlySet<number> => selection.value[hunk.id] ?? new Set();
+const pickable = (hunk: DiffHunk): boolean =>
+  !!props.lineAction && props.mode === "unified" && canPickLines(hunk);
+
+function tick(hunk: DiffHunk, index: number) {
+  selection.value = { ...selection.value, [hunk.id]: toggled(selectionOf(hunk), index) };
+}
+function tickAll(hunk: DiffHunk) {
+  selection.value = { ...selection.value, [hunk.id]: toggledAll(hunk, selectionOf(hunk)) };
+}
+function runLines(hunk: DiffHunk) {
+  const lines = sortedSelection(selectionOf(hunk));
+  if (lines.length > 0) props.lineAction?.run(hunk.id, lines);
+}
+
+// ---------- blame ----------
+
+const blameLoading = ref(false);
+const blameError = ref("");
+const blameDark = ref(false);
+const blameLines = computed(() => (blameData.value ? blameRows(blameData.value) : []));
+const canBlame = computed(
+  () =>
+    !!props.blame &&
+    !!diff.value &&
+    !diff.value.binary &&
+    !diff.value.tooLarge &&
+    !diff.value.submodule &&
+    props.file.status !== "deleted",
+);
+
+async function toggleBlame() {
+  if (showBlame.value) {
+    showBlame.value = false;
+    return;
+  }
+  showBlame.value = true;
+  if (blameData.value || !props.blame) return;
+  blameLoading.value = true;
+  blameError.value = "";
+  try {
+    const loaded = await props.blame.load();
+    blameDark.value = isDarkCssColor(getComputedStyle(document.body).backgroundColor);
+    if (loaded.lines.length <= HIGHLIGHT_LIMIT && !highlighter.value) {
+      highlighter.value = await highlighterFor(props.file.path);
+    }
+    blameData.value = loaded;
+  } catch (e) {
+    blameError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    blameLoading.value = false;
+  }
+}
 
 watch(
   () => props.version,
@@ -141,6 +227,16 @@ const marker = { add: "+", delete: "-", context: " " } as const;
           </template>
         </p>
       </div>
+      <Button
+        v-if="canBlame"
+        size="sm"
+        :variant="showBlame ? 'default' : 'outline'"
+        :aria-pressed="showBlame"
+        title="Who wrote each line"
+        @click="toggleBlame"
+      >
+        Blame
+      </Button>
       <div class="flex gap-1" role="group" aria-label="Diff layout">
         <Button
           size="sm"
@@ -187,19 +283,93 @@ const marker = { add: "+", delete: "-", context: " " } as const;
         </div>
         <p v-else-if="emptyMessage" class="text-muted-foreground p-4 text-sm">{{ emptyMessage }}</p>
 
+        <!-- Blame -->
+        <div v-else-if="showBlame">
+          <p v-if="blameLoading" class="text-muted-foreground flex items-center gap-2 p-4 text-sm">
+            <Loader class="size-4 animate-spin" /> Reading the history of the file…
+          </p>
+          <p v-else-if="blameError" class="text-destructive p-4 text-sm" role="alert">
+            {{ blameError }}
+          </p>
+          <table v-else class="w-full border-collapse font-mono text-xs">
+            <tbody>
+              <tr
+                v-for="row in blameLines"
+                :key="row.line"
+                :class="{ 'border-t': row.first && row.line > 1 }"
+              >
+                <td
+                  class="w-64 max-w-64 border-l-4 px-2 align-top font-sans"
+                  :style="{ borderLeftColor: personColor(row.commit.author, blameDark).fill }"
+                >
+                  <button
+                    v-if="row.first"
+                    class="block w-full text-left"
+                    :disabled="row.commit.uncommitted"
+                    :title="`${row.commit.summary} (${row.commit.id.slice(0, 7)})`"
+                    @click="emit('openCommit', row.commit.id)"
+                  >
+                    <span class="block truncate font-medium">{{ row.commit.author }}</span>
+                    <span class="text-muted-foreground block truncate">
+                      {{
+                        row.commit.uncommitted ? "not committed yet" : relativeTime(row.commit.time)
+                      }}
+                      · {{ row.commit.summary }}
+                    </span>
+                  </button>
+                </td>
+                <td class="text-muted-foreground w-12 px-2 text-right select-none">
+                  {{ row.line }}
+                </td>
+                <td class="pr-3 whitespace-pre">
+                  <!-- html() escapes the text itself: see highlight.ts -->
+                  <!-- eslint-disable-next-line vue/no-v-html -->
+                  <span v-html="html(row.text)" />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-if="blameData?.truncated" class="text-muted-foreground border-t p-3 text-xs">
+            Only the first lines of this file are shown.
+          </p>
+        </div>
+
         <!-- Unified -->
         <table v-else-if="mode === 'unified'" class="w-full border-collapse font-mono text-xs">
           <template v-for="hunk in diff.hunks" :key="hunk.header + hunk.oldStart + hunk.newStart">
             <tbody>
               <tr class="bg-muted/60 text-muted-foreground">
-                <td colspan="4" class="px-3 py-1">
+                <td colspan="5" class="px-3 py-1">
                   <div class="flex items-center gap-2">
+                    <input
+                      v-if="pickable(hunk)"
+                      type="checkbox"
+                      :checked="
+                        selectionOf(hunk).size > 0 &&
+                        hunk.lines.every((l, i) => l.kind === 'context' || selectionOf(hunk).has(i))
+                      "
+                      :aria-label="`Select every change of ${hunk.header}`"
+                      @change="tickAll(hunk)"
+                    />
                     <span>{{ hunk.header }}</span>
+                    <Button
+                      v-if="lineAction && pickable(hunk) && selectionOf(hunk).size > 0"
+                      size="sm"
+                      class="ml-auto h-5 px-2 text-[11px]"
+                      :disabled="lineAction.disabled"
+                      @click="runLines(hunk)"
+                    >
+                      {{ lineAction.label }} ({{ selectionOf(hunk).size }})
+                    </Button>
                     <Button
                       v-if="hunkAction"
                       size="sm"
                       variant="outline"
-                      class="ml-auto h-5 px-2 text-[11px]"
+                      :class="
+                        lineAction && pickable(hunk) && selectionOf(hunk).size > 0
+                          ? 'h-5 px-2 text-[11px]'
+                          : 'ml-auto h-5 px-2 text-[11px]'
+                      "
                       :disabled="hunkAction.disabled"
                       @click="hunkAction.run(hunk.id)"
                     >
@@ -209,6 +379,15 @@ const marker = { add: "+", delete: "-", context: " " } as const;
                 </td>
               </tr>
               <tr v-for="(line, index) in hunk.lines" :key="index" :class="lineClass[line.kind]">
+                <td v-if="lineAction" class="w-6 px-1 text-center select-none">
+                  <input
+                    v-if="pickable(hunk) && line.kind !== 'context'"
+                    type="checkbox"
+                    :checked="selectionOf(hunk).has(index)"
+                    :aria-label="`Select the ${line.kind === 'add' ? 'added' : 'removed'} line ${line.newNo ?? line.oldNo}`"
+                    @change="tick(hunk, index)"
+                  />
+                </td>
                 <td
                   class="text-muted-foreground w-12 min-w-12 px-2 text-right select-none"
                   :class="gutterClass[line.kind]"

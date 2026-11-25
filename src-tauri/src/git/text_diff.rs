@@ -269,14 +269,8 @@ fn patch_path(prefix: &str, path: &str) -> Vec<u8> {
     out
 }
 
-/// The patch of one hunk of the change from `old` to `new`, ready for `git apply`.
-///
-/// `None` when no hunk has that id, which means the files are not what was displayed.
-pub fn hunk_patch(path: &str, old: &[u8], new: &[u8], hunk_id_wanted: &str) -> Option<Vec<u8>> {
-    let (diff, raws) = diff_with_raw(old, new, usize::MAX);
-    let at = diff.hunks.iter().position(|h| h.id == hunk_id_wanted)?;
-    let hunk = &diff.hunks[at];
-
+/// The first three lines of a patch for one file.
+fn patch_header(path: &str) -> Vec<u8> {
     let mut patch = Vec::new();
     let a = patch_path("a", path);
     let b = patch_path("b", path);
@@ -296,6 +290,18 @@ pub fn hunk_patch(path: &str, old: &[u8], new: &[u8], hunk_id_wanted: &str) -> O
         }
         patch.push(b'\n');
     }
+    patch
+}
+
+/// The patch of one hunk of the change from `old` to `new`, ready for `git apply`.
+///
+/// `None` when no hunk has that id, which means the files are not what was displayed.
+pub fn hunk_patch(path: &str, old: &[u8], new: &[u8], hunk_id_wanted: &str) -> Option<Vec<u8>> {
+    let (diff, raws) = diff_with_raw(old, new, usize::MAX);
+    let at = diff.hunks.iter().position(|h| h.id == hunk_id_wanted)?;
+    let hunk = &diff.hunks[at];
+
+    let mut patch = patch_header(path);
     patch.extend_from_slice(hunk.header.as_bytes());
     patch.push(b'\n');
     for (kind, bytes) in &raws[at] {
@@ -323,4 +329,92 @@ fn make_line(kind: LineKind, old_no: Option<u32>, new_no: Option<u32>, raw: &[u8
         text: String::from_utf8_lossy(text).into_owned(),
         no_eol,
     }
+}
+
+/// Which way a selection of lines is applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineMode {
+    /// Add the selected changes to the index: the patch is applied as it is.
+    Stage,
+    /// Take the selected changes out of the index: the patch is applied in reverse.
+    Unstage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinePatchError {
+    /// No hunk has that id: the files are not what was displayed.
+    Stale,
+    /// Nothing selected, or a line that is not a change.
+    BadSelection,
+    /// A line of the hunk has no line ending, which a partial patch cannot express safely.
+    NoEol,
+}
+
+/// The patch of some lines of one hunk of the change from `old` to `new`. `selected` are indices
+/// into the lines of the hunk. A change that is not selected is made to leave the file as it
+/// is: for [`LineMode::Stage`] a deleted line stays (as context) and an added one is left out,
+/// for [`LineMode::Unstage`], which is applied in reverse, the other way round.
+pub fn line_patch(
+    path: &str,
+    old: &[u8],
+    new: &[u8],
+    hunk_id_wanted: &str,
+    selected: &[usize],
+    mode: LineMode,
+) -> Result<Vec<u8>, LinePatchError> {
+    let (diff, raws) = diff_with_raw(old, new, usize::MAX);
+    let at = diff
+        .hunks
+        .iter()
+        .position(|h| h.id == hunk_id_wanted)
+        .ok_or(LinePatchError::Stale)?;
+    let hunk = &diff.hunks[at];
+    let raw = &raws[at];
+    if selected.is_empty()
+        || selected.iter().any(|&i| {
+            raw.get(i)
+                .is_none_or(|(kind, _)| *kind == LineKind::Context)
+        })
+    {
+        return Err(LinePatchError::BadSelection);
+    }
+    if raw.iter().any(|(_, bytes)| !bytes.ends_with(b"\n")) {
+        return Err(LinePatchError::NoEol);
+    }
+
+    let (mut old_count, mut new_count) = (0u32, 0u32);
+    let mut body = Vec::new();
+    for (index, (kind, bytes)) in raw.iter().enumerate() {
+        let chosen = selected.contains(&index);
+        let sign = match (kind, chosen, mode) {
+            (LineKind::Context, _, _) => b' ',
+            (LineKind::Add, true, _) => b'+',
+            (LineKind::Delete, true, _) => b'-',
+            // Left alone: the line stays in the file the patch is applied to.
+            (LineKind::Delete, false, LineMode::Stage) => b' ',
+            (LineKind::Add, false, LineMode::Unstage) => b' ',
+            // Left alone: the line is not in the file the patch is applied to.
+            (LineKind::Add, false, LineMode::Stage) => continue,
+            (LineKind::Delete, false, LineMode::Unstage) => continue,
+        };
+        if sign != b'+' {
+            old_count += 1;
+        }
+        if sign != b'-' {
+            new_count += 1;
+        }
+        body.push(sign);
+        body.extend_from_slice(bytes);
+    }
+
+    let mut patch = patch_header(path);
+    patch.extend_from_slice(
+        format!(
+            "@@ -{},{} +{},{} @@\n",
+            hunk.old_start, old_count, hunk.new_start, new_count
+        )
+        .as_bytes(),
+    );
+    patch.extend_from_slice(&body);
+    Ok(patch)
 }

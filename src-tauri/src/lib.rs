@@ -1,14 +1,42 @@
 mod commands;
+mod diagnostics;
+mod external;
 mod git;
+mod hosting;
+mod hosting_create;
+mod hosting_status;
 mod layout;
+mod platform;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(commands::RepoRegistry::default())
         .manage(commands::RemoteOps::default())
         .invoke_handler(tauri::generate_handler![
+            commands::get_diagnostics,
+            commands::platform_info,
+            commands::reveal_in_finder,
+            commands::list_remote_urls,
+            commands::open_external,
+            commands::host_statuses,
+            commands::azure_sign_in,
+            commands::find_pull_request,
+            commands::list_pull_requests,
+            commands::default_branch,
+            commands::create_pull_request,
+            commands::commits_between,
+            commands::list_authors,
+            commands::auto_fetch,
+            commands::list_worktrees,
+            commands::add_worktree,
+            commands::remove_worktree,
+            commands::lock_worktree,
+            commands::prune_worktrees,
+            commands::open_in_editor,
+            commands::open_in_terminal,
             commands::open_repo,
             commands::close_repo,
             commands::list_refs,
@@ -24,6 +52,9 @@ pub fn run() {
             commands::unstage_paths,
             commands::stage_hunk,
             commands::unstage_hunk,
+            commands::blame_file,
+            commands::stage_lines,
+            commands::unstage_lines,
             commands::discard_paths,
             commands::list_snapshots,
             commands::restore_snapshot,
@@ -61,6 +92,9 @@ pub fn run() {
             commands::undo_replay,
             commands::reset_to,
             commands::undo_reset,
+            commands::list_reflog,
+            commands::restore_head,
+            commands::undo_last,
             commands::merge_preview,
             commands::merge_into_current,
             commands::get_conflict_file,

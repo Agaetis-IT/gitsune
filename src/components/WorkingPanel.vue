@@ -11,11 +11,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { useFileMenu } from "@/composables/useFileMenu";
 import { type RepoTab, useWorkspace } from "@/composables/useWorkspace";
 import type { Area, FileState, StatusEntry } from "@/lib/api";
 
 const props = defineProps<{ tab: RepoTab }>();
 const workspace = useWorkspace();
+const { openFileMenu } = useFileMenu();
 
 /** Longest summary line before it is flagged (a convention, not a limit). */
 const SUMMARY_SOFT_LIMIT = 72;
@@ -210,6 +212,7 @@ function onMessageKeydown(event: KeyboardEvent) {
               class="flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-left"
               :title="entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path"
               @click="workspace.openWorkDiff(tab, entry, section.area)"
+              @contextmenu="openFileMenu(entry.path, $event)"
             >
               <span
                 class="w-4 shrink-0 text-center text-xs font-bold"

@@ -26,13 +26,13 @@ describe("recent repositories", () => {
     expect(store.list()[0].openedAt).toBe(5);
   });
 
-  it("keeps at most 8 entries", () => {
+  it("keeps at most 10 entries", () => {
     const store = createRecentStore(memoryStorage());
     for (let i = 0; i < 12; i++) store.add(repo(`r${i}`));
     const names = store.list().map((r) => r.name);
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(10);
     expect(names[0]).toBe("r11");
-    expect(names[7]).toBe("r4");
+    expect(names[9]).toBe("r2");
   });
 
   it("removes an entry", () => {
@@ -40,6 +40,13 @@ describe("recent repositories", () => {
     store.add(repo("a"));
     store.add(repo("b"));
     expect(store.remove("/fake/a").map((r) => r.name)).toEqual(["b"]);
+  });
+
+  it("clears the list", () => {
+    const store = createRecentStore(memoryStorage());
+    store.add(repo("a"));
+    expect(store.clear()).toEqual([]);
+    expect(store.list()).toEqual([]);
   });
 
   it("ignores corrupt or malformed stored data", () => {

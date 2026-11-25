@@ -11,7 +11,13 @@ const props = defineProps<{
   loading: boolean;
   error: string;
 }>();
-const emit = defineEmits<{ search: [query: string]; step: [delta: 1 | -1]; clear: [] }>();
+const emit = defineEmits<{
+  search: [query: string];
+  step: [delta: 1 | -1];
+  clear: [];
+  /** Esc, or the close button: the box goes away. */
+  close: [];
+}>();
 
 const text = ref(props.query);
 const input = ref<HTMLInputElement>();
@@ -45,6 +51,7 @@ function onKeydown(event: KeyboardEvent) {
   } else if (event.key === "Escape") {
     clear();
     input.value?.blur();
+    emit("close");
   }
 }
 
@@ -108,11 +115,13 @@ onBeforeUnmount(() => clearTimeout(timer));
       <ChevronDown class="size-3.5" />
     </button>
     <button
-      v-if="text"
       class="text-muted-foreground hover:text-foreground rounded p-0.5"
-      aria-label="Clear the search"
-      title="Clear (Esc)"
-      @click="clear"
+      aria-label="Close the search"
+      title="Close (Esc)"
+      @click="
+        clear();
+        emit('close');
+      "
     >
       <X class="size-3.5" />
     </button>

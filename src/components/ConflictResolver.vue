@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { X } from "@lucide/vue";
-import { computed, ref, watch } from "vue";
+import { ChevronDown, ChevronUp, X } from "@lucide/vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { type RepoTab, useWorkspace } from "@/composables/useWorkspace";
@@ -11,6 +11,7 @@ import {
   conflictsOf,
   hasMarkers,
   parseConflicts,
+  resultLineOf,
   type Segment,
   unresolvedCount,
 } from "@/lib/conflicts";
@@ -48,6 +49,85 @@ const sideOnly = computed(
 );
 const busy = computed(() => props.tab.busy || props.tab.readOnly);
 
+/** The conflict being looked at (position among the blocks of the file). */
+const current = ref(0);
+/** Conflicts whose common ancestor is shown. */
+const shownBase = ref<ReadonlySet<number>>(new Set());
+const cells = new Map<number, HTMLElement>();
+const resultBox = ref<HTMLElement>();
+
+function setCell(id: number, el: unknown) {
+  if (el instanceof HTMLElement) cells.set(id, el);
+  else cells.delete(id);
+}
+
+function toggleBase(id: number) {
+  const next = new Set(shownBase.value);
+  if (!next.delete(id)) next.add(id);
+  shownBase.value = next;
+}
+
+/** The file after this one in the list, where "next" goes when the last conflict is done. */
+const nextFile = computed(() => {
+  const at = files.value.findIndex((entry) => entry.path === path.value);
+  return at === -1 ? null : (files.value[at + 1]?.path ?? null);
+});
+
+/** Scrolls the result to the conflict, unless the user wrote the result by hand. */
+function followInResult() {
+  const block = blocks.value[current.value];
+  if (!block || manual.value !== null) return;
+  const line = resultLineOf(segments.value, choices.value, block.id);
+  const box = resultBox.value?.querySelector("textarea");
+  // 16px is the line height of the text of the result.
+  if (box && line !== null) box.scrollTop = Math.max(0, line * 16 - 32);
+}
+
+async function reveal() {
+  await nextTick();
+  const block = blocks.value[current.value];
+  cells.get(block?.id ?? -1)?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+  followInResult();
+}
+
+/** Goes to a conflict; past the last one it goes to the next file, if there is one. */
+function goTo(index: number) {
+  if (index < 0) return;
+  if (index >= blocks.value.length) {
+    if (nextFile.value) workspace.openResolver(props.tab, nextFile.value);
+    return;
+  }
+  current.value = index;
+  void reveal();
+}
+
+function onKeydown(event: KeyboardEvent) {
+  if (!file.value || sideOnly.value || blocks.value.length === 0) return;
+  const target = event.target as HTMLElement | null;
+  // Typing in the result, a field or a selector keeps its own keys.
+  if (target?.closest("textarea, input, select, [contenteditable='true']")) return;
+  if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+    event.preventDefault();
+    goTo(current.value + (event.key === "ArrowUp" ? -1 : 1));
+    return;
+  }
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const keyed = KEY_CHOICES[event.key];
+  const block = blocks.value[current.value];
+  if (keyed !== undefined && block) {
+    event.preventDefault();
+    choose(block.id, keyed.choice);
+  }
+}
+
+onMounted(() => window.addEventListener("keydown", onKeydown));
+onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
+
+/** The side a block's text is taken from, for the highlight of its two cells. */
+function takes(choice: Choice | undefined, side: "ours" | "theirs"): boolean {
+  return choice === side || choice === "both" || choice === "bothReversed";
+}
+
 let request = 0;
 async function load(target: string) {
   const mine = ++request;
@@ -56,6 +136,8 @@ async function load(target: string) {
   segments.value = [];
   choices.value = {};
   manual.value = null;
+  current.value = 0;
+  shownBase.value = new Set();
   if (!target) return;
   loading.value = true;
   try {
@@ -63,6 +145,7 @@ async function load(target: string) {
     if (mine !== request) return;
     file.value = loaded;
     segments.value = parseConflicts(loaded.worktree ?? "");
+    void reveal();
   } catch (e) {
     if (mine === request) error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -102,12 +185,17 @@ function markResolved() {
   void workspace.resolveFile(props.tab, file.value.path, result.value);
 }
 
-const CHOICES: Array<{ choice: Choice; label: string }> = [
-  { choice: "ours", label: "Ours" },
-  { choice: "theirs", label: "Theirs" },
-  { choice: "both", label: "Both" },
-  { choice: "bothReversed", label: "Both, theirs first" },
+const CHOICES: Array<{ choice: Choice; label: string; key: string }> = [
+  { choice: "ours", label: "Ours", key: "1" },
+  { choice: "theirs", label: "Theirs", key: "2" },
+  { choice: "both", label: "Both", key: "3" },
+  { choice: "bothReversed", label: "Both, theirs first", key: "4" },
 ];
+/** `0` takes a choice back. */
+const KEY_CHOICES: Record<string, { choice: Choice }> = {
+  ...Object.fromEntries(CHOICES.map((option) => [option.key, { choice: option.choice }])),
+  "0": { choice: null },
+};
 </script>
 
 <template>
@@ -190,48 +278,133 @@ const CHOICES: Array<{ choice: Choice; label: string }> = [
 
       <!-- Blocks and result -->
       <template v-else-if="file">
-        <div class="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-          <div class="flex flex-wrap items-center gap-2 text-xs">
-            <span class="text-muted-foreground">All blocks:</span>
-            <Button size="sm" variant="outline" @click="chooseAll('ours')">Ours</Button>
-            <Button size="sm" variant="outline" @click="chooseAll('theirs')">Theirs</Button>
-            <Button size="sm" variant="outline" @click="chooseAll('both')">Both</Button>
-          </div>
-          <article
-            v-for="(block, index) in blocks"
-            :key="block.id"
-            class="rounded border"
-            :class="{ 'border-destructive/60': (choices[block.id] ?? null) === null }"
+        <div class="flex flex-wrap items-center gap-1.5 border-b px-3 py-1.5 text-xs">
+          <Button
+            size="sm"
+            variant="outline"
+            :disabled="current === 0"
+            title="Previous conflict (Alt+Up)"
+            @click="goTo(current - 1)"
           >
-            <header class="flex flex-wrap items-center gap-1 border-b px-2 py-1 text-xs">
-              <span class="font-medium">Conflict {{ index + 1 }} of {{ blocks.length }}</span>
-              <span class="ml-auto flex gap-1">
-                <Button
-                  v-for="option in CHOICES"
-                  :key="option.label"
-                  size="sm"
-                  :variant="choices[block.id] === option.choice ? 'default' : 'outline'"
-                  @click="choose(block.id, option.choice)"
-                >
-                  {{ option.label }}
-                </Button>
-              </span>
-            </header>
-            <div class="grid grid-cols-2 divide-x text-xs">
-              <div class="min-w-0">
-                <div class="text-muted-foreground px-2 pt-1">
-                  Ours {{ block.oursLabel && `(${block.oursLabel})` }}
-                </div>
-                <pre class="overflow-x-auto p-2">{{ block.ours || "(nothing)" }}</pre>
-              </div>
-              <div class="min-w-0">
-                <div class="text-muted-foreground px-2 pt-1">
-                  Theirs {{ block.theirsLabel && `(${block.theirsLabel})` }}
-                </div>
-                <pre class="overflow-x-auto p-2">{{ block.theirs || "(nothing)" }}</pre>
-              </div>
+            <ChevronUp class="size-3.5" /> Previous
+          </Button>
+          <span class="text-muted-foreground tabular-nums">
+            {{ current + 1 }} / {{ blocks.length }}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            :disabled="current === blocks.length - 1 && !nextFile"
+            title="Next conflict (Alt+Down)"
+            @click="goTo(current + 1)"
+          >
+            <ChevronDown class="size-3.5" />
+            {{ current === blocks.length - 1 ? "Next file" : "Next" }}
+          </Button>
+          <span class="text-muted-foreground ml-2">This one:</span>
+          <Button
+            v-for="option in CHOICES"
+            :key="option.label"
+            size="sm"
+            :variant="choices[blocks[current]?.id] === option.choice ? 'default' : 'outline'"
+            :title="`Key ${option.key}`"
+            @click="choose(blocks[current].id, option.choice)"
+          >
+            {{ option.label }}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            title="Key 0"
+            :disabled="(choices[blocks[current]?.id] ?? null) === null"
+            @click="choose(blocks[current].id, null)"
+          >
+            Undo
+          </Button>
+          <span class="text-muted-foreground ml-2">All:</span>
+          <Button size="sm" variant="outline" @click="chooseAll('ours')">Ours</Button>
+          <Button size="sm" variant="outline" @click="chooseAll('theirs')">Theirs</Button>
+          <Button size="sm" variant="outline" @click="chooseAll('both')">Both</Button>
+        </div>
+
+        <!-- Ours and theirs side by side: one scroll, so their blocks stay level -->
+        <div class="min-h-0 flex-1 overflow-y-auto">
+          <div
+            class="bg-background text-muted-foreground sticky top-0 z-10 grid grid-cols-2 divide-x border-b text-xs"
+          >
+            <div class="px-2 py-1">
+              Ours {{ blocks[0]?.oursLabel && `(${blocks[0].oursLabel})` }}
             </div>
-          </article>
+            <div class="px-2 py-1">
+              Theirs {{ blocks[0]?.theirsLabel && `(${blocks[0].theirsLabel})` }}
+            </div>
+          </div>
+          <div class="grid grid-cols-2 divide-x font-mono text-xs">
+            <template
+              v-for="(segment, at) in segments"
+              :key="segment.type === 'text' ? `t${at}` : `c${segment.id}`"
+            >
+              <template v-if="segment.type === 'text'">
+                <pre class="overflow-x-auto px-2">{{ segment.text }}</pre>
+                <pre class="overflow-x-auto px-2">{{ segment.text }}</pre>
+              </template>
+              <template v-else>
+                <div
+                  :ref="(el) => setCell(segment.id, el)"
+                  class="cursor-pointer border-y px-2 py-1"
+                  :class="[
+                    takes(choices[segment.id], 'ours')
+                      ? 'bg-emerald-500/15'
+                      : (choices[segment.id] ?? null) === null
+                        ? 'bg-amber-500/15'
+                        : 'opacity-50',
+                    blocks[current]?.id === segment.id ? 'ring-primary ring-2 ring-inset' : '',
+                  ]"
+                  @click="
+                    current = blocks.findIndex((b) => b.id === segment.id);
+                    choose(segment.id, 'ours');
+                  "
+                >
+                  <div class="text-muted-foreground flex items-center gap-2 font-sans">
+                    <span>Conflict {{ segment.id + 1 }}</span>
+                    <button
+                      v-if="segment.base !== null"
+                      class="hover:text-foreground ml-auto underline"
+                      @click.stop="toggleBase(segment.id)"
+                    >
+                      {{ shownBase.has(segment.id) ? "Hide base" : "Show base" }}
+                    </button>
+                  </div>
+                  <pre class="overflow-x-auto">{{ segment.ours || "(nothing)" }}</pre>
+                </div>
+                <div
+                  class="cursor-pointer border-y px-2 py-1"
+                  :class="[
+                    takes(choices[segment.id], 'theirs')
+                      ? 'bg-emerald-500/15'
+                      : (choices[segment.id] ?? null) === null
+                        ? 'bg-amber-500/15'
+                        : 'opacity-50',
+                    blocks[current]?.id === segment.id ? 'ring-primary ring-2 ring-inset' : '',
+                  ]"
+                  @click="
+                    current = blocks.findIndex((b) => b.id === segment.id);
+                    choose(segment.id, 'theirs');
+                  "
+                >
+                  <div class="text-muted-foreground font-sans">&nbsp;</div>
+                  <pre class="overflow-x-auto">{{ segment.theirs || "(nothing)" }}</pre>
+                </div>
+                <div
+                  v-if="segment.base !== null && shownBase.has(segment.id)"
+                  class="bg-muted/40 col-span-2 border-b px-2 py-1"
+                >
+                  <div class="text-muted-foreground font-sans">Common ancestor</div>
+                  <pre class="overflow-x-auto">{{ segment.base || "(nothing)" }}</pre>
+                </div>
+              </template>
+            </template>
+          </div>
         </div>
 
         <div class="flex h-2/5 min-h-40 flex-col border-t">
@@ -255,13 +428,15 @@ const CHOICES: Array<{ choice: Choice; label: string }> = [
               Mark as resolved
             </Button>
           </div>
-          <Textarea
-            :model-value="result"
-            class="min-h-0 flex-1 resize-none rounded-none border-0 border-t font-mono text-xs"
-            aria-label="Result"
-            spellcheck="false"
-            @update:model-value="(value) => (manual = String(value))"
-          />
+          <div ref="resultBox" class="flex min-h-0 flex-1 flex-col">
+            <Textarea
+              :model-value="result"
+              class="min-h-0 flex-1 resize-none rounded-none border-0 border-t font-mono text-xs"
+              aria-label="Result"
+              spellcheck="false"
+              @update:model-value="(value) => (manual = String(value))"
+            />
+          </div>
         </div>
       </template>
     </section>

@@ -1,4 +1,4 @@
-# git-hydra
+# Gitsune
 
 A desktop git client built around a **metro-style branch graph**: one colored line per branch, commits as stations, merges as interchanges. Browsing history, searching and reading diffs are complete. Writing is in too (version 2): staging by file and hunk, committing and amending, discarding, branches, checkout, tags, fetch, pull, push, stash, cherry-pick, revert, reset, merge, conflict resolution and rebase (see [SPEC.md](SPEC.md), section 12). Every change the app makes goes through the `git` binary and is listed in an activity log; a read-only switch per repository refuses all writes.
 
@@ -10,7 +10,11 @@ Tauri 2 (Rust) + Vue 3 + TypeScript + Tailwind + shadcn-vue. macOS first.
 - Tabs per repository, recent repositories, system light/dark theme.
 - Sidebar with local branches, remotes and tags, in folders by the `/` of their names (`feature/auth-18` is in `feature`; a remote's name is its first folder): close and open folders (remembered per repository), hide a branch, a folder or a group, highlight a branch, jump to its commit.
 - Click a lane in the graph to highlight or hide its branch.
-- Search commits by message, author or id (Ctrl/Cmd+F).
+- Branch and tag labels in their own column on the left of the graph, linked to their station; a laptop for a local branch and an icon per remote (configurable per remote in Settings); resizable columns and optional author / date / id columns.
+- The tabs open at the last close come back at start (switch off in Settings, General); on macOS a full menu bar (open and recent repositories, fetch / pull / push, branch actions, view options) with greyed entries when an action makes no sense.
+- From a branch: open or create its pull request on GitHub, GitLab or Azure DevOps (signed in with the Azure, GitHub or GitLab CLI, the open one is found: no token to create); open the repository or a file in Zed (or VS Code, Cursor) and the repository in a terminal.
+- Themes with the colors of the code in diffs, fonts and base size, import from a file, and a different theme when the system is light or dark.
+- Search commits by message, author or id: the _Search_ button or Ctrl/Cmd+F opens a small box at the top right of the graph (Enter and Shift+Enter step through the matches, Esc closes it).
 - Commit details, changed files, unified and side-by-side diffs with syntax highlighting; large and binary files are handled.
 - Live refresh: commits, fetches and checkouts made in a terminal appear without losing your place; changes to the working tree show up in the status as you save files.
 - Stage files or single hunks, commit with a summary and description (hooks and signing behave as in the terminal), amend, discard changes with an undo, and an activity log of every git command the app ran.

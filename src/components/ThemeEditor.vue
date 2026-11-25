@@ -9,6 +9,12 @@ import {
   cloneTheme,
   contrastRatio,
   type ColorToken,
+  FONT_SIZE,
+  isFontList,
+  SYNTAX_LABELS,
+  SYNTAX_TOKENS,
+  type SyntaxToken,
+  syntaxOf,
   TOKEN_LABELS,
   type Theme,
 } from "@/lib/theme/types";
@@ -54,16 +60,51 @@ const PAIRS: Array<[ColorToken, ColorToken, string, number]> = [
   ["primary-foreground", "primary", "Text on buttons", 3],
 ];
 
-const warnings = computed(() =>
-  PAIRS.flatMap(([a, b, label, min]) => {
+const syntax = computed(() => syntaxOf(variant.value));
+
+const warnings = computed(() => [
+  ...PAIRS.flatMap(([a, b, label, min]) => {
     const ratio = contrastRatio(variant.value.colors[a], variant.value.colors[b]);
     return ratio < min
       ? [`${label}: contrast ${ratio.toFixed(1)}, ${min} or more is easier to read.`]
       : [];
   }),
-);
+  ...SYNTAX_TOKENS.filter((token) => token !== "comment").flatMap((token) => {
+    const ratio = contrastRatio(syntax.value[token], variant.value.colors.background);
+    return ratio < 3
+      ? [
+          `Code (${SYNTAX_LABELS[token].toLowerCase()}): contrast ${ratio.toFixed(1)}, 3 or more is easier to read.`,
+        ]
+      : [];
+  }),
+]);
 
 const nameProblem = computed(() => (draft.value.name.trim() ? "" : "Give the theme a name."));
+const fontProblem = computed(() =>
+  [draft.value.fonts?.ui, draft.value.fonts?.code].some((f) => f && !isFontList(f))
+    ? "Fonts are names separated by commas: letters, digits, spaces and quotes only."
+    : "",
+);
+
+function setSyntax(token: SyntaxToken, value: string) {
+  const v = draft.value[editing.value];
+  v.syntax = { ...syntaxOf(v), [token]: value };
+}
+
+/** An empty field goes back to the default font of the application. */
+function setFont(key: "ui" | "code", value: string) {
+  const fonts = { ...draft.value.fonts };
+  if (value.trim()) fonts[key] = value;
+  else delete fonts[key];
+  draft.value.fonts = Object.keys(fonts).length > 0 ? fonts : undefined;
+}
+
+function setSize(value: number | null) {
+  const fonts = { ...draft.value.fonts };
+  if (value === null) delete fonts.size;
+  else fonts.size = value;
+  draft.value.fonts = Object.keys(fonts).length > 0 ? fonts : undefined;
+}
 
 function setColor(token: ColorToken, value: string) {
   draft.value[editing.value].colors[token] = value;
@@ -73,8 +114,10 @@ function setLane(index: number, value: string) {
 }
 
 function save() {
-  if (nameProblem.value) return;
+  if (nameProblem.value || fontProblem.value) return;
   draft.value.name = draft.value.name.trim();
+  if (draft.value.fonts?.ui) draft.value.fonts.ui = draft.value.fonts.ui.trim();
+  if (draft.value.fonts?.code) draft.value.fonts.code = draft.value.fonts.code.trim();
   if (saveCustom(draft.value)) emit("close");
 }
 </script>
@@ -149,11 +192,80 @@ function save() {
           />
         </div>
       </section>
+
+      <section class="space-y-1.5 sm:col-span-2">
+        <h3 class="text-muted-foreground text-xs font-medium uppercase">Code in diffs</h3>
+        <div class="grid gap-x-6 gap-y-1.5 sm:grid-cols-2">
+          <ColorField
+            v-for="token in SYNTAX_TOKENS"
+            :key="token"
+            :label="SYNTAX_LABELS[token]"
+            :model-value="syntax[token]"
+            @update:model-value="(value) => setSyntax(token, value)"
+          />
+        </div>
+        <pre
+          class="bg-card mt-1 overflow-x-auto rounded-md border p-2 font-mono text-xs"
+          aria-label="Preview of the code colors"
+        ><span :style="{ color: syntax.comment, fontStyle: 'italic' }">// Preview</span>
+<span :style="{ color: syntax.keyword }">export function</span> <span :style="{ color: syntax.function }">total</span>(items: <span :style="{ color: syntax.type }">Item</span>[]) {
+  <span :style="{ color: syntax.keyword }">return</span> items.length * <span :style="{ color: syntax.number }">3</span> + <span :style="{ color: syntax.string }">"ok"</span>.length;
+}</pre>
+      </section>
+
+      <section class="space-y-2 sm:col-span-2">
+        <h3 class="text-muted-foreground text-xs font-medium uppercase">Fonts</h3>
+        <div class="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+          <label class="block text-sm">
+            Interface font
+            <Input
+              :model-value="draft.fonts?.ui ?? ''"
+              class="mt-1"
+              placeholder="System default"
+              maxlength="120"
+              @update:model-value="(value) => setFont('ui', String(value))"
+            />
+          </label>
+          <label class="block text-sm">
+            Code font
+            <Input
+              :model-value="draft.fonts?.code ?? ''"
+              class="mt-1"
+              placeholder="System monospace"
+              maxlength="120"
+              @update:model-value="(value) => setFont('code', String(value))"
+            />
+          </label>
+          <label class="block text-sm">
+            Base size ({{ draft.fonts?.size ?? FONT_SIZE.default }} px)
+            <span class="mt-1 flex items-center gap-2">
+              <input
+                type="range"
+                class="w-full"
+                :min="FONT_SIZE.min"
+                :max="FONT_SIZE.max"
+                step="1"
+                :value="draft.fonts?.size ?? FONT_SIZE.default"
+                @input="setSize(Number(($event.target as HTMLInputElement).value))"
+              />
+              <Button
+                size="sm"
+                variant="ghost"
+                :disabled="draft.fonts?.size === undefined"
+                @click="setSize(null)"
+              >
+                Default
+              </Button>
+            </span>
+          </label>
+        </div>
+        <p v-if="fontProblem" class="text-destructive text-sm" role="alert">{{ fontProblem }}</p>
+      </section>
     </div>
 
     <div class="flex justify-end gap-2 border-t pt-3">
       <Button variant="outline" @click="emit('close')">Cancel</Button>
-      <Button :disabled="!!nameProblem" @click="save">Save</Button>
+      <Button :disabled="!!nameProblem || !!fontProblem" @click="save">Save</Button>
     </div>
   </div>
 </template>

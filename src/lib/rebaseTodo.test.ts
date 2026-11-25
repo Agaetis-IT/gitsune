@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { dropCount, isUntouched, moveRow, problem, rowsOf, toItems } from "./rebaseTodo";
+import {
+  dropCount,
+  isUntouched,
+  moveRow,
+  moveRowTo,
+  previewOf,
+  problem,
+  rowsOf,
+  toItems,
+} from "./rebaseTodo";
 
 const commits = ["one", "two", "three"].map((summary, i) => ({
   id: String(i).repeat(40),
@@ -66,5 +75,75 @@ describe("the rebase list", () => {
     expect(
       dropCount([{ ...rows[0], action: "drop" }, rows[1], { ...rows[2], action: "drop" }]),
     ).toBe(2);
+  });
+});
+
+describe("moveRowTo", () => {
+  const names = (rows: ReturnType<typeof rowsOf>) => rows.map((r) => r.summary);
+
+  it("drops a row into a gap, above or below where it was", () => {
+    const rows = rowsOf(commits);
+    expect(names(moveRowTo(rows, 2, 0))).toEqual(["three", "one", "two"]);
+    expect(names(moveRowTo(rows, 0, 3))).toEqual(["two", "three", "one"]);
+    expect(names(moveRowTo(rows, 0, 2))).toEqual(["two", "one", "three"]);
+  });
+
+  it("changes nothing when dropped where it is, or off the list", () => {
+    const rows = rowsOf(commits);
+    expect(moveRowTo(rows, 1, 1)).toBe(rows);
+    expect(moveRowTo(rows, 1, 2)).toBe(rows);
+    expect(moveRowTo(rows, 5, 0)).toBe(rows);
+    expect(moveRowTo(rows, 0, 9)).toBe(rows);
+  });
+});
+
+describe("previewOf", () => {
+  const rows = () => rowsOf(commits);
+
+  it("is the same list when nothing was changed", () => {
+    const preview = previewOf(rows());
+    expect(preview.map((c) => c.title)).toEqual(["one", "two", "three"]);
+    expect(preview.every((c) => c.ids.length === 1 && !c.reworded && !c.edit)).toBe(true);
+  });
+
+  it("leaves dropped commits out", () => {
+    const list = rows();
+    list[1].action = "drop";
+    expect(previewOf(list).map((c) => c.title)).toEqual(["one", "three"]);
+  });
+
+  it("folds a fixup into the commit above and keeps its message", () => {
+    const list = rows();
+    list[1].action = "fixup";
+    const preview = previewOf(list);
+    expect(preview).toHaveLength(2);
+    expect(preview[0]).toMatchObject({ title: "one", extra: [] });
+    expect(preview[0].ids).toEqual([commits[0].id, commits[1].id]);
+  });
+
+  it("keeps both messages of a squash, or uses the combined one", () => {
+    const list = rows();
+    list[1].action = "squash";
+    expect(previewOf(list)[0]).toMatchObject({ title: "one", extra: ["two"] });
+    list[1].message = "One and two\nlonger text";
+    expect(previewOf(list)[0]).toMatchObject({ title: "One and two", extra: [], reworded: true });
+  });
+
+  it("shows the new message of a reword, and marks an edit", () => {
+    const list = rows();
+    list[0].action = "reword";
+    list[0].message = " Better title ";
+    list[2].action = "edit";
+    const preview = previewOf(list);
+    expect(preview[0]).toMatchObject({ title: "Better title", reworded: true });
+    expect(preview[2]).toMatchObject({ title: "three", edit: true });
+    list[0].message = "";
+    expect(previewOf(list)[0]).toMatchObject({ title: "one", reworded: false });
+  });
+
+  it("skips a fold that has nothing above it (the list is refused anyway)", () => {
+    const list = rows();
+    list[0].action = "squash";
+    expect(previewOf(list).map((c) => c.title)).toEqual(["two", "three"]);
   });
 });

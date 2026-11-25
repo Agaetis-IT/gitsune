@@ -1,8 +1,11 @@
 import type { GraphMeta, GraphRow, RefInfo } from "@/lib/api";
 import { connectorPath, laneVerticalRange, visibleRows } from "./geometry";
+import type { PrBadge } from "../prStatus";
+import { drawIcon, type IconName } from "./icons";
 import { colX, type Density, type Metrics, rowCenterY, rowTop } from "./metrics";
 import { contrastText, laneColor, type Palette } from "./palette";
-import { initialsOf, isDarkBackground, personColor } from "./people";
+import { initialsOf, isDarkBackground, personColor, personKey } from "./people";
+import { groupRefs, type RefGroup } from "./refGroups";
 
 export interface Theme {
   background: string;
@@ -21,6 +24,8 @@ export interface DrawInput {
   /** Horizontal offset of the lane area (it scrolls on its own, the text does not). */
   graphScrollX: number;
   graphViewportW: number;
+  /** Left edge of the lane area: the column of branch labels is to its left. */
+  graphX: number;
   textX: number;
   meta: GraphMeta;
   metrics: Metrics;
@@ -34,6 +39,8 @@ export interface DrawInput {
 
   /** Lane drawn in full while the others fade; `null` for no highlight. */
   highlightLane: number | null;
+  /** The author whose commits stay in full while the others fade (`personKey`), or `null`. */
+  focusAuthor?: string | null;
   /** Rows matching the current search, tinted. */
   matchRows: ReadonlySet<number>;
   /** Height of the pinned working tree row at the top; the graph scrolls below it. */
@@ -42,8 +49,20 @@ export interface DrawInput {
   wip: WipRow | null;
   /** Draw the initials of the author in the stations, in a color per person. */
   initials: boolean;
+  /** Columns shown to the right of the commit message. */
+  columns: { author: boolean; date: boolean; sha: boolean };
+  /** The icon of a remote, by name. */
+  remoteIcon: (remote: string) => IconName;
+  /** The pull request badge of each branch, by branch name. */
+  prBadges?: ReadonlyMap<string, PrBadge>;
   /** Receives the position of every ref label drawn (for right-click hit testing). */
   pills?: PillRect[];
+}
+
+/** Whether a commit is in full: on the highlighted lane and by the focused author. */
+function inFocus(input: DrawInput, data: GraphRow): boolean {
+  if (input.highlightLane !== null && data.lane !== input.highlightLane) return false;
+  return !input.focusAuthor || personKey(data.author) === input.focusAuthor;
 }
 
 /** Where a ref label was drawn (screen position), so it can be clicked. */
@@ -54,6 +73,19 @@ export interface PillRect {
   h: number;
   ref: RefInfo;
   row: number;
+  /** For the pull request badge of a label: the pull request it opens when clicked. */
+  badge?: { id: number; title: string };
+  /** For the `+N` label: the labels it stands for, to list them when it is clicked. */
+  more?: Array<{ label: string; ref: RefInfo }>;
+}
+
+/** What a label says about where a branch is: "this computer, origin", "tag". */
+export function describeGroup(group: RefGroup): string {
+  const places: string[] = [];
+  if (group.tag) places.push("tag");
+  if (group.local) places.push("this computer");
+  for (const { remote } of group.remotes) if (!places.includes(remote)) places.push(remote);
+  return `${group.name} (${places.join(", ")})`;
 }
 
 /** The pinned row that stands for the uncommitted changes. */
@@ -67,6 +99,8 @@ export interface WipRow {
 
 /** Opacity of what is not highlighted. */
 const FADED_LANE = 0.18;
+/** Lines while an author is in focus. */
+const FOCUS_LANE = 0.45;
 const FADED_TEXT = 0.35;
 const MATCH_TINT = "#facc15";
 
@@ -97,6 +131,7 @@ export function draw(input: DrawInput): void {
       ctx.translate(0, input.topInset);
     }
     drawBands(inner, range);
+    drawRefs(inner, range);
     drawLanes(inner, range);
     drawText(inner, range);
     ctx.restore();
@@ -128,9 +163,9 @@ function drawWipRow(input: DrawInput, wip: WipRow): void {
   // Station and the dashed line going down into the graph.
   ctx.save();
   ctx.beginPath();
-  ctx.rect(0, 0, input.graphViewportW, height);
+  ctx.rect(input.graphX, 0, input.graphViewportW, height);
   ctx.clip();
-  const x = colX(wip.col, m) - input.graphScrollX;
+  const x = input.graphX + colX(wip.col, m) - input.graphScrollX;
   const y = height / 2;
   ctx.strokeStyle = theme.foreground;
   ctx.fillStyle = theme.background;
@@ -169,6 +204,17 @@ function drawBands(input: DrawInput, range: Range): void {
     ctx.fillRect(0, rowTop(row, m) - scrollTop, width, m.rowH);
     ctx.globalAlpha = 1;
   };
+  // Every row is tinted in the color of its branch, faintly, to follow a line across the page.
+  for (let row = range.first; row <= range.last; row++) {
+    const data = input.getRow(row);
+    const lane = data ? input.meta.lanes[data.lane] : undefined;
+    if (!lane) continue;
+    const faded = data !== undefined && !inFocus(input, data);
+    ctx.globalAlpha = faded ? 0.02 : 0.07;
+    ctx.fillStyle = laneColor(theme.palette, lane.color);
+    ctx.fillRect(0, rowTop(row, m) - scrollTop, width, m.rowH);
+  }
+  ctx.globalAlpha = 1;
   for (let row = range.first; row <= range.last; row++) {
     if (!input.matchRows.has(row)) continue;
     ctx.globalAlpha = 0.16;
@@ -209,9 +255,9 @@ function drawLanes(input: DrawInput, range: Range): void {
   const { ctx, meta, theme, metrics: m } = input;
   ctx.save();
   ctx.beginPath();
-  ctx.rect(0, 0, input.graphViewportW, input.height);
+  ctx.rect(input.graphX, 0, input.graphViewportW, input.height);
   ctx.clip();
-  ctx.translate(-input.graphScrollX, -input.scrollTop);
+  ctx.translate(input.graphX - input.graphScrollX, -input.scrollTop);
   ctx.lineWidth = m.lineW;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -224,7 +270,10 @@ function drawLanes(input: DrawInput, range: Range): void {
   const passes = highlight === null ? [true] : [false, true];
   const inPass = (laneId: number, focusedPass: boolean) =>
     highlight === null || (laneId === highlight) === focusedPass;
-  const alphaOf = (laneId: number) => (highlight === null || laneId === highlight ? 1 : FADED_LANE);
+  // With an author in focus the lines are pale: only their commits tell where that author worked.
+  const lineAlpha = input.focusAuthor ? FOCUS_LANE : 1;
+  const alphaOf = (laneId: number) =>
+    highlight === null || laneId === highlight ? lineAlpha : FADED_LANE;
 
   for (const focusedPass of passes) {
     // Straight vertical parts of the lanes.
@@ -272,7 +321,7 @@ function drawLanes(input: DrawInput, range: Range): void {
     const x = colX(data.col, m);
     if (x < minX || x > maxX) continue;
     const lane = meta.lanes[data.lane];
-    ctx.globalAlpha = alphaOf(data.lane);
+    ctx.globalAlpha = inFocus(input, data) ? 1 : FADED_LANE;
     drawStation(
       ctx,
       x,
@@ -297,29 +346,25 @@ function drawStation(
   author: string,
 ): void {
   const { theme, metrics: m } = input;
+  if (isMerge) {
+    // A merge is a plain dot in the color of its branch: no initials, no ring.
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(3.5, m.stationR * (input.initials ? 0.45 : 0.6)), 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
   if (input.initials) {
-    drawInitialsStation(ctx, x, y, color, isMerge, input, author);
+    drawInitialsStation(ctx, x, y, color, false, input, author);
     return;
   }
   ctx.lineWidth = m.lineW * 0.7;
   ctx.fillStyle = theme.background;
   ctx.strokeStyle = color;
-  if (isMerge) {
-    // Interchange: bigger ring with a dot in the middle.
-    ctx.beginPath();
-    ctx.arc(x, y, m.stationR + 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = theme.foreground;
-    ctx.beginPath();
-    ctx.arc(x, y, m.stationR * 0.4, 0, Math.PI * 2);
-    ctx.fill();
-  } else {
-    ctx.beginPath();
-    ctx.arc(x, y, m.stationR, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-  }
+  ctx.beginPath();
+  ctx.arc(x, y, m.stationR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
   ctx.lineWidth = m.lineW;
 }
 
@@ -368,7 +413,7 @@ function drawInitialsStation(
 }
 
 function drawText(input: DrawInput, range: Range): void {
-  const { ctx, width, theme, metrics: m, density } = input;
+  const { ctx, width, theme, metrics: m, density, columns } = input;
   const detailed = density === "detailed";
   const available = width - input.textX - 12;
   if (available < 60) return;
@@ -390,103 +435,250 @@ function drawText(input: DrawInput, range: Range): void {
       ctx.globalAlpha = 1;
       continue;
     }
-    const lane = input.meta.lanes[data.lane];
-    const color = laneColor(theme.palette, lane?.color ?? null);
-    ctx.globalAlpha =
-      input.highlightLane === null || data.lane === input.highlightLane ? 1 : FADED_TEXT;
+    ctx.globalAlpha = inFocus(input, data) ? 1 : FADED_TEXT;
     const summaryY = detailed ? centerY - 8 : centerY;
 
-    // Right-aligned author and date in compact mode.
+    // The optional columns, right-aligned: author, date, id (the id is the rightmost).
     let right = width - 12;
-    if (!detailed && available > 520) {
-      const date = dateFormat.format(new Date(data.time * 1000));
+    if (available > 520) {
       ctx.font = `11px ${FONT}`;
       ctx.fillStyle = theme.muted;
       ctx.textAlign = "right";
-      ctx.fillText(date, right, centerY);
-      right -= 92;
-      ctx.fillText(fitText(ctx, data.author, 130), right, centerY);
-      right -= 142;
+      if (columns.sha) {
+        ctx.fillText(data.id.slice(0, 7), right, centerY);
+        right -= 64;
+      }
+      if (columns.date) {
+        ctx.fillText(dateFormat.format(new Date(data.time * 1000)), right, centerY);
+        right -= 92;
+      }
+      if (columns.author) {
+        ctx.fillText(fitText(ctx, data.author, 130), right, centerY);
+        right -= 142;
+      }
       ctx.textAlign = "left";
     }
 
-    let x = input.textX;
     ctx.textAlign = "left";
-    x = drawRefPills(ctx, data.refs, x, summaryY, color, input, right, row);
     ctx.font = `${detailed ? 13 : 12}px ${FONT}`;
     ctx.fillStyle = theme.foreground;
-    ctx.fillText(fitText(ctx, data.summary, right - x), x, summaryY);
+    ctx.fillText(fitText(ctx, data.summary, right - input.textX), input.textX, summaryY);
 
     if (detailed) {
-      ctx.font = `11px ${FONT}`;
-      ctx.fillStyle = theme.muted;
-      const meta = `${data.author} · ${dateFormat.format(new Date(data.time * 1000))} · ${data.id.slice(0, 7)}`;
-      ctx.fillText(fitText(ctx, meta, available), input.textX, centerY + 11);
+      // Under the message: what is not already in a column.
+      const parts: string[] = [];
+      if (!columns.author || available <= 520) parts.push(data.author);
+      if (!columns.date || available <= 520) {
+        parts.push(dateFormat.format(new Date(data.time * 1000)));
+      }
+      if (!columns.sha || available <= 520) parts.push(data.id.slice(0, 7));
+      if (parts.length > 0) {
+        ctx.font = `11px ${FONT}`;
+        ctx.fillStyle = theme.muted;
+        ctx.fillText(fitText(ctx, parts.join(" · "), available), input.textX, centerY + 11);
+      }
     }
   }
   ctx.restore();
 }
 
-/** Draws ref labels from `x`, returns the x where the next element can start. */
-function drawRefPills(
+/**
+ * The column of branch and tag labels, each linked to its station by a line in the color of the
+ * branch. Several refs on one commit are shown as far as they fit, then as `+N`.
+ */
+function drawRefs(input: DrawInput, range: Range): void {
+  const { ctx, theme, metrics: m } = input;
+  const columnW = input.graphX;
+  if (columnW < 60) return;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, input.graphX + input.graphViewportW, input.height);
+  ctx.clip();
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+
+  for (let row = range.first; row <= range.last; row++) {
+    const data = input.getRow(row);
+    if (!data || data.refs.length === 0) continue;
+    const lane = input.meta.lanes[data.lane];
+    const color = laneColor(theme.palette, lane?.color ?? null);
+    const y = rowCenterY(row, m) - input.scrollTop;
+    const groups = groupRefs(data.refs);
+    if (groups.length === 0) continue;
+    ctx.globalAlpha = inFocus(input, data) ? 1 : FADED_TEXT;
+
+    const height = Math.min(24, Math.round(m.rowH * 0.64));
+    const left = 8;
+    const room = columnW - left - 8;
+    let x = left;
+    let shown = 0;
+    for (const group of groups) {
+      const hidden = groups.length - shown;
+      const reserve = hidden > 1 ? 34 : 0;
+      const label = pillLayout(ctx, group, room - (x - left) - reserve, input);
+      if (shown > 0 && label.width > room - (x - left) - reserve) break;
+      drawPill(ctx, group, label, x, y, height, color, input);
+      if (label.badge) {
+        // Before the label itself, so a click on the badge finds it first.
+        input.pills?.push({
+          x: x + label.width - 4 - BADGE_W,
+          y: y - height / 2 + input.topInset,
+          w: BADGE_W,
+          h: height,
+          ref: group.primary,
+          row,
+          badge: { id: label.badge.id, title: label.badge.title },
+        });
+      }
+      input.pills?.push({
+        x,
+        y: y - height / 2 + input.topInset,
+        w: label.width,
+        h: height,
+        ref: group.primary,
+        row,
+      });
+      x += label.width + 4;
+      shown++;
+    }
+    if (shown < groups.length) {
+      const text = `+${groups.length - shown}`;
+      ctx.font = `600 11px ${FONT}`;
+      const w = ctx.measureText(text).width + 12;
+      ctx.beginPath();
+      ctx.roundRect(x, y - height / 2, w, height, height / 2);
+      ctx.fillStyle = theme.muted;
+      ctx.globalAlpha *= 0.25;
+      ctx.fill();
+      ctx.globalAlpha = inFocus(input, data) ? 1 : FADED_TEXT;
+      ctx.fillStyle = theme.foreground;
+      ctx.fillText(text, x + 6, y + 0.5);
+      input.pills?.push({
+        x,
+        y: y - height / 2 + input.topInset,
+        w,
+        h: height,
+        ref: groups[shown].primary,
+        row,
+        more: groups.slice(shown).map((g) => ({ label: describeGroup(g), ref: g.primary })),
+      });
+      x += w + 4;
+    }
+
+    // The line from the labels to the station (under the lanes, which are drawn after).
+    const stationX = input.graphX + colX(data.col, m) - input.graphScrollX;
+    const toX = Math.max(input.graphX, stationX);
+    if (toX > x) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x - 2, y);
+      ctx.lineTo(toX, y);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+const ICON = 12;
+const ICON_STEP = 15;
+/** Room of the pull request badge at the end of a label. */
+const BADGE_W = 16;
+
+interface PillLayout {
+  text: string;
+  width: number;
+  icons: IconName[];
+  badge: PrBadge | null;
+}
+
+/** What a label shows and how wide it is, with its name shortened to fit `maxWidth`. */
+function pillLayout(
   ctx: CanvasRenderingContext2D,
-  refs: RefInfo[],
-  startX: number,
+  group: RefGroup,
+  maxWidth: number,
+  input: DrawInput,
+): PillLayout {
+  const icons: IconName[] = [];
+  if (group.tag) icons.push("tag");
+  if (group.local) icons.push("laptop");
+  const seen = new Set<IconName>();
+  for (const { remote } of group.remotes) {
+    const icon = input.remoteIcon(remote);
+    if (!seen.has(icon)) {
+      seen.add(icon);
+      icons.push(icon);
+    }
+  }
+  const check = group.isHead ? ICON_STEP : 0;
+  const badge = group.tag ? null : (input.prBadges?.get(group.name) ?? null);
+  const fixed =
+    7 + check + (icons.length > 0 ? 4 + icons.length * ICON_STEP : 0) + (badge ? BADGE_W : 0) + 4;
+  ctx.font = `${group.isHead ? "700" : "600"} 11px ${FONT}`;
+  const text = fitText(ctx, group.name, Math.max(30, maxWidth - fixed));
+  return { text, width: fixed + ctx.measureText(text).width, icons, badge };
+}
+
+function drawPill(
+  ctx: CanvasRenderingContext2D,
+  group: RefGroup,
+  layout: PillLayout,
+  x: number,
   y: number,
+  height: number,
   color: string,
   input: DrawInput,
-  limitX: number,
-  row: number,
-): number {
-  const { theme, metrics: m } = input;
-  const height = Math.round(m.rowH * (input.density === "detailed" ? 0.4 : 0.64));
-  const shown = refs.slice(0, 3);
-  let x = startX;
-  const labels = shown.map((ref) => ({ ref, text: ref.name }));
-  if (refs.length > shown.length) {
-    labels.push({ ref: refs[0], text: `+${refs.length - shown.length}` });
-  }
-  for (const { ref, text } of labels) {
-    const extra = text.startsWith("+") && ref === refs[0] && refs.length > shown.length;
-    ctx.font = `${ref.isHead && !extra ? "700" : "600"} 11px ${FONT}`;
-    const label = fitText(ctx, text, Math.min(180, limitX - x - 12));
-    const w = ctx.measureText(label).width + 14;
-    if (x + w > limitX - 40) break;
-    const top = y - height / 2;
-    if (!extra) input.pills?.push({ x, y: top + input.topInset, w, h: height, ref, row });
-    ctx.beginPath();
-    ctx.roundRect(x, top, w, height, height / 2);
-    if (extra) {
-      ctx.fillStyle = theme.muted;
-      ctx.globalAlpha = 0.25;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = theme.foreground;
-    } else if (ref.kind === "local") {
-      ctx.fillStyle = color;
-      ctx.fill();
-      if (ref.isHead) {
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = theme.foreground;
-        ctx.stroke();
-      }
-      ctx.fillStyle = contrastText(color);
-    } else if (ref.kind === "remote") {
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = color;
+): void {
+  const { theme } = input;
+  const top = y - height / 2;
+  ctx.beginPath();
+  ctx.roundRect(x, top, layout.width, height, height / 2);
+  let ink: string;
+  if (group.local) {
+    ctx.fillStyle = color;
+    ctx.fill();
+    if (group.isHead) {
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = theme.foreground;
       ctx.stroke();
-      ctx.fillStyle = color;
-    } else {
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = theme.muted;
-      ctx.stroke();
-      ctx.fillStyle = theme.muted;
     }
-    ctx.textAlign = "left";
-    ctx.fillText(label, x + 7, y + 0.5);
-    x += w + 6;
+    ink = contrastText(color);
+  } else if (group.tag) {
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = theme.muted;
+    ctx.stroke();
+    ink = theme.muted;
+  } else {
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = color;
+    ctx.stroke();
+    ink = color;
   }
-  return x + (labels.length > 0 ? 2 : 0);
+  let cursor = x + 7;
+  if (group.isHead) {
+    drawIcon(ctx, "check", cursor + ICON / 2, y, ICON, ink);
+    cursor += ICON_STEP;
+  }
+  ctx.font = `${group.isHead ? "700" : "600"} 11px ${FONT}`;
+  ctx.fillStyle = ink;
+  ctx.textAlign = "left";
+  ctx.fillText(layout.text, cursor, y + 0.5);
+  cursor += ctx.measureText(layout.text).width + 4;
+  for (const icon of layout.icons) {
+    drawIcon(ctx, icon, cursor + ICON / 2, y, ICON, ink);
+    cursor += ICON_STEP;
+  }
+  if (layout.badge) {
+    // A round plate keeps the colored icon readable on any label.
+    const cx = x + layout.width - 4 - BADGE_W / 2;
+    ctx.beginPath();
+    ctx.arc(cx, y, 7, 0, Math.PI * 2);
+    ctx.fillStyle = theme.background;
+    ctx.fill();
+    drawIcon(ctx, layout.badge.icon, cx, y, 10, layout.badge.color);
+  }
 }
 
 /** Shortens `text` with an ellipsis so it fits in `maxWidth` pixels (current font). */

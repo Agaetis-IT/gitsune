@@ -135,3 +135,23 @@ export function unresolvedCount(segments: Segment[], choices: Record<number, Cho
 
 /** Whether text still holds a complete conflict block. */
 export const hasMarkers = (text: string): boolean => conflictsOf(parseConflicts(text)).length > 0;
+
+/**
+ * The line of the result (counted from 0) where a block starts, so the result can be scrolled to
+ * the conflict being looked at. `null` for a block the file does not have.
+ */
+export function resultLineOf(
+  segments: Segment[],
+  choices: Record<number, Choice>,
+  blockId: number,
+): number | null {
+  const at = segments.findIndex((s) => s.type === "conflict" && s.id === blockId);
+  if (at === -1) return null;
+  const before = compose(segments.slice(0, at), choices);
+  return before === "" ? 0 : before.split("\n").length - 1;
+}
+
+/** The text of a whole side of the file: plain text plus that side of every block. */
+export function sideText(segments: Segment[], side: "ours" | "theirs"): string {
+  return segments.map((s) => (s.type === "text" ? s.text : s[side])).join("");
+}

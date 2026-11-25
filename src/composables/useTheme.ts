@@ -4,6 +4,8 @@ import {
   COLOR_TOKENS,
   duplicateTheme,
   parseTheme,
+  SYNTAX_TOKENS,
+  syntaxOf,
   type Theme,
   type ThemeMode,
   type ThemeVariant,
@@ -14,6 +16,8 @@ export type { ThemeMode } from "@/lib/theme/types";
 const MODE_KEY = "git-hydra:theme";
 const THEME_KEY = "git-hydra:theme-id";
 const CUSTOM_KEY = "git-hydra:themes";
+const LIGHT_KEY = "git-hydra:theme-id-light";
+const DARK_KEY = "git-hydra:theme-id-dark";
 
 function read(key: string): string | null {
   try {
@@ -51,6 +55,9 @@ function readCustomThemes(): Theme[] {
 const mode = ref<ThemeMode>(readMode());
 const customThemes = ref<Theme[]>(readCustomThemes());
 const themeId = ref<string>(read(THEME_KEY) ?? DEFAULT_THEME_ID);
+/** In "System" mode: the theme for a light system and for a dark one (`null`: the chosen theme). */
+const lightId = ref<string | null>(read(LIGHT_KEY));
+const darkId = ref<string | null>(read(DARK_KEY));
 /** A theme being edited, shown live without being saved. */
 const draft = ref<Theme | null>(null);
 
@@ -65,12 +72,19 @@ export function isDark(current: ThemeMode, prefersDark: boolean): boolean {
 }
 
 const allThemes = computed<Theme[]>(() => [...BUILTIN_THEMES, ...customThemes.value]);
+const dark = computed(() => isDark(mode.value, systemDark.value));
+
+/** The id in use: in "System" mode the one set for the light or the dark system, if any. */
+const effectiveId = computed(() => {
+  const paired = mode.value === "system" ? (dark.value ? darkId.value : lightId.value) : null;
+  return paired && allThemes.value.some((t) => t.id === paired) ? paired : themeId.value;
+});
+
 /** The chosen theme; the default one when it was deleted or never existed. */
 const theme = computed<Theme>(
-  () => allThemes.value.find((t) => t.id === themeId.value) ?? BUILTIN_THEMES[0],
+  () => allThemes.value.find((t) => t.id === effectiveId.value) ?? BUILTIN_THEMES[0],
 );
 const active = computed<Theme>(() => draft.value ?? theme.value);
-const dark = computed(() => isDark(mode.value, systemDark.value));
 const variant = computed<ThemeVariant>(() => (dark.value ? active.value.dark : active.value.light));
 
 /** Tokens the sidebar takes from the others, so a theme does not have to repeat them. */
@@ -94,6 +108,17 @@ export function applyVariant(root: HTMLElement, themeToApply: Theme, isDarkMode:
     root.style.setProperty(`--${name}`, v.colors[from as keyof typeof v.colors]);
   }
   root.style.setProperty("--radius", `${themeToApply.radius}rem`);
+
+  const syntax = syntaxOf(v);
+  for (const token of SYNTAX_TOKENS) root.style.setProperty(`--syntax-${token}`, syntax[token]);
+
+  // Fonts and size: left to the defaults of the application when the theme does not set them.
+  const fonts = themeToApply.fonts;
+  const set = (name: string, value: string | undefined) =>
+    value ? root.style.setProperty(name, value) : root.style.removeProperty(name);
+  set("--app-font-ui", fonts?.ui);
+  set("--app-font-code", fonts?.code);
+  set("--app-font-size", fonts?.size ? `${fonts.size}px` : undefined);
 }
 
 watchEffect(() => applyVariant(document.documentElement, active.value, dark.value));
@@ -146,6 +171,21 @@ export function useTheme() {
     customThemes.value = customThemes.value.filter((t) => t.id !== id);
     persistCustom();
     if (themeId.value === id) setTheme(DEFAULT_THEME_ID);
+    if (lightId.value === id) setSystemTheme("light", null);
+    if (darkId.value === id) setSystemTheme("dark", null);
+  }
+
+  /** The theme used when the system is light or dark ("System" mode); `null` for the chosen one. */
+  function setSystemTheme(which: "light" | "dark", id: string | null) {
+    if (id !== null && !allThemes.value.some((t) => t.id === id)) return;
+    const target = which === "light" ? lightId : darkId;
+    target.value = id;
+    try {
+      if (id === null) localStorage.removeItem(which === "light" ? LIGHT_KEY : DARK_KEY);
+      else localStorage.setItem(which === "light" ? LIGHT_KEY : DARK_KEY, id);
+    } catch {
+      // Not kept for the next session.
+    }
   }
 
   /** Adds a theme from JSON text. Returns the theme, or what is wrong with the text. */
@@ -182,6 +222,9 @@ export function useTheme() {
     themeId,
     theme,
     setTheme,
+    lightThemeId: lightId,
+    darkThemeId: darkId,
+    setSystemTheme,
     customThemes,
     createFrom,
     saveCustom,

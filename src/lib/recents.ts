@@ -8,7 +8,7 @@ export interface RecentRepo {
 type Storage = Pick<globalThis.Storage, "getItem" | "setItem">;
 
 const KEY = "git-hydra:recent-repos";
-const MAX_RECENTS = 8;
+const MAX_RECENTS = 10;
 
 const isRecent = (value: unknown): value is RecentRepo =>
   typeof value === "object" &&
@@ -46,6 +46,9 @@ export function createRecentStore(storage: Storage | null) {
     },
     remove(path: string): RecentRepo[] {
       return write(read().filter((item) => item.path !== path));
+    },
+    clear(): RecentRepo[] {
+      return write([]);
     },
   };
 }

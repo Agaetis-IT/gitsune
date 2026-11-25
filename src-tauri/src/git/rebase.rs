@@ -171,7 +171,8 @@ fn helper_dir(ctx: &OpCtx) -> Result<PathBuf, GitError> {
 }
 
 fn shell_quote(path: &std::path::Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+    let path = crate::platform::shell_path(crate::platform::Os::current(), &path.to_string_lossy());
+    format!("'{}'", path.replace('\'', "'\\''"))
 }
 
 /// Validates the list against the commits git would replay and writes the files git needs.

@@ -664,6 +664,7 @@ fn a_lock_held_by_another_process_stops_a_checkout_without_being_removed() {
     assert_eq!(current(dir), "main");
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn the_usual_tool_folders_are_added_to_a_short_path() {
     let short = "/usr/bin:/bin";
@@ -681,4 +682,31 @@ fn the_usual_tool_folders_are_added_to_a_short_path() {
         1
     );
     assert!(with_common_tool_dirs("").starts_with("/opt/homebrew/bin"));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_toolchain_folders_of_the_home_directory_are_added() {
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let extended = with_common_tool_dirs("/usr/bin");
+    let bun = format!("{}/.bun/bin", home.trim_end_matches('/'));
+    assert!(extended.split(':').any(|p| p == bun), "{extended}");
+}
+
+#[test]
+fn the_identity_agent_of_an_ssh_config_is_found() {
+    use super::cli::identity_agent;
+    let config = "Host *\n\tIdentityAgent \"~/Library/Group Containers/x/agent.sock\"\n";
+    assert_eq!(
+        identity_agent(config, "/Users/me/").as_deref(),
+        Some("/Users/me/Library/Group Containers/x/agent.sock")
+    );
+    assert_eq!(
+        identity_agent("identityagent = /tmp/a.sock", "/h").as_deref(),
+        Some("/tmp/a.sock")
+    );
+    assert_eq!(identity_agent("IdentityAgent none", "/h"), None);
+    assert_eq!(identity_agent("Host a\n  User git", "/h"), None);
 }
