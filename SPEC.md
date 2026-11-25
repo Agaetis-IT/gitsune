@@ -26,7 +26,7 @@ A personal desktop git client. v1 is read-only and centered on a "metro map" vie
 | Backend | Rust |
 | Frontend | Vue 3 + TypeScript + Tailwind + shadcn-vue |
 | Package manager / runner | Bun |
-| Git read access | `gix` or `git2` (decided during the prototype, see M1) |
+| Git read access | `gix` (decided at M1, see section 11) |
 | Git write access (later) | `git` CLI (keeps hooks, SSH, credentials behaviour) |
 | FS watching | `notify` crate |
 | Tests | Rust (`cargo test`) + Vitest |
@@ -153,6 +153,25 @@ Each milestone ends with lint and tests passing and a short demo.
 - Visual tuning of the palette and metro style in both themes, empty/error states, performance pass against the targets in section 6, macOS packaging (unsigned build is enough for personal use).
 
 ## 10. Open questions (to settle during the milestones)
-- `gix` vs `git2`: decided at M1 from the benchmark.
 - Exact palette and line thickness: tuned at M4/M9.
 - Whether to add a minimal commit list column (hash, author, date) next to the graph or keep only summaries: decide at M4.
+
+## 11. Decisions
+
+### D1 — `gix` for git read access (M1)
+
+Benchmark on a synthetic 100,000-commit repository (1,199 refs, ~4,000 merges, 47 MiB pack), release build, warm cache, Apple Silicon. Reproduce with `scripts/gen-synthetic-repo.ts` and `docs/benchmarks/bench_git.rs`.
+
+| Operation | `git2` | `gix` |
+|---|---|---|
+| Open repository | 0.3 ms | 0.6 ms |
+| List 1,199 refs | 34 ms | 40 ms |
+| First 1,000 commits (with summary) | 594 ms | 3.5 ms |
+| Full graph in one pass (id, parents, time) | 614 ms | 50 ms (32 ms with commit-graph) |
+| Diff of one commit, file list | 0.9 ms (with patch text) | 0.3 ms (file list only) |
+
+Why `gix`: the lane layout needs the whole parent graph once; `gix` reads 100k commits in ~50 ms against ~600 ms for `git2`, which keeps the first screen well under the 1 s target. It is also pure Rust (no C build of libgit2).
+
+Caveats:
+- The two walks are not strictly equivalent: `git2` was asked for a topological order, `gix` for commit-time order. The layout engine will compute its own topological order from the parent graph (needed anyway, and robust to clock skew), so this does not affect the choice. The "full graph" rows use the same sort (commit time) for both.
+- `gix` hunk-level diffs were not benchmarked (only the file list). M6 will use `gix`'s blob diff; if it falls short, fall back to the `git` CLI for that path only.
