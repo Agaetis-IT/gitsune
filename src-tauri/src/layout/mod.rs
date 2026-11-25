@@ -69,6 +69,12 @@ pub struct Lane {
     pub first_row: usize,
     /// Row where the lane ends (its last commit, or the commit it converges into).
     pub last_row: usize,
+    /// The lane begins as a connector leaving a merge commit (it has a `Start` edge in
+    /// `first_row`); otherwise it begins at its own tip commit in `first_row`.
+    pub forked: bool,
+    /// The lane ends by bending into another commit's lane (an `End` edge in the span
+    /// before `last_row`); otherwise it ends at its own last commit in `last_row`.
+    pub joins: bool,
     pub name: Option<String>,
     pub kind: LaneKind,
     /// Palette index, `None` for anonymous lanes (drawn in a neutral color).
@@ -128,17 +134,21 @@ struct LaneBuilder {
     col: u32,
     first_row: usize,
     last_row: usize,
+    forked: bool,
+    joins: bool,
     /// Branch name parsed from the merge commit that started the lane.
     merge_hint: Option<String>,
     best: Option<Candidate>,
 }
 
 impl LaneBuilder {
-    fn new(col: usize, row: usize, merge_hint: Option<String>) -> Self {
+    fn new(col: usize, row: usize, forked: bool, merge_hint: Option<String>) -> Self {
         Self {
             col: to_u32(col),
             first_row: row,
             last_row: row,
+            forked,
+            joins: false,
             merge_hint,
             best: None,
         }
@@ -179,6 +189,8 @@ impl LaneBuilder {
             col: self.col,
             first_row: self.first_row,
             last_row: self.last_row,
+            forked: self.forked,
+            joins: self.joins,
             color: color_key.as_deref().map(naming::color_for),
             name,
             kind,
@@ -254,7 +266,7 @@ pub fn layout(commits: &[Commit], refs: &[RefLabel]) -> Layout {
             // Nothing points at this commit: it is the tip of a new line.
             let col = lowest_free(&slots);
             let lane = builders.len();
-            builders.push(LaneBuilder::new(col, row, None));
+            builders.push(LaneBuilder::new(col, row, false, None));
             occupy(&mut slots, col, lane);
             (col, lane)
         };
@@ -265,6 +277,7 @@ pub fn layout(commits: &[Commit], refs: &[RefLabel]) -> Layout {
                 .take()
                 .expect("a heading lane occupies its column");
             builders[ended].last_row = row;
+            builders[ended].joins = true;
             let previous = rows
                 .last_mut()
                 .expect("a converging lane implies a previous row");
@@ -299,7 +312,7 @@ pub fn layout(commits: &[Commit], refs: &[RefLabel]) -> Layout {
                 None
             };
             let new_lane = builders.len();
-            builders.push(LaneBuilder::new(new_col, row, hint));
+            builders.push(LaneBuilder::new(new_col, row, true, hint));
             occupy(&mut slots, new_col, new_lane);
             heading_to.entry(parent).or_default().push(new_col);
             edges.push(Edge {

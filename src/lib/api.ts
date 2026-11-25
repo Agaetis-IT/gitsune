@@ -30,6 +30,10 @@ export interface Lane {
   col: number;
   firstRow: number;
   lastRow: number;
+  /** Begins as a connector leaving a merge commit (otherwise at its own tip, in `firstRow`). */
+  forked: boolean;
+  /** Ends by bending into another lane (otherwise at its own last commit, in `lastRow`). */
+  joins: boolean;
   name: string | null;
   kind: LaneKind;
   /** Palette index, `null` for anonymous lanes (neutral color). */

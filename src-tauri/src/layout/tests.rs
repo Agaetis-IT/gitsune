@@ -105,6 +105,7 @@ fn octopus_merge_spreads_parents_over_adjacent_columns() {
     let layout = layout(&commits, &[]);
     assert_eq!(cols(&layout), vec![0, 0, 1, 2, 0]);
     assert_eq!(layout.rows[0].edges.len(), 2);
+    assert!(layout.lanes[1..].iter().all(|l| l.forked && l.joins));
     // Both side lanes run down to R and bend into its column in the last span.
     let ends: Vec<_> = layout.rows[3]
         .edges
@@ -374,6 +375,37 @@ pub(crate) fn validate(commits: &[Commit], layout: &Layout) -> Result<(), String
         slot.dedup();
         if slot.windows(2).any(|w| w[0].0 == w[1].0) {
             return Err(format!("row {i}: two lanes share a column: {slot:?}"));
+        }
+    }
+
+    for lane in &layout.lanes {
+        let starts_with_edge = layout.rows[lane.first_row]
+            .edges
+            .iter()
+            .any(|e| e.lane == lane.id && e.bend == Bend::Start);
+        if lane.forked != starts_with_edge {
+            return Err(format!(
+                "lane {}: forked={} but start edge={starts_with_edge}",
+                lane.id, lane.forked
+            ));
+        }
+        let ends_at_node = layout.rows[lane.last_row].lane == lane.id;
+        if lane.joins == ends_at_node {
+            return Err(format!(
+                "lane {}: joins={} but ends_at_node={ends_at_node}",
+                lane.id, lane.joins
+            ));
+        }
+        let has_join_edge = lane.last_row > 0
+            && layout.rows[lane.last_row - 1]
+                .edges
+                .iter()
+                .any(|e| e.lane == lane.id);
+        if lane.joins && !has_join_edge {
+            return Err(format!(
+                "lane {}: joins without an edge into row {}",
+                lane.id, lane.last_row
+            ));
         }
     }
 

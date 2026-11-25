@@ -1,0 +1,342 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import type { GraphMeta, GraphRow } from "@/lib/api";
+import { draw, type Theme } from "@/lib/metro/draw";
+import { isOnStation, rowAtY } from "@/lib/metro/geometry";
+import { type Density, graphContentWidth, METRICS, rowTop } from "@/lib/metro/metrics";
+import { DARK_PALETTE, LIGHT_PALETTE } from "@/lib/metro/palette";
+import { type FetchPage, RowCache } from "@/lib/metro/rowCache";
+
+const props = withDefaults(
+  defineProps<{
+    meta: GraphMeta;
+    fetchPage: FetchPage;
+    density?: Density;
+    selected?: number | null;
+  }>(),
+  { density: "compact", selected: null },
+);
+
+const emit = defineEmits<{
+  "update:selected": [row: number | null];
+  "update:density": [density: Density];
+  select: [row: GraphRow];
+  error: [message: string];
+}>();
+
+const scroller = ref<HTMLDivElement>();
+const canvas = ref<HTMLCanvasElement>();
+const viewW = ref(0);
+const viewH = ref(0);
+const hoverRow = ref<number | null>(null);
+const tooltip = ref<{ row: GraphRow; x: number; y: number } | null>(null);
+
+const metrics = computed(() => METRICS[props.density]);
+const contentH = computed(() => props.meta.total * metrics.value.rowH);
+const graphContentW = computed(() => graphContentWidth(props.meta.maxCols, metrics.value));
+// The lane area takes at most ~45% of the width and scrolls sideways on its own.
+const graphViewportW = computed(() =>
+  Math.min(graphContentW.value, Math.max(120, Math.floor(viewW.value * 0.45))),
+);
+const spacerW = computed(
+  () => viewW.value + Math.max(0, graphContentW.value - graphViewportW.value),
+);
+const textX = computed(() => graphViewportW.value + 12);
+
+let scrollTop = 0;
+let scrollLeft = 0;
+let frame = 0;
+let pendingSelect: number | null = null;
+
+const cache = new RowCache({
+  fetchPage: (cursor, limit) => props.fetchPage(cursor, limit),
+  onUpdate: () => {
+    if (pendingSelect !== null) {
+      const row = cache.getRow(pendingSelect);
+      if (row) {
+        pendingSelect = null;
+        emit("select", row);
+      }
+    }
+    scheduleDraw();
+  },
+  onError: (error) => emit("error", String(error)),
+});
+
+function readTheme(): Theme {
+  const root = document.documentElement;
+  const style = getComputedStyle(root);
+  const dark = root.classList.contains("dark");
+  const read = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
+  return {
+    background: read("--background", dark ? "#0d0d0d" : "#ffffff"),
+    foreground: read("--foreground", dark ? "#fafafa" : "#171717"),
+    muted: read("--muted-foreground", dark ? "#a3a3a3" : "#737373"),
+    palette: dark ? DARK_PALETTE : LIGHT_PALETTE,
+  };
+}
+let theme = readTheme();
+
+function visibleRange() {
+  const m = metrics.value;
+  const first = Math.max(0, Math.floor(scrollTop / m.rowH));
+  const last = Math.min(props.meta.total - 1, Math.floor((scrollTop + viewH.value) / m.rowH));
+  return { first, last };
+}
+
+function loadVisible() {
+  const { first, last } = visibleRange();
+  cache.ensure(first, last, props.meta.total);
+}
+
+function scheduleDraw() {
+  if (frame) return;
+  frame = requestAnimationFrame(() => {
+    frame = 0;
+    render();
+  });
+}
+
+function render() {
+  const el = canvas.value;
+  const ctx = el?.getContext("2d");
+  if (!el || !ctx || viewW.value === 0 || viewH.value === 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  if (el.width !== Math.round(viewW.value * dpr) || el.height !== Math.round(viewH.value * dpr)) {
+    el.width = Math.round(viewW.value * dpr);
+    el.height = Math.round(viewH.value * dpr);
+    el.style.width = `${viewW.value}px`;
+    el.style.height = `${viewH.value}px`;
+  }
+  draw({
+    ctx,
+    width: viewW.value,
+    height: viewH.value,
+    dpr,
+    scrollTop,
+    graphScrollX: scrollLeft,
+    graphViewportW: graphViewportW.value,
+    textX: textX.value,
+    meta: props.meta,
+    metrics: metrics.value,
+    density: props.density,
+    theme,
+    getRow: (row) => cache.getRow(row),
+    selectedRow: props.selected,
+    hoverRow: hoverRow.value,
+  });
+}
+
+function onScroll() {
+  const el = scroller.value;
+  if (!el) return;
+  scrollTop = el.scrollTop;
+  scrollLeft = el.scrollLeft;
+  tooltip.value = null;
+  loadVisible();
+  scheduleDraw();
+}
+
+function pointerPosition(event: PointerEvent | MouseEvent) {
+  const el = scroller.value;
+  if (!el) return null;
+  const rect = el.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  // Ignore the scrollbars.
+  if (x < 0 || y < 0 || x >= el.clientWidth || y >= el.clientHeight) return null;
+  return { x, y };
+}
+
+function onPointerMove(event: PointerEvent) {
+  const point = pointerPosition(event);
+  if (!point) return onPointerLeave();
+  const m = metrics.value;
+  const row = rowAtY(point.y + scrollTop, props.meta.total, m);
+  let next: typeof tooltip.value = null;
+  if (row !== null && point.x < graphViewportW.value) {
+    const data = cache.getRow(row);
+    if (data && isOnStation(point.x + scrollLeft, point.y + scrollTop, row, data.col, m)) {
+      next = { row: data, x: Math.min(point.x + 14, viewW.value - 300), y: point.y + 16 };
+    }
+  }
+  tooltip.value = next;
+  if (row !== hoverRow.value) {
+    hoverRow.value = row;
+    scheduleDraw();
+  }
+}
+
+function onPointerLeave() {
+  tooltip.value = null;
+  if (hoverRow.value !== null) {
+    hoverRow.value = null;
+    scheduleDraw();
+  }
+}
+
+function select(row: number | null) {
+  emit("update:selected", row);
+  if (row === null) return;
+  const data = cache.getRow(row);
+  if (data) {
+    pendingSelect = null;
+    emit("select", data);
+  } else {
+    pendingSelect = row;
+  }
+}
+
+function onClick(event: MouseEvent) {
+  const point = pointerPosition(event);
+  if (!point) return;
+  const row = rowAtY(point.y + scrollTop, props.meta.total, metrics.value);
+  if (row !== null) select(row);
+}
+
+function scrollToRow(row: number) {
+  const el = scroller.value;
+  if (!el) return;
+  const m = metrics.value;
+  const top = rowTop(row, m);
+  if (top < el.scrollTop) el.scrollTop = top;
+  else if (top + m.rowH > el.scrollTop + el.clientHeight) {
+    el.scrollTop = top + m.rowH - el.clientHeight;
+  }
+}
+
+function onKeydown(event: KeyboardEvent) {
+  const total = props.meta.total;
+  if (total === 0) return;
+  const page = Math.max(1, Math.floor(viewH.value / metrics.value.rowH) - 1);
+  const current = props.selected ?? -1;
+  const target: Record<string, number> = {
+    ArrowDown: current + 1,
+    ArrowUp: current - 1,
+    PageDown: current + page,
+    PageUp: current - page,
+    Home: 0,
+    End: total - 1,
+  };
+  if (!(event.key in target)) return;
+  event.preventDefault();
+  const row = Math.min(total - 1, Math.max(0, target[event.key]));
+  select(row);
+  scrollToRow(row);
+}
+
+let densityGestureAt = 0;
+function onWheel(event: WheelEvent) {
+  // Ctrl/Cmd + wheel (or trackpad pinch) switches the row density, once per gesture.
+  if (!event.ctrlKey && !event.metaKey) return;
+  event.preventDefault();
+  const now = performance.now();
+  if (now - densityGestureAt < 350) return;
+  densityGestureAt = now;
+  const next: Density = event.deltaY < 0 ? "detailed" : "compact";
+  if (next !== props.density) emit("update:density", next);
+}
+
+let resizeObserver: ResizeObserver | undefined;
+let themeObserver: MutationObserver | undefined;
+
+onMounted(() => {
+  const el = scroller.value;
+  if (!el) return;
+  resizeObserver = new ResizeObserver(() => {
+    viewW.value = el.clientWidth;
+    viewH.value = el.clientHeight;
+    loadVisible();
+    scheduleDraw();
+  });
+  resizeObserver.observe(el);
+  themeObserver = new MutationObserver(() => {
+    theme = readTheme();
+    scheduleDraw();
+  });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+});
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  themeObserver?.disconnect();
+  if (frame) cancelAnimationFrame(frame);
+});
+
+// A new graph: forget loaded rows and go back to the top.
+watch(
+  () => props.meta,
+  async () => {
+    cache.reset();
+    pendingSelect = null;
+    hoverRow.value = null;
+    tooltip.value = null;
+    await nextTick();
+    if (scroller.value) {
+      scroller.value.scrollTop = 0;
+      scroller.value.scrollLeft = 0;
+    }
+    scrollTop = 0;
+    scrollLeft = 0;
+    loadVisible();
+    scheduleDraw();
+  },
+);
+
+// Density change: keep the same commit at the top of the view.
+watch(
+  () => props.density,
+  async (_, previous) => {
+    const topRow = scrollTop / METRICS[previous].rowH;
+    await nextTick();
+    if (scroller.value) scroller.value.scrollTop = topRow * metrics.value.rowH;
+    scrollTop = scroller.value?.scrollTop ?? 0;
+    loadVisible();
+    scheduleDraw();
+  },
+);
+
+watch(() => [props.selected, graphViewportW.value, textX.value], scheduleDraw);
+
+defineExpose({ scrollToRow });
+
+const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+</script>
+
+<template>
+  <div class="relative h-full w-full overflow-hidden">
+    <div
+      ref="scroller"
+      class="h-full w-full overflow-auto outline-none"
+      tabindex="0"
+      role="listbox"
+      aria-label="Commit graph"
+      @scroll.passive="onScroll"
+      @pointermove="onPointerMove"
+      @pointerleave="onPointerLeave"
+      @click="onClick"
+      @keydown="onKeydown"
+      @wheel="onWheel"
+    >
+      <div class="sticky top-0 left-0 h-0 w-0">
+        <canvas ref="canvas" class="absolute top-0 left-0 block" />
+      </div>
+      <div :style="{ height: `${contentH}px`, width: `${spacerW}px` }" />
+    </div>
+
+    <div
+      v-if="tooltip"
+      class="bg-popover text-popover-foreground pointer-events-none absolute z-10 w-72 rounded-md border p-2.5 text-xs shadow-md"
+      :style="{ left: `${tooltip.x}px`, top: `${tooltip.y}px` }"
+    >
+      <p class="mb-1 text-sm leading-snug font-medium break-words">{{ tooltip.row.summary }}</p>
+      <p class="text-muted-foreground font-mono">{{ tooltip.row.id.slice(0, 10) }}</p>
+      <p class="text-muted-foreground">
+        {{ tooltip.row.author }} · {{ dateFormat.format(new Date(tooltip.row.time * 1000)) }}
+      </p>
+      <p v-if="tooltip.row.parents.length > 1" class="text-muted-foreground">
+        Merge of {{ tooltip.row.parents.length }} parents
+      </p>
+    </div>
+  </div>
+</template>
