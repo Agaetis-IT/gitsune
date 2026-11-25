@@ -10,8 +10,7 @@ use crate::layout::{self, RawCommit};
 
 /// The commit graph of a repository, in layout order (children before parents).
 pub struct CommitGraph {
-    /// Commit ids, indexed by row. Read by the paged graph API (M3) and the tests.
-    #[allow(dead_code)]
+    /// Commit ids, indexed by row.
     pub ids: Vec<ObjectId>,
     pub commits: Vec<layout::Commit>,
     pub refs: Vec<layout::RefLabel>,
@@ -112,7 +111,7 @@ pub fn load_graph(repo: &ThreadSafeRepository, refs: &[RefInfo]) -> Result<Commi
     })
 }
 
-fn first_line(message: &[u8]) -> String {
+pub(super) fn first_line(message: &[u8]) -> String {
     let end = message
         .iter()
         .position(|&b| b == b'\n')
