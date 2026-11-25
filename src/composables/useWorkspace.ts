@@ -17,6 +17,8 @@ import {
   type RefInfo,
   type RemoteResult,
   type RefKind,
+  type ResetMode,
+  type StashEntry,
   type Snapshot,
   type StatusEntry,
   type WorkingStatus,
@@ -101,7 +103,12 @@ export type BranchDialog =
     }
   /** The branches diverged and git was not told how to reconcile them. */
   | { type: "pullStrategy"; message: string }
-  | { type: "deleteRemoteBranch"; remote: string; branch: string };
+  | { type: "deleteRemoteBranch"; remote: string; branch: string }
+  /** Put the changes of the working tree aside. */
+  | { type: "stash" }
+  | { type: "dropStash"; stash: StashEntry }
+  /** Move the current branch to a commit: soft, mixed or hard. */
+  | { type: "reset"; target: CommitTarget };
 
 /** A fetch, pull or push that is running. */
 export interface RemoteOp {
@@ -187,6 +194,8 @@ export interface RepoTab {
   dialog: BranchDialog | null;
   /** The fetch, pull or push in progress, if any. */
   remote: RemoteOp | null;
+  /** The stash list, most recent first. */
+  stashes: StashEntry[];
 }
 
 export type DiffMode = "unified" | "split";
@@ -264,6 +273,7 @@ export function createWorkspace(
   }
 
   async function refreshOnce(tab: RepoTab): Promise<void> {
+    void loadStashes(tab);
     const request = ++tab.request;
     const selectedId = tab.selectedCommit?.id ?? null;
     const top = tab.topAnchor;
@@ -963,6 +973,137 @@ export function createWorkspace(
     await backend.answerAskpass(op.id, promptId, answer).catch(() => {});
   }
 
+  // ---------- stash, cherry-pick, revert and reset ----------
+
+  async function loadStashes(tab: RepoTab): Promise<void> {
+    try {
+      tab.stashes = await backend.stashes(tab.id);
+    } catch {
+      tab.stashes = [];
+    }
+  }
+
+  /** The failures the panels explain themselves are shown as a notice for these flows. */
+  function reportInline(tab: RepoTab): void {
+    const failure = tab.writeError;
+    if (!failure || !INLINE_ERRORS.includes(failure.kind)) return;
+    notify(
+      "error",
+      failure.kind === "conflict" && failure.message.includes("stash")
+        ? "Applying the stash conflicted. The files hold the conflict markers and the stash is kept."
+        : failure.message,
+    );
+  }
+
+  const askStash = (tab: RepoTab) => openDialog(tab, { type: "stash" });
+  const askDropStash = (tab: RepoTab, stash: StashEntry) =>
+    openDialog(tab, { type: "dropStash", stash });
+  const askReset = (tab: RepoTab, target: CommitTarget) =>
+    openDialog(tab, { type: "reset", target });
+
+  async function stashChanges(
+    tab: RepoTab,
+    message: string,
+    includeUntracked: boolean,
+    keepIndex: boolean,
+  ): Promise<void> {
+    const status = await write(tab, () =>
+      backend.stashPush(tab.id, message.trim() || null, includeUntracked, keepIndex),
+    );
+    if (!status) return;
+    applyStatus(tab, status, true);
+    closeDialog(tab);
+    void loadStashes(tab);
+    notify("info", "Your changes are in the stash.");
+  }
+
+  /** Applies a stash; `pop` also removes it from the list once it was applied. */
+  async function applyStash(tab: RepoTab, stash: StashEntry, pop: boolean): Promise<void> {
+    const status = await write(tab, () =>
+      pop
+        ? backend.stashPop(tab.id, stash.reference, stash.id, false)
+        : backend.stashApply(tab.id, stash.reference, stash.id, false),
+    );
+    void loadStashes(tab);
+    if (!status) {
+      reportInline(tab);
+      void refreshStatus(tab, true);
+      return;
+    }
+    applyStatus(tab, status, true);
+    notify("info", pop ? "Stash applied and removed from the list." : "Stash applied.");
+  }
+
+  async function dropStash(tab: RepoTab, stash: StashEntry): Promise<void> {
+    const dropped = await write(tab, () => backend.stashDrop(tab.id, stash.reference, stash.id));
+    void loadStashes(tab);
+    if (!dropped) return;
+    closeDialog(tab);
+    applyStatus(tab, dropped.status);
+    notify("info", "Stash dropped.", {
+      label: "Undo",
+      run: async () => {
+        const status = await write(tab, () =>
+          backend.stashRestore(tab.id, dropped.id, dropped.message),
+        );
+        if (status) applyStatus(tab, status);
+        void loadStashes(tab);
+        if (status) notify("info", "The stash is back in the list.");
+      },
+    });
+  }
+
+  async function takeBackReplay(tab: RepoTab, before: string, after: string): Promise<void> {
+    const status = await write(tab, () => backend.undoReplay(tab.id, before, after));
+    if (status) {
+      applyStatus(tab, status, true);
+      notify("info", "Undone.");
+    }
+  }
+
+  /** Copies a commit onto the current branch (a conflict cancels it and changes nothing). */
+  async function cherryPick(tab: RepoTab, commit: CommitTarget): Promise<void> {
+    const result = await write(tab, () => backend.cherryPick(tab.id, commit.id));
+    if (!result) return reportInline(tab);
+    applyStatus(tab, result.status, true);
+    notify("info", `Cherry-picked ${commit.label}.`, {
+      label: "Undo",
+      run: () => takeBackReplay(tab, result.before, result.after),
+    });
+  }
+
+  /** Adds a commit that undoes another one. */
+  async function revert(tab: RepoTab, commit: CommitTarget): Promise<void> {
+    const result = await write(tab, () => backend.revert(tab.id, commit.id));
+    if (!result) return reportInline(tab);
+    applyStatus(tab, result.status, true);
+    notify("info", `Reverted ${commit.label}.`, {
+      label: "Undo",
+      run: () => takeBackReplay(tab, result.before, result.after),
+    });
+  }
+
+  async function reset(tab: RepoTab, target: CommitTarget, mode: ResetMode): Promise<void> {
+    const result = await write(tab, () => backend.reset(tab.id, target.id, mode));
+    if (!result) return reportInline(tab);
+    closeDialog(tab);
+    applyStatus(tab, result.status, true);
+    const snapshot = result.snapshot;
+    const discarded = snapshot ? " Your uncommitted changes were discarded." : "";
+    notify("info", `Moved ${tab.headBranch ?? "HEAD"} to ${target.label} (${mode}).${discarded}`, {
+      label: "Undo",
+      run: async () => {
+        const undone = await write(tab, () =>
+          backend.undoReset(tab.id, result.before, result.after, snapshot?.reference ?? null),
+        );
+        if (undone) {
+          applyStatus(tab, undone.status, true);
+          notify("info", "The branch is back where it was.");
+        }
+      },
+    });
+  }
+
   async function setReadOnly(tab: RepoTab, readOnly: boolean): Promise<void> {
     try {
       await backend.setReadOnly(tab.id, readOnly);
@@ -1038,12 +1179,14 @@ export function createWorkspace(
         activity: [],
         dialog: null,
         remote: null,
+        stashes: [],
       });
       tabs.value = [...tabs.value, tab];
       activeId.value = tab.id;
       recentRepos.value = recents.add({ path: info.path, name: info.name, openedAt: Date.now() });
       if (tab.readOnly) void backend.setReadOnly(tab.id, true).catch(() => {});
       void refreshStatus(tab);
+      void loadStashes(tab);
       await loadGraph(tab);
     } catch (error) {
       openError.value = describeOpenError(trimmed, error);
@@ -1222,6 +1365,16 @@ export function createWorkspace(
     askDeleteTag,
     askUpstream,
     askPush,
+    askStash,
+    askDropStash,
+    askReset,
+    loadStashes,
+    stashChanges,
+    applyStash,
+    dropStash,
+    cherryPick,
+    revert,
+    reset,
     askDeleteRemoteBranch,
     fetchRemote,
     pull,

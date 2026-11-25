@@ -527,3 +527,78 @@ export const cancelOperation = (opId: string) => gitInvoke<void>("cancel_operati
 /** Answers a question git asked; `null` refuses (the operation then fails). */
 export const answerAskpass = (opId: string, promptId: string, answer: string | null) =>
   gitInvoke<void>("answer_askpass", { opId, promptId, answer });
+
+// ---------- stash, cherry-pick, revert and reset ----------
+
+export interface StashEntry {
+  /** Position in the list (0 is the most recent); it shifts when a stash is dropped. */
+  index: number;
+  /** `stash@{n}`. */
+  reference: string;
+  id: string;
+  message: string;
+  /** Seconds since the Unix epoch. */
+  time: number;
+}
+
+/** A stash that was dropped, with what brings it back. */
+export interface DroppedStash {
+  id: string;
+  message: string;
+  status: WorkingStatus;
+}
+
+/** HEAD before and after a cherry-pick or a revert: what Undo needs. */
+export interface CommitOpResult {
+  status: WorkingStatus;
+  before: string;
+  after: string;
+}
+
+/** `soft` keeps the changes staged, `mixed` unstages them, `hard` discards them. */
+export type ResetMode = "soft" | "mixed" | "hard";
+
+export interface ResetResult {
+  status: WorkingStatus;
+  before: string;
+  after: string;
+  /** Made before a hard reset discarded uncommitted changes. */
+  snapshot: Snapshot | null;
+}
+
+export const listStashes = (repoId: string) => gitInvoke<StashEntry[]>("list_stashes", { repoId });
+
+export const stashPush = (
+  repoId: string,
+  message: string | null,
+  includeUntracked: boolean,
+  keepIndex: boolean,
+) => gitInvoke<WorkingStatus>("stash_push", { repoId, message, includeUntracked, keepIndex });
+
+/** `id` is the stash commit seen at `reference`: a list that changed meanwhile is refused. */
+export const stashApply = (repoId: string, reference: string, id: string, restoreIndex: boolean) =>
+  gitInvoke<WorkingStatus>("stash_apply", { repoId, reference, id, restoreIndex });
+
+export const stashPop = (repoId: string, reference: string, id: string, restoreIndex: boolean) =>
+  gitInvoke<WorkingStatus>("stash_pop", { repoId, reference, id, restoreIndex });
+
+export const stashDrop = (repoId: string, reference: string, id: string) =>
+  gitInvoke<DroppedStash>("stash_drop", { repoId, reference, id });
+
+export const stashRestore = (repoId: string, id: string, message: string) =>
+  gitInvoke<WorkingStatus>("stash_restore", { repoId, id, message });
+
+export const cherryPick = (repoId: string, commit: string) =>
+  gitInvoke<CommitOpResult>("cherry_pick", { repoId, commit });
+
+export const revertCommit = (repoId: string, commit: string) =>
+  gitInvoke<CommitOpResult>("revert_commit", { repoId, commit });
+
+export const undoReplay = (repoId: string, before: string, after: string) =>
+  gitInvoke<WorkingStatus>("undo_replay", { repoId, before, after });
+
+export const resetTo = (repoId: string, target: string, mode: ResetMode) =>
+  gitInvoke<ResetResult>("reset_to", { repoId, target, mode });
+
+export const undoReset = (repoId: string, before: string, after: string, snapshot: string | null) =>
+  gitInvoke<DiscardResult>("undo_reset", { repoId, before, after, snapshot });

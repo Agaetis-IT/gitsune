@@ -100,7 +100,7 @@ fn ref_exists(ctx: &OpCtx, full: &str) -> Result<bool, GitError> {
     Ok(output.code == 0)
 }
 
-fn resolve(ctx: &OpCtx, spec: &str) -> Result<String, GitError> {
+pub(super) fn resolve(ctx: &OpCtx, spec: &str) -> Result<String, GitError> {
     let output = ctx.runner().run_raw(
         ctx.workdir,
         &[
@@ -206,7 +206,7 @@ fn switch_args(ctx: &OpCtx, target: &CheckoutTarget) -> Result<Vec<String>, GitE
 }
 
 /// The identity to give stashes when git has none configured (they are bookkeeping commits).
-fn fallback_identity(ctx: &OpCtx) -> Vec<(String, String)> {
+pub(super) fn fallback_identity(ctx: &OpCtx) -> Vec<(String, String)> {
     let known = identity(ctx).unwrap_or_default();
     if known.name.is_some() && known.email.is_some() {
         Vec::new()

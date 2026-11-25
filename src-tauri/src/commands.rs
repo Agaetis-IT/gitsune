@@ -9,10 +9,11 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::git::{
-    self, ActivityEntry, Area, CheckoutResult, CheckoutTarget, CommitDetail, CommitResult,
-    DeletedBranch, DeletedTag, DirtyStrategy, DiscardResult, FileDiff, GitError, GraphCache,
-    GraphMeta, GraphPage, PullStrategy, PushOptions, RefInfo, RemoteResult, RepoInfo, RepoStores,
-    RepoWatcher, SearchResult, Snapshot, WorkingStatus,
+    self, ActivityEntry, Area, CheckoutResult, CheckoutTarget, CommitDetail, CommitOpResult,
+    CommitResult, DeletedBranch, DeletedTag, DirtyStrategy, DiscardResult, DroppedStash, FileDiff,
+    GitError, GraphCache, GraphMeta, GraphPage, PullStrategy, PushOptions, RefInfo, RemoteResult,
+    RepoInfo, RepoStores, RepoWatcher, ResetMode, ResetResult, SearchResult, Snapshot, StashEntry,
+    WorkingStatus,
 };
 
 struct OpenRepo {
@@ -803,4 +804,132 @@ pub async fn answer_askpass(
         .get(&op_id)
         .ok_or_else(|| GitError::other("This operation is not running any more."))?;
     git::answer_prompt(&op.askpass_dir, &prompt_id, answer.as_deref())
+}
+
+// ---------- stash, cherry-pick, revert and reset ----------
+
+#[tauri::command]
+pub async fn list_stashes(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<StashEntry>, GitError> {
+    with_ctx(&registry, &repo_id, git::list_stashes)
+}
+
+#[tauri::command]
+pub async fn stash_push(
+    repo_id: String,
+    message: Option<String>,
+    include_untracked: bool,
+    keep_index: bool,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::stash_push(ctx, message.as_deref(), include_untracked, keep_index)
+    })
+}
+
+/// `id` is the stash commit the interface saw at `reference`: a stale position is refused.
+#[tauri::command]
+pub async fn stash_apply(
+    repo_id: String,
+    reference: String,
+    id: String,
+    restore_index: bool,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::stash_apply(ctx, &reference, &id, restore_index)
+    })
+}
+
+#[tauri::command]
+pub async fn stash_pop(
+    repo_id: String,
+    reference: String,
+    id: String,
+    restore_index: bool,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::stash_pop(ctx, &reference, &id, restore_index)
+    })
+}
+
+#[tauri::command]
+pub async fn stash_drop(
+    repo_id: String,
+    reference: String,
+    id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<DroppedStash, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::stash_drop(ctx, &reference, &id)
+    })
+}
+
+#[tauri::command]
+pub async fn stash_restore(
+    repo_id: String,
+    id: String,
+    message: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::stash_restore(ctx, &id, &message)
+    })
+}
+
+#[tauri::command]
+pub async fn cherry_pick(
+    repo_id: String,
+    commit: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<CommitOpResult, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::cherry_pick(ctx, &commit))
+}
+
+#[tauri::command]
+pub async fn revert_commit(
+    repo_id: String,
+    commit: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<CommitOpResult, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::revert_commit(ctx, &commit))
+}
+
+/// Takes back a cherry-pick or a revert.
+#[tauri::command]
+pub async fn undo_replay(
+    repo_id: String,
+    before: String,
+    after: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::undo_replay(ctx, &before, &after)
+    })
+}
+
+#[tauri::command]
+pub async fn reset_to(
+    repo_id: String,
+    target: String,
+    mode: ResetMode,
+    registry: State<'_, RepoRegistry>,
+) -> Result<ResetResult, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::reset(ctx, &target, mode))
+}
+
+#[tauri::command]
+pub async fn undo_reset(
+    repo_id: String,
+    before: String,
+    after: String,
+    snapshot: Option<String>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<DiscardResult, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::undo_reset(ctx, &before, &after, snapshot.as_deref())
+    })
 }

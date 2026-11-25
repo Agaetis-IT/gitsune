@@ -171,6 +171,26 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
     createTag: async () => cleanStatus(),
     deleteTag: async (_repoId, name) => ({ name, target: "g".repeat(40), status: cleanStatus() }),
     restoreTag: async () => cleanStatus(),
+    stashes: async () => [],
+    stashPush: async () => cleanStatus(),
+    stashApply: async () => cleanStatus(),
+    stashPop: async () => cleanStatus(),
+    stashDrop: async () => ({ id: "s".repeat(40), message: "WIP", status: cleanStatus() }),
+    stashRestore: async () => cleanStatus(),
+    cherryPick: async () => ({
+      status: cleanStatus(),
+      before: "b".repeat(40),
+      after: "a".repeat(40),
+    }),
+    revert: async () => ({ status: cleanStatus(), before: "b".repeat(40), after: "a".repeat(40) }),
+    undoReplay: async () => cleanStatus(),
+    reset: async (_repoId, target) => ({
+      status: cleanStatus(),
+      before: "b".repeat(40),
+      after: target,
+      snapshot: null,
+    }),
+    undoReset: async () => ({ snapshot: null, status: cleanStatus() }),
     remotes: async () => ["origin"],
     fetch: async () => ({ status: cleanStatus(), summary: "" }),
     pull: async () => ({ status: cleanStatus(), summary: "Already up to date." }),
@@ -1891,5 +1911,173 @@ describe("fetch, pull and push", () => {
       text: "Authentication failed",
     });
     expect(tab.remote).toBeNull();
+  });
+});
+
+describe("stash, cherry-pick, revert and reset", () => {
+  const stash = (index: number) => ({
+    index,
+    reference: `stash@{${index}}`,
+    id: `${index}`.repeat(40).slice(0, 40),
+    message: `WIP ${index}`,
+    time: 1,
+  });
+  const target = { id: "c".repeat(40), label: "ccccccc" };
+
+  it("loads the stash list when a repository is opened", async () => {
+    const { tab } = await openWorktree(cleanStatus(), { stashes: async () => [stash(0)] });
+    await vi.waitFor(() => expect(tab.stashes).toHaveLength(1));
+  });
+
+  it("stashes the changes, closes the dialog and reloads the list", async () => {
+    const stashPush = vi.fn(async () => cleanStatus());
+    const stashes = vi.fn(async () => [stash(0)]);
+    const { workspace, tab } = await openWorktree(dirty(), { stashPush, stashes });
+    workspace.askStash(tab);
+    expect(tab.dialog).toEqual({ type: "stash" });
+    await workspace.stashChanges(tab, "  my work ", true, false);
+    expect(stashPush).toHaveBeenCalledWith("/fake/a", "my work", true, false);
+    expect(tab.dialog).toBeNull();
+    expect(tab.status?.unstaged).toEqual([]);
+    expect(tab.stashes).toHaveLength(1);
+    expect(lastOf(workspace.notices.value)?.text).toBe("Your changes are in the stash.");
+  });
+
+  it("an empty stash message is sent as none, and nothing to stash stays in the dialog", async () => {
+    const stashPush = vi.fn(async () => {
+      throw new GitCommandError("nothingToCommit", "There is nothing to stash.");
+    });
+    const { workspace, tab } = await openWorktree(cleanStatus(), { stashPush });
+    workspace.askStash(tab);
+    await workspace.stashChanges(tab, "", true, false);
+    expect(stashPush).toHaveBeenCalledWith("/fake/a", null, true, false);
+    expect(tab.dialog).toEqual({ type: "stash" });
+    expect(tab.writeError?.kind).toBe("nothingToCommit");
+  });
+
+  it("applies and pops a stash by its position and id", async () => {
+    const stashApply = vi.fn(async () => cleanStatus());
+    const stashPop = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(cleanStatus(), { stashApply, stashPop });
+    await workspace.applyStash(tab, stash(1), false);
+    expect(stashApply).toHaveBeenCalledWith("/fake/a", "stash@{1}", stash(1).id, false);
+    expect(lastOf(workspace.notices.value)?.text).toBe("Stash applied.");
+    await workspace.applyStash(tab, stash(1), true);
+    expect(stashPop).toHaveBeenCalledWith("/fake/a", "stash@{1}", stash(1).id, false);
+    expect(lastOf(workspace.notices.value)?.text).toContain("removed");
+  });
+
+  it("a stash that conflicts is explained and the status is read again", async () => {
+    const status = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      status,
+      stashPop: async () => {
+        throw new GitCommandError("conflict", "CONFLICT (content): the stash entry is kept");
+      },
+    });
+    const before = status.mock.calls.length;
+    await workspace.applyStash(tab, stash(0), true);
+    expect(lastOf(workspace.notices.value)).toMatchObject({ kind: "error" });
+    expect(lastOf(workspace.notices.value)?.text).toContain("stash is kept");
+    await vi.waitFor(() => expect(status.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  it("dropping a stash asks first and can be undone", async () => {
+    const stashRestore = vi.fn(async () => cleanStatus());
+    const stashDrop = vi.fn(async () => ({
+      id: stash(0).id,
+      message: "WIP 0",
+      status: cleanStatus(),
+    }));
+    const { workspace, tab } = await openWorktree(cleanStatus(), { stashDrop, stashRestore });
+    workspace.askDropStash(tab, stash(0));
+    expect(tab.dialog).toMatchObject({ type: "dropStash" });
+    await workspace.dropStash(tab, stash(0));
+    expect(tab.dialog).toBeNull();
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toBe("Stash dropped.");
+    await notice?.action?.run();
+    expect(stashRestore).toHaveBeenCalledWith("/fake/a", stash(0).id, "WIP 0");
+  });
+
+  it("cherry-picks and reverts with an undo that goes back to the previous HEAD", async () => {
+    const undoReplay = vi.fn(async () => cleanStatus());
+    const cherryPick = vi.fn(async () => ({
+      status: cleanStatus(),
+      before: "b".repeat(40),
+      after: "a".repeat(40),
+    }));
+    const { workspace, tab } = await openWorktree(cleanStatus(), { cherryPick, undoReplay });
+    await workspace.cherryPick(tab, target);
+    expect(cherryPick).toHaveBeenCalledWith("/fake/a", target.id);
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toBe("Cherry-picked ccccccc.");
+    await notice?.action?.run();
+    expect(undoReplay).toHaveBeenCalledWith("/fake/a", "b".repeat(40), "a".repeat(40));
+
+    await workspace.revert(tab, target);
+    expect(lastOf(workspace.notices.value)?.text).toBe("Reverted ccccccc.");
+  });
+
+  it("a cherry-pick that conflicts is a notice, not a half-done state", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      cherryPick: async () => {
+        throw new GitCommandError("conflict", "The cherry-pick conflicts, nothing changed.");
+      },
+    });
+    await workspace.cherryPick(tab, target);
+    expect(lastOf(workspace.notices.value)).toMatchObject({
+      kind: "error",
+      text: "The cherry-pick conflicts, nothing changed.",
+    });
+  });
+
+  it("resets after a choice of mode and offers to put the branch back", async () => {
+    const reset = vi.fn(async (_id: string, to: string) => ({
+      status: cleanStatus(),
+      before: "b".repeat(40),
+      after: to,
+      snapshot: {
+        reference: "refs/git-hydra/undo/1",
+        id: "s".repeat(40),
+        time: 1,
+        description: "reset --hard",
+        paths: ["a.txt"],
+      },
+    }));
+    const undoReset = vi.fn(async () => ({ snapshot: null, status: cleanStatus() }));
+    const { workspace, tab } = await openWorktree(dirty(), { reset, undoReset });
+    workspace.askReset(tab, target);
+    expect(tab.dialog).toEqual({ type: "reset", target });
+
+    await workspace.reset(tab, target, "hard");
+    expect(reset).toHaveBeenCalledWith("/fake/a", target.id, "hard");
+    expect(tab.dialog).toBeNull();
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toContain("(hard)");
+    expect(notice?.text).toContain("discarded");
+
+    await notice?.action?.run();
+    expect(undoReset).toHaveBeenCalledWith(
+      "/fake/a",
+      "b".repeat(40),
+      target.id,
+      "refs/git-hydra/undo/1",
+    );
+  });
+
+  it("read-only mode refuses all of them without calling the backend", async () => {
+    const reset = vi.fn();
+    const cherryPick = vi.fn();
+    const stashPush = vi.fn();
+    const { workspace, tab } = await openWorktree(cleanStatus(), { reset, cherryPick, stashPush });
+    await workspace.setReadOnly(tab, true);
+    await workspace.reset(tab, target, "hard");
+    await workspace.cherryPick(tab, target);
+    await workspace.stashChanges(tab, "", true, false);
+    expect(reset).not.toHaveBeenCalled();
+    expect(cherryPick).not.toHaveBeenCalled();
+    expect(stashPush).not.toHaveBeenCalled();
+    expect(tab.writeError?.kind).toBe("readOnly");
   });
 });

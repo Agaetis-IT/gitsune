@@ -567,6 +567,14 @@ pub fn classify(stdout: &str, stderr: &str) -> Option<ErrorKind> {
     {
         return Some(ErrorKind::SigningFailed);
     }
+    // Before "nothing to commit": a conflicted stash or merge prints that too.
+    if has("CONFLICT (")
+        || has("Automatic merge failed")
+        || has("could not apply")
+        || has("Unmerged paths")
+    {
+        return Some(ErrorKind::Conflict);
+    }
     if has("nothing to commit")
         || has("no changes added to commit")
         || has("nothing added to commit")
@@ -575,12 +583,11 @@ pub fn classify(stdout: &str, stderr: &str) -> Option<ErrorKind> {
     }
     let lower = both.to_lowercase();
     let mentions = |needle: &str| lower.contains(needle);
-    if has("CONFLICT (") || mentions("automatic merge failed") || mentions("could not apply") {
-        return Some(ErrorKind::Conflict);
-    }
     if mentions("would be overwritten by checkout")
         || mentions("would be overwritten by switch")
         || mentions("would be overwritten by merge")
+        || mentions("would be overwritten by cherry-pick")
+        || mentions("would be overwritten by revert")
     {
         return Some(ErrorKind::WouldOverwriteChanges);
     }

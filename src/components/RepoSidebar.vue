@@ -1,8 +1,18 @@
 <script setup lang="ts">
-import { ChevronDown, ChevronRight, Cloud, Eye, EyeOff, Focus, GitBranch, Tag } from "@lucide/vue";
+import {
+  Archive,
+  ChevronDown,
+  ChevronRight,
+  Cloud,
+  Eye,
+  EyeOff,
+  Focus,
+  GitBranch,
+  Tag,
+} from "@lucide/vue";
 import { computed, ref } from "vue";
 import type { RepoTab } from "@/composables/useWorkspace";
-import type { RefInfo, RefKind } from "@/lib/api";
+import type { RefInfo, RefKind, StashEntry } from "@/lib/api";
 
 const props = defineProps<{ tab: RepoTab }>();
 const emit = defineEmits<{
@@ -12,7 +22,10 @@ const emit = defineEmits<{
   /** Right click on a ref (window coordinates). */
   refMenu: [ref: RefInfo, x: number, y: number];
   jump: [row: number];
+  stash: [action: "apply" | "pop" | "drop", stash: StashEntry];
 }>();
+
+const stashesCollapsed = ref(false);
 
 const GROUPS: Array<{ kind: RefKind; title: string; icon: typeof GitBranch }> = [
   { kind: "local", title: "Local branches", icon: GitBranch },
@@ -126,6 +139,58 @@ function onRefClick(ref: RefInfo) {
         </li>
       </ul>
       <p v-else-if="!group.refs.length" class="text-muted-foreground px-7 py-1 text-xs">None</p>
+    </section>
+    <section v-if="tab.stashes.length" class="border-b py-1">
+      <button
+        class="hover:bg-accent flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left font-medium"
+        :aria-expanded="!stashesCollapsed"
+        @click="stashesCollapsed = !stashesCollapsed"
+      >
+        <component :is="stashesCollapsed ? ChevronRight : ChevronDown" class="size-3.5" />
+        <Archive class="text-muted-foreground size-3.5" />
+        Stashes
+        <span class="text-muted-foreground ml-auto text-xs font-normal">
+          {{ tab.stashes.length }}
+        </span>
+      </button>
+      <ul v-if="!stashesCollapsed" class="pb-1">
+        <li
+          v-for="stash in tab.stashes"
+          :key="stash.id"
+          class="hover:bg-accent group rounded py-1 pr-1 pl-7"
+        >
+          <div class="truncate" :title="stash.message">{{ stash.message }}</div>
+          <div class="text-muted-foreground flex items-center gap-1 text-xs">
+            <span>{{ stash.reference }}</span>
+            <span class="ml-auto flex gap-0.5">
+              <button
+                class="hover:bg-background rounded px-1.5 py-0.5 disabled:opacity-50"
+                :disabled="tab.readOnly"
+                title="Apply and keep the stash"
+                @click="emit('stash', 'apply', stash)"
+              >
+                Apply
+              </button>
+              <button
+                class="hover:bg-background rounded px-1.5 py-0.5 disabled:opacity-50"
+                :disabled="tab.readOnly"
+                title="Apply and remove the stash"
+                @click="emit('stash', 'pop', stash)"
+              >
+                Pop
+              </button>
+              <button
+                class="hover:bg-background text-destructive rounded px-1.5 py-0.5 disabled:opacity-50"
+                :disabled="tab.readOnly"
+                title="Remove the stash"
+                @click="emit('stash', 'drop', stash)"
+              >
+                Drop
+              </button>
+            </span>
+          </div>
+        </li>
+      </ul>
     </section>
   </nav>
 </template>

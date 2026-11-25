@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowDown, ArrowUp, Lock, LockOpen, RefreshCw, ScrollText } from "@lucide/vue";
+import { Archive, ArrowDown, ArrowUp, Lock, LockOpen, RefreshCw, ScrollText } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import BranchDialogs from "@/components/BranchDialogs.vue";
 import ContextMenu from "@/components/ContextMenu.vue";
@@ -8,6 +8,7 @@ import CommitPanel from "@/components/CommitPanel.vue";
 import DiffView from "@/components/DiffView.vue";
 import IdentityDialog from "@/components/IdentityDialog.vue";
 import LanePopover from "@/components/LanePopover.vue";
+import HistoryDialogs from "@/components/HistoryDialogs.vue";
 import NoticeHost from "@/components/NoticeHost.vue";
 import RemoteDialogs from "@/components/RemoteDialogs.vue";
 import RemoteStatus from "@/components/RemoteStatus.vue";
@@ -19,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import WelcomeScreen from "@/components/WelcomeScreen.vue";
 import WorkingPanel from "@/components/WorkingPanel.vue";
 import { useWorkspace } from "@/composables/useWorkspace";
-import type { FileChange, Lane, RefInfo, StatusEntry } from "@/lib/api";
+import type { FileChange, Lane, RefInfo, StashEntry, StatusEntry } from "@/lib/api";
 import { commitMenu, laneMenu, type MenuItem, refMenu } from "@/lib/menus";
 import { refsOfBranch } from "@/lib/branchRefs";
 import type { Density } from "@/lib/metro/metrics";
@@ -147,6 +148,13 @@ function onGraphMenu(target: GraphContextTarget) {
   }
 }
 
+function onStash(action: "apply" | "pop" | "drop", stash: StashEntry) {
+  const tab = active.value;
+  if (!tab) return;
+  if (action === "drop") workspace.askDropStash(tab, stash);
+  else void workspace.applyStash(tab, stash, action === "pop");
+}
+
 function copy(text: string) {
   void navigator.clipboard?.writeText(text).catch(() => {});
 }
@@ -162,6 +170,9 @@ function onMenuSelect(id: string) {
     if (id === "checkoutCommit") void workspace.checkout(tab, { kind: "commit", id: t.id }, null);
     else if (id === "createBranch") workspace.askCreateBranch(tab, { id: t.id, label: short });
     else if (id === "createTag") workspace.askCreateTag(tab, { id: t.id, label: short });
+    else if (id === "cherryPick") void workspace.cherryPick(tab, { id: t.id, label: short });
+    else if (id === "revert") void workspace.revert(tab, { id: t.id, label: short });
+    else if (id === "reset") workspace.askReset(tab, { id: t.id, label: short });
     else if (id === "copyId") copy(t.id);
   } else if (t.kind === "lane") {
     if (id === "highlight") workspace.toggleHighlight(tab, t.lane.id);
@@ -273,6 +284,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
           @toggle-highlight="workspace.toggleHighlight(active, $event)"
           @jump="graph?.focusRow($event)"
           @ref-menu="(ref, x, y) => openRefMenu(ref, x, y, null)"
+          @stash="onStash"
         />
       </div>
 
@@ -305,6 +317,16 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
               @clear="workspace.clearSearch(active)"
             />
             <div class="flex gap-1" role="group" aria-label="Remotes">
+              <Button
+                size="sm"
+                variant="outline"
+                :title="active.readOnly ? 'Read-only mode is on.' : 'Put the changes aside'"
+                :disabled="active.busy || active.readOnly"
+                @click="workspace.askStash(active)"
+              >
+                <Archive class="size-3.5" />
+                Stash
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -496,6 +518,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       <IdentityDialog :tab="active" />
       <BranchDialogs :tab="active" />
       <RemoteDialogs :tab="active" />
+      <HistoryDialogs :tab="active" />
       <RemoteStatus :tab="active" />
       <ContextMenu
         v-if="menu"

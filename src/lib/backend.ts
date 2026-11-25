@@ -2,6 +2,22 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   type ActivityEntry,
+  type CommitOpResult,
+  type DroppedStash,
+  type ResetMode,
+  type ResetResult,
+  type StashEntry,
+  cherryPick,
+  listStashes,
+  resetTo,
+  revertCommit,
+  stashApply,
+  stashDrop,
+  stashPop,
+  stashPush,
+  stashRestore,
+  undoReplay,
+  undoReset,
   type AskpassEvent,
   type PullStrategy,
   type PushOptions,
@@ -146,6 +162,39 @@ export interface RepoBackend {
   ): Promise<WorkingStatus>;
   deleteTag(repoId: string, name: string): Promise<DeletedTag>;
   restoreTag(repoId: string, name: string, target: string): Promise<WorkingStatus>;
+  stashes(repoId: string): Promise<StashEntry[]>;
+  stashPush(
+    repoId: string,
+    message: string | null,
+    includeUntracked: boolean,
+    keepIndex: boolean,
+  ): Promise<WorkingStatus>;
+  stashApply(
+    repoId: string,
+    reference: string,
+    id: string,
+    restoreIndex: boolean,
+  ): Promise<WorkingStatus>;
+  /** Applies a stash and removes it (a conflict keeps it). */
+  stashPop(
+    repoId: string,
+    reference: string,
+    id: string,
+    restoreIndex: boolean,
+  ): Promise<WorkingStatus>;
+  stashDrop(repoId: string, reference: string, id: string): Promise<DroppedStash>;
+  stashRestore(repoId: string, id: string, message: string): Promise<WorkingStatus>;
+  /** A conflict cancels the operation and changes nothing. */
+  cherryPick(repoId: string, commit: string): Promise<CommitOpResult>;
+  revert(repoId: string, commit: string): Promise<CommitOpResult>;
+  undoReplay(repoId: string, before: string, after: string): Promise<WorkingStatus>;
+  reset(repoId: string, target: string, mode: ResetMode): Promise<ResetResult>;
+  undoReset(
+    repoId: string,
+    before: string,
+    after: string,
+    snapshot: string | null,
+  ): Promise<DiscardResult>;
   /** The names of the remotes. */
   remotes(repoId: string): Promise<string[]>;
   /** Downloads new commits and refs (`remote` null: every remote). */
@@ -216,6 +265,17 @@ export const tauriBackend: RepoBackend = {
     listen<{ repoId: string }>("activity-changed", (event) => handler(event.payload.repoId)),
   createBranch,
   remotes: listRemotes,
+  stashes: listStashes,
+  stashPush,
+  stashApply,
+  stashPop,
+  stashDrop,
+  stashRestore,
+  cherryPick,
+  revert: revertCommit,
+  undoReplay,
+  reset: resetTo,
+  undoReset,
   fetch: fetchRemote,
   pull: pullBranch,
   push: pushBranch,
