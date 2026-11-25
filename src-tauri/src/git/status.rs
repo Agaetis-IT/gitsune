@@ -1,6 +1,6 @@
 //! The state of the working tree and the index, from `git status --porcelain=v2`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -39,9 +39,31 @@ pub struct ConflictEntry {
     pub code: String,
 }
 
+/// What a merge, cherry-pick, revert or rebase that is not finished is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OperationKind {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+}
+
+/// An operation waiting for the user, found from the git directory (so also when it was
+/// started in a terminal, and after the app is restarted).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Operation {
+    pub kind: OperationKind,
+    /// The first line of the message git prepared (`Merge branch 'x'`), when there is one.
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkingStatus {
+    /// A merge, cherry-pick, revert or rebase that is not finished.
+    pub operation: Option<Operation>,
     /// Checked-out branch, `None` when HEAD is detached.
     pub branch: Option<String>,
     pub detached: bool,
@@ -161,6 +183,47 @@ fn parse_header(header: &str, status: &mut WorkingStatus) {
     }
 }
 
+/// The git directory of a working tree (its `.git`, or what a `.git` file points to).
+fn git_dir(runner: &Runner, workdir: &Path) -> Option<PathBuf> {
+    let dot = workdir.join(".git");
+    if dot.is_dir() {
+        return Some(dot);
+    }
+    let output = runner
+        .run(
+            workdir,
+            &["rev-parse", "--absolute-git-dir"],
+            RunOptions::background(),
+        )
+        .ok()?;
+    Some(PathBuf::from(output.stdout_text().trim()))
+}
+
+fn first_line(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.lines().next().map(|line| line.trim().to_string()))
+        .unwrap_or_default()
+}
+
+/// Detects an operation in progress from the files git keeps while it waits.
+pub fn read_operation(runner: &Runner, workdir: &Path) -> Option<Operation> {
+    let dir = git_dir(runner, workdir)?;
+    let has = |name: &str| dir.join(name).exists();
+    let (kind, message) = if has("rebase-merge") || has("rebase-apply") {
+        (OperationKind::Rebase, String::new())
+    } else if has("MERGE_HEAD") {
+        (OperationKind::Merge, first_line(&dir.join("MERGE_MSG")))
+    } else if has("CHERRY_PICK_HEAD") {
+        (OperationKind::CherryPick, String::new())
+    } else if has("REVERT_HEAD") {
+        (OperationKind::Revert, String::new())
+    } else {
+        return None;
+    };
+    Some(Operation { kind, message })
+}
+
 /// Reads the status of the working tree. It never takes optional locks and is not logged: it
 /// runs in the background each time something changes.
 pub fn read_status(runner: &Runner, workdir: &Path) -> Result<WorkingStatus, GitError> {
@@ -175,5 +238,7 @@ pub fn read_status(runner: &Runner, workdir: &Path) -> Result<WorkingStatus, Git
         ],
         RunOptions::background(),
     )?;
-    Ok(parse_status(&output.stdout))
+    let mut status = parse_status(&output.stdout);
+    status.operation = read_operation(runner, workdir);
+    Ok(status)
 }

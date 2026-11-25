@@ -48,7 +48,16 @@ const problem = computed(() => {
 const busy = computed(() => props.tab.busy);
 // The push, pull, remote deletion (RemoteDialogs), stash and reset (HistoryDialogs) dialogs
 // belong to other components.
-const REMOTE_TYPES = ["push", "pullStrategy", "deleteRemoteBranch", "stash", "dropStash", "reset"];
+const REMOTE_TYPES = [
+  "push",
+  "pullStrategy",
+  "deleteRemoteBranch",
+  "stash",
+  "dropStash",
+  "reset",
+  "merge",
+  "abortOperation",
+];
 const open = computed(() => dialog.value !== null && !REMOTE_TYPES.includes(dialog.value.type));
 
 function close() {

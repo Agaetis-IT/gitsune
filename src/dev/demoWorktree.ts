@@ -141,6 +141,8 @@ export interface DemoWorktreeDeps {
   addCommit: (summary: string) => string;
   /** Tells the app that the working tree or the activity changed. */
   changed: () => void;
+  /** Adds what the demo merge knows (operation in progress, conflicts) to every status. */
+  decorate?: (status: WorkingStatus) => WorkingStatus;
 }
 
 export function createDemoWorktree(deps: DemoWorktreeDeps) {
@@ -197,7 +199,8 @@ export function createDemoWorktree(deps: DemoWorktreeDeps) {
       }
     }
     const byPath = (a: StatusEntry, b: StatusEntry) => a.path.localeCompare(b.path);
-    return {
+    const plain: WorkingStatus = {
+      operation: null,
       branch: "main",
       detached: false,
       head: deps.headId(),
@@ -208,6 +211,7 @@ export function createDemoWorktree(deps: DemoWorktreeDeps) {
       unstaged: unstaged.sort(byPath),
       conflicted: [],
     };
+    return deps.decorate ? deps.decorate(plain) : plain;
   }
 
   const find = (path: string) => changes.find((c) => c.path === path);
