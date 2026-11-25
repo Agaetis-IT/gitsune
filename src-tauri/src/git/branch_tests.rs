@@ -6,7 +6,9 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use super::branches::*;
-use super::cli::{ErrorKind, classify, indented_lines, with_common_tool_dirs};
+#[cfg(unix)]
+use super::cli::with_common_tool_dirs;
+use super::cli::{ErrorKind, classify, indented_lines};
 use super::ops::{OpCtx, restore_snapshot};
 use super::ops_tests::{git_out, numbered, replace_line, repo_with};
 use super::status::FileState;

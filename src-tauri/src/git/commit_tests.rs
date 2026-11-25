@@ -1,7 +1,6 @@
 //! Commits, amends, hooks, identity, signing, discarding changes and recovering them.
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use tempfile::TempDir;
@@ -51,7 +50,12 @@ fn hook(dir: &Path, name: &str, script: &str) {
     let path = dir.join(".git/hooks").join(name);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    // On Windows git runs a hook through its own `sh` whatever the file mode.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 }
 
 // ---------- committing ----------
