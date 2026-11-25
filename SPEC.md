@@ -11,7 +11,7 @@ A personal desktop git client. v1 is read-only and centered on a "metro map" vie
 - Stay smooth on repositories up to ~100,000 commits.
 - macOS first; Windows/Linux later (Tauri makes this possible, no work now).
 
-**Non-goals (v1)**
+**Non-goals (v1)** (version 2 adds editing: see section 12)
 - Any git write operation (stage, commit, push, pull, merge, rebase, checkout).
 - GitHub/GitLab/other integrations.
 - Conflict resolution.
@@ -255,3 +255,91 @@ Why `gix`: the lane layout needs the whole parent graph once; `gix` reads 100k c
 Caveats:
 - The two walks are not strictly equivalent: `git2` was asked for a topological order, `gix` for commit-time order. The layout engine will compute its own topological order from the parent graph (needed anyway, and robust to clock skew), so this does not affect the choice. The "full graph" rows use the same sort (commit time) for both.
 - `gix` hunk-level diffs were not benchmarked (only the file list). M6 will use `gix`'s blob diff; if it falls short, fall back to the `git` CLI for that path only.
+
+## 12. Version 2 — editing (plan)
+
+Version 1 (M0 to M9) is read-only. Version 2 makes git-hydra a **daily-driver git client**: it writes to repositories. Everything here was decided in a question-and-answer session; each decision lists what was chosen. Items marked *proposed* are values or details not discussed, to be settled when the milestone starts.
+
+### 12.1 Scope
+
+- **Ambition**: a main client for everyday work, not a complement to the terminal. Stage, commit, branches, checkout, tags, fetch/pull/push, stash, cherry-pick, revert, reset, merge with conflict resolution, rebase (interactive included).
+- **"Editing" means git writes plus an editor for conflicts.** There is no general file editor: code is still written in Zed.
+- **Platform**: macOS only for now. Windows and Linux become a milestone of their own later (paths, inotify limits, askpass, signing). Code should still avoid needless macOS assumptions.
+- **Out of scope for now**: GitHub, GitLab and pull requests (decision postponed until after the rebase milestone, so that no tokens need storing), submodules and worktrees, drag-and-drop of branches, staging of single lines (files and hunks only), `Signed-off-by` and `Co-authored-by` helpers.
+
+### 12.2 Decisions
+
+**How to write.** Every write goes through the **system `git` binary** (same behaviour as the terminal: hooks, config, signing, credentials). `gix` stays for reading the history (decision D1 still holds). The working tree status comes from `git status --porcelain=v2 -z`, not from `gix`.
+
+**Keeping the status up to date.** The app watches the working tree (recursive, FSEvents on macOS) with a 300 ms debounce and runs one `git status` per burst. Events under ignored paths are discarded using `git check-ignore` with a cache, so a build writing to `target/` or `node_modules/` does not trigger endless status runs. Background reads use `GIT_OPTIONAL_LOCKS=0` so they never take the index lock away from the user's own git commands. The existing refs watcher (M8) and the `repo-changed` event are kept; the working tree gets its own event.
+
+**Safety.**
+- Destructive actions (delete a branch, `reset --hard`, discard changes, force push) ask for an explicit confirmation that says what will be lost. A force push is a separate, visible option, never the default, and uses `--force-with-lease`.
+- Where possible the app offers **Undo**: for commits, resets, checkouts and branch deletions from the reflog or the previous tip; for **discarding working tree changes**, which the reflog cannot restore, a snapshot is taken first (`git stash create`, kept as an orphan commit under `refs/git-hydra/undo/`, the most recent 20 kept: *proposed*), and Undo restores it.
+- A **per-repository read-only mode** disables every write (menus are greyed out and say why).
+
+**Concurrency with the user's terminal.** Writes by the app are serialised in a queue per repository. When git reports a lock held by another process (`index.lock`), the app shows a clear message and offers to retry; **it never deletes lock files**.
+
+**Transparency.** An **activity log** lists every git command the app ran (arguments, duration, output, error), copyable. **Long operations** (fetch, pull, push, rebase) stream progress from `--progress` and can be cancelled, which stops the git process cleanly.
+
+**Remote authentication.** The app inherits the system configuration (credential helpers such as the macOS Keychain, `ssh-agent`). It runs git with `GIT_TERMINAL_PROMPT=0`; when git needs a password or a passphrase, a small helper set as `GIT_ASKPASS` / `SSH_ASKPASS` asks through a dialog of the app. Nothing is stored by the app.
+
+**Actions on the graph.** Right-click menus on a commit, a branch label or a lane (the lane menu from M7 is extended), listing the actions valid in the current state; a greyed action explains why.
+
+**Checkout with local changes.** git decides first (compatible changes follow the user). If git refuses, a dialog lists the files in the way and offers: stash and switch (then re-apply), discard (with a snapshot), or cancel.
+
+**Commits (first milestone).** Summary and body (with a length counter for the summary), amend (pre-fills the previous message), hooks run as in the terminal and their output is shown when they fail, signing follows `commit.gpgsign` / the configured format, and a missing `user.name` / `user.email` is detected and offered to be set (globally or for the repository) instead of failing.
+
+**Staging.** Files and hunks, by applying patches to the index (`git apply --cached`). Lines come later.
+
+**Conflicts.** A **three-pane view** in the app: ours, theirs and the result, a choice per block, manual editing of the result, then mark as resolved. Text files only; for binary files the user picks a side.
+
+**Interactive rebase.** The todo list (pick, reword, edit, squash, fixup, drop, reorder) is edited in the app. git runs with `GIT_SEQUENCE_EDITOR` pointing to a helper that injects that list. Stops (conflict, reword, edit) are handled by the operation-in-progress state below.
+
+**Operation in progress.** The app detects merges, rebases, cherry-picks and reverts that are underway from the git directory (`MERGE_HEAD`, `rebase-merge/`, `rebase-apply/`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`), also when started in a terminal, and shows a banner with continue, skip and abort. This state survives restarting the app.
+
+### 12.3 Architecture
+
+- **Runner** (`src-tauri/src/git/cli.rs`, new): one place that starts `git` with a controlled environment (the executable, `LC_ALL=C` for parsable messages, the askpass variables, `GIT_OPTIONAL_LOCKS=0` for reads), captures output, streams progress, supports cancellation, and writes an entry to the activity log. Nothing else spawns git for writes.
+- **Operations**: one function per action (stage, unstage, commit, create branch...) returning a structured result (success data, or an error kind such as `Locked`, `HookFailed`, `NeedsIdentity`, `WouldOverwriteChanges`, `Conflict`) rather than raw text. The frontend maps error kinds to dialogs.
+- **Queue**: a per-repository queue in the registry; reads (graph, status) do not wait for writes, but a write waits for the previous write.
+- **After a write**: the refs watcher and the working tree watcher fire as for any change made outside the app, so the graph and the status refresh through the M8 path (rebuild, keep the place). The app does not patch its own state by hand.
+- **Frontend**: a working tree row (WIP) at the top of the graph; selecting it replaces the commit details with the staged and unstaged lists and the message box, and diffs reuse the M6 view. The demo backend for browser development simulates writes in memory so the UI can be built without Tauri.
+
+### 12.4 Milestones
+
+Each milestone is a branch from `main`, ends with lint and tests passing, a demo, and a spec update, as in version 1.
+
+| # | Content | Done when |
+|---|---|---|
+| **M10** | Runner, activity log, read-only mode, per-repository queue; working tree status and watcher; WIP row; stage and unstage files and hunks; commit and amend with hooks, signing and identity handling; discard with snapshot and Undo | A repository can be committed to from the app; hooks and signing behave as in the terminal; a lock held by another git process is reported, never broken |
+| **M11** | Branches (create, rename, delete, set upstream), checkout with the dirty-tree dialog, tags (lightweight and annotated, delete), context menus on the graph | Switching branches never loses changes; deleting an unmerged branch warns and can be undone |
+| **M12** | fetch, pull (merge or rebase), push (`--force-with-lease` as a separate option), askpass dialog, progress and cancel | Works against a local bare repository and an SSH or HTTPS remote through the user's credentials |
+| **M13** | Stash (create, apply, pop, drop, with a list), cherry-pick, revert, reset (soft, mixed, hard) with Undo | Every destructive path has a confirmation and an Undo |
+| **M14** | Operation-in-progress banner; merge (fast-forward, no-fast-forward, squash); conflict list and the three-pane resolver; abort | A conflicted merge can be resolved and committed without the terminal |
+| **M15** | Rebase onto a branch; interactive rebase editor; continue, skip, abort; conflicts through the M14 resolver | A rebase with a conflict, a squash and a reword completes from the app |
+| **M16** | Polish: performance of status on large working trees, error and empty states of the new flows, packaging, documentation | Targets of section 12.6 met |
+
+### 12.5 Testing
+
+- Every write operation is tested on **throwaway repositories made with the git CLI** (invented data only), and its result is compared with what git itself gives (same commit tree, same refs, same index).
+- Tests also cover the failure paths: a hook that fails, a missing identity, a lock held by another process, a checkout that would overwrite changes, a conflict, a cancelled fetch, an Undo after each destructive action.
+- No test touches a real repository of the developer, and none reaches the network (remotes are local bare repositories).
+- The working tree watcher is tested for noise: ignored directories written to continuously must not trigger status runs.
+- The frontend logic (queue states, dialogs by error kind, WIP selection, the todo list editor, the three-pane resolver's merge logic) is tested with a fake backend, as in version 1.
+
+### 12.6 Targets (*proposed*)
+
+- `git status` refresh after a change in a 100k-file working tree under 300 ms on this machine, and never more than one status running at a time.
+- Opening the WIP row and showing the staged and unstaged lists in under 100 ms once the status is known.
+- Staging or unstaging a file reflected on screen in under 150 ms.
+
+### 12.7 Risks and open points
+
+- **Interactive tools**: hooks or commands that expect a terminal (prompts, pagers) cannot be driven; the runner closes standard input, and such a hook fails with its output shown.
+- **Signing**: GPG and SSH signing may ask for a passphrase through `pinentry` or an agent; behaviour with the askpass helper must be checked in M10.
+- **Large working trees**: status can be slow without the untracked cache or `core.fsmonitor`; M16 measures it and may suggest enabling them rather than doing it silently.
+- **Special setups** not designed for yet: sparse checkout, Git LFS filters, submodules, linked worktrees.
+- **Undo snapshots** add refs to the user's repository (`refs/git-hydra/undo/`); the app lists them, purges old ones, and says so in the documentation.
+- **Postponed**: GitHub and GitLab, Windows and Linux, line-level staging, drag-and-drop, sign-off and co-author helpers, resizable panes and other ideas of section 10.
+
