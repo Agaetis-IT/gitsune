@@ -12,3 +12,20 @@ describe("the version of the application", () => {
     expect(fromCargo).toBe(fromPackage);
   });
 });
+
+// The release workflow stops when the notes of the version are missing: this fails earlier, in the
+// pull request that changes the version.
+const releaseNotes = import.meta.glob("../../docs/releases/*.md", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
+
+describe("the release notes", () => {
+  it("exist for the current version", () => {
+    const version = (JSON.parse(packageJson) as { version: string }).version;
+    const found = Object.entries(releaseNotes).find(([path]) => path.endsWith(`/${version}.md`));
+    expect(found, `docs/releases/${version}.md is missing`).toBeDefined();
+    expect(found?.[1]).toContain(`# Gitsune ${version}`);
+  });
+});

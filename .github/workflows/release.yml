@@ -1,0 +1,147 @@
+name: Release
+
+# Merging into main publishes the version written in src-tauri/tauri.conf.json, once: a push
+# that does not change the version finds its release and stops. The packages are attached to a
+# draft that is published when they are all there.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the release once the packages are attached (otherwise it stays a draft)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+# Two releases never run at once, and a running one is never cancelled halfway.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare the release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      new: ${{ steps.release.outputs.new }}
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version and create the draft release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(jq -r .version src-tauri/tauri.conf.json)
+          in_package=$(jq -r .version package.json)
+          in_cargo=$(sed -n 's/^version *= *"\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -n 1)
+          if [ "$version" != "$in_package" ] || [ "$version" != "$in_cargo" ]; then
+            echo "::error::The versions differ: tauri.conf.json $version, package.json $in_package, Cargo.toml $in_cargo."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "Release v$version already exists: nothing to do."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "new=true" >> "$GITHUB_OUTPUT"
+
+          if [ ! -f "docs/releases/$version.md" ]; then
+            echo "::error::docs/releases/$version.md is missing: write the release notes of $version first."
+            exit 1
+          fi
+          {
+            cat "docs/releases/$version.md"
+            echo
+            sed "s/<version>/$version/g" .github/release-footer.md
+          } > "$RUNNER_TEMP/notes.md"
+
+          # A draft left by a run that failed halfway is replaced, not duplicated.
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.draft and .tag_name == \"v$version\") | .id"); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+          done
+
+          id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+            -f tag_name="v$version" -f target_commitish="$GITHUB_SHA" \
+            -f name="Gitsune v$version" -F body=@"$RUNNER_TEMP/notes.md" \
+            -F draft=true --jq .id)
+          echo "release_id=$id" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Package (${{ matrix.os }})
+    needs: prepare
+    if: needs.prepare.outputs.new == 'true'
+    runs-on: ${{ matrix.os }}
+    # Windows is new: its failure leaves the release without its installer instead of blocking
+    # the others (the summary of the publish job says what is attached).
+    continue-on-error: ${{ matrix.experimental == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-latest is Apple silicon: the package is for that, and only that.
+          - os: macos-latest
+          - os: ubuntu-latest
+          - os: windows-latest
+            experimental: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install the Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev libssl-dev patchelf
+      - run: bun install --frozen-lockfile
+      # Unsigned: signing and notarization are not set up.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: bun run tauri
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+
+  publish:
+    name: Publish the release
+    needs: [prepare, build]
+    if: >-
+      needs.prepare.outputs.new == 'true' && needs.build.result == 'success' &&
+      (github.event_name != 'workflow_dispatch' || inputs.publish)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish and list the packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false -f make_latest=true >/dev/null
+          names=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq '.assets[].name')
+          {
+            echo "### Gitsune v$VERSION is published"
+            echo
+            echo "$names" | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for extension in dmg deb AppImage exe; do
+            if ! echo "$names" | grep -q "\.$extension$"; then
+              echo "::warning::No .$extension package is attached to v$VERSION."
+            fi
+          done
