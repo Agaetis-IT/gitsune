@@ -35,9 +35,13 @@ It is a desktop app (Rust and Vue) that runs the real `git` for every change, so
 
 The complete list, with the decisions behind it, is in [SPEC.md](SPEC.md).
 
+## Download
+
+Packages for macOS (Apple silicon), Linux and Windows are on the [Releases](../../releases) page, with the notes of each version. They are not signed yet: the notes say how to open them. Linux and Windows are experimental.
+
 ## Get started
 
-You need [Bun](https://bun.sh), Rust and `git`. More in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+You need [Bun](https://bun.sh), Rust and `git`. More in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md); how a version is released is in [docs/RELEASING.md](docs/RELEASING.md).
 
 ```bash
 bun install
