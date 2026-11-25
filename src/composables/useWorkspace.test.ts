@@ -16,6 +16,8 @@ import {
   GitCommandError,
   type MergeOutcome,
   type MergeResult,
+  type RebaseOutcome,
+  type RebaseResult,
 } from "@/lib/api";
 import type { GraphSource, RepoBackend } from "@/lib/backend";
 import { createReadOnlyStore } from "@/lib/readOnly";
@@ -217,6 +219,14 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
     resolveSide: async () => cleanStatus(),
     continueOperation: async () => cleanStatus(),
     abortOperation: async () => cleanStatus(),
+    rebasePlan: async () => ({ commits: [], merges: 0, pushed: 0 }),
+    rebase: async () => ({
+      status: cleanStatus(),
+      outcome: "done",
+      before: "b".repeat(40),
+      after: "a".repeat(40),
+    }),
+    skipOperation: async () => cleanStatus(),
     remotes: async () => ["origin"],
     fetch: async () => ({ status: cleanStatus(), summary: "" }),
     pull: async () => ({ status: cleanStatus(), summary: "Already up to date." }),
@@ -2263,5 +2273,147 @@ describe("merge and conflicts", () => {
     for (const fn of [merge, resolveFile, continueOperation, abortOperation]) {
       expect(fn).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe("rebase", () => {
+  const stopped = (kind: "rebase" | "merge" = "rebase", paths: string[] = []): WorkingStatus => ({
+    ...cleanStatus(),
+    operation: { kind, message: "Commit 1 of 2" },
+    conflicted: paths.map((path) => ({ path, code: "UU" })),
+  });
+  const result = (outcome: RebaseOutcome, status = cleanStatus()): RebaseResult => ({
+    status,
+    outcome,
+    before: "b".repeat(40),
+    after: "a".repeat(40),
+  });
+  const plan = {
+    commits: [{ id: "1".repeat(40), summary: "one" }],
+    merges: 0,
+    pushed: 1,
+  };
+
+  it("shows what would be replayed before asking, and still asks if the preview fails", async () => {
+    const rebasePlan = vi.fn(async () => plan);
+    const { workspace, tab } = await openWorktree(cleanStatus(), { rebasePlan });
+    await workspace.askRebase(tab, "main", true);
+    expect(rebasePlan).toHaveBeenCalledWith("/fake/a", "main");
+    expect(tab.dialog).toEqual({ type: "rebase", onto: "main", plan, interactive: true });
+
+    const failing = await openWorktree(cleanStatus(), {
+      rebasePlan: async () => {
+        throw new Error("no preview");
+      },
+    });
+    await failing.workspace.askRebase(failing.tab, "main");
+    expect(failing.tab.dialog).toMatchObject({ type: "rebase", plan: null, interactive: false });
+  });
+
+  it("a finished rebase offers Undo", async () => {
+    const undoReplay = vi.fn(async () => cleanStatus());
+    const rebase = vi.fn(async () => result("done"));
+    const { workspace, tab } = await openWorktree(cleanStatus(), { rebase, undoReplay });
+    await workspace.rebase(tab, "main", null, true);
+    expect(rebase).toHaveBeenCalledWith("/fake/a", "main", null, true);
+    expect(tab.dialog).toBeNull();
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toBe("Rebased onto main.");
+    await notice?.action?.run();
+    expect(undoReplay).toHaveBeenCalledWith("/fake/a", "b".repeat(40), "a".repeat(40));
+  });
+
+  it("sends the edited list as it is", async () => {
+    const rebase = vi.fn(async () => result("done"));
+    const { workspace, tab } = await openWorktree(cleanStatus(), { rebase });
+    const items = [{ action: "reword" as const, id: "1".repeat(40), message: "Better" }];
+    await workspace.rebase(tab, "main", items, false);
+    expect(rebase).toHaveBeenCalledWith("/fake/a", "main", items, false);
+  });
+
+  it("a rebase that conflicts opens the resolver and remembers where the branch was", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      rebase: async () => result("conflicts", stopped("rebase", ["a.txt"])),
+    });
+    await workspace.rebase(tab, "main", null, false);
+    expect(tab.resolverPath).toBe("a.txt");
+    expect(tab.rebaseBefore).toBe("b".repeat(40));
+    expect(lastOf(workspace.notices.value)?.text).toContain("conflicts");
+  });
+
+  it("a stop for an edit tells the user what to do and opens no resolver", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      rebase: async () => result("stopped", stopped()),
+    });
+    await workspace.rebase(tab, "main", [], false);
+    expect(tab.resolverPath).toBeNull();
+    expect(tab.status?.operation?.kind).toBe("rebase");
+    expect(lastOf(workspace.notices.value)?.text).toContain("edit a commit");
+  });
+
+  it("an up-to-date rebase says so, and a dirty tree explains how to go on", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      rebase: async () => result("upToDate"),
+    });
+    await workspace.rebase(tab, "main", null, false);
+    expect(lastOf(workspace.notices.value)?.text).toContain("already on top");
+
+    const dirtyOne = await openWorktree(cleanStatus(), {
+      rebase: async () => {
+        throw new GitCommandError("wouldOverwriteChanges", "cannot rebase: unstaged changes");
+      },
+    });
+    await dirtyOne.workspace.rebase(dirtyOne.tab, "main", null, false);
+    expect(lastOf(dirtyOne.workspace.notices.value)?.text).toContain("Stash my changes");
+  });
+
+  it("continuing after a conflict can stop on the next one, or finish with an Undo", async () => {
+    let continued = stopped("rebase", ["b.txt"]);
+    const undoReplay = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(stopped("rebase", []), {
+      rebase: async () => result("stopped", stopped()),
+      continueOperation: async () => continued,
+      undoReplay,
+    });
+    await workspace.rebase(tab, "main", null, false);
+
+    await workspace.continueOperation(tab);
+    expect(tab.resolverPath).toBe("b.txt");
+    expect(lastOf(workspace.notices.value)?.text).toContain("next commit conflicts");
+
+    continued = { ...cleanStatus(), head: "f".repeat(40) };
+    await workspace.continueOperation(tab);
+    expect(tab.resolverPath).toBeNull();
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toBe("The rebase is finished.");
+    await notice?.action?.run();
+    expect(undoReplay).toHaveBeenCalledWith("/fake/a", "b".repeat(40), "f".repeat(40));
+  });
+
+  it("skipping goes on with the next commit, and aborting forgets the undo point", async () => {
+    const skipOperation = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(stopped("rebase", ["a.txt"]), {
+      skipOperation,
+      rebase: async () => result("conflicts", stopped("rebase", ["a.txt"])),
+    });
+    await workspace.rebase(tab, "main", null, false);
+    await workspace.skipOperation(tab);
+    expect(skipOperation).toHaveBeenCalledWith("/fake/a");
+    expect(tab.resolverPath).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toContain("Skipped");
+
+    await workspace.abortOperation(tab);
+    expect(tab.rebaseBefore).toBeNull();
+  });
+
+  it("read-only mode refuses to rebase and to skip", async () => {
+    const rebase = vi.fn();
+    const skipOperation = vi.fn();
+    const { workspace, tab } = await openWorktree(cleanStatus(), { rebase, skipOperation });
+    await workspace.setReadOnly(tab, true);
+    await workspace.rebase(tab, "main", null, false);
+    await workspace.skipOperation(tab);
+    expect(rebase).not.toHaveBeenCalled();
+    expect(skipOperation).not.toHaveBeenCalled();
   });
 });

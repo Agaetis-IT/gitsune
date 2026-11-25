@@ -16,6 +16,8 @@ import {
   type MergeMode,
   type Side,
   type PullStrategy,
+  type RebasePlan,
+  type TodoItem,
   type PushOptions,
   type RefInfo,
   type RemoteResult,
@@ -115,7 +117,9 @@ export type BranchDialog =
   /** Merge a branch into the current one; `info` is what the merge would do (when known). */
   | { type: "merge"; target: string; info: MergeInfo | null }
   /** Cancel the merge, cherry-pick, revert or rebase in progress: the work done so far is lost. */
-  | { type: "abortOperation" };
+  | { type: "abortOperation" }
+  /** Rebase the current branch onto `onto`; `plan` lists what would be replayed (when known). */
+  | { type: "rebase"; onto: string; plan: RebasePlan | null; interactive: boolean };
 
 /** A fetch, pull or push that is running. */
 export interface RemoteOp {
@@ -203,6 +207,8 @@ export interface RepoTab {
   remote: RemoteOp | null;
   /** The stash list, most recent first. */
   stashes: StashEntry[];
+  /** The tip of the branch before a rebase that is still going on, for Undo once it ends. */
+  rebaseBefore: string | null;
   /** The conflict resolver is open on this file (`""` before a file is chosen); `null` if closed. */
   resolverPath: string | null;
 }
@@ -1219,6 +1225,7 @@ export function createWorkspace(
   }
 
   async function continueOperation(tab: RepoTab): Promise<void> {
+    const wasRebase = tab.status?.operation?.kind === "rebase";
     const name = tab.status?.operation ? OPERATION_NAMES[tab.status.operation.kind] : "operation";
     const status = await write(tab, () => backend.continueOperation(tab.id));
     if (!status) {
@@ -1226,11 +1233,35 @@ export function createWorkspace(
       if (failure && INLINE_ERRORS.includes(failure.kind)) notify("error", failure.message);
       return;
     }
-    closeResolver(tab);
     applyStatus(tab, status, true);
+    if (status.conflicted.length > 0) {
+      openResolver(tab);
+      notify("error", `Continued the ${name}: the next commit conflicts.`);
+      return;
+    }
+    closeResolver(tab);
+    if (status.operation) {
+      notify("info", `Continued the ${name}: it stopped again.`);
+      return;
+    }
+    const before = wasRebase ? tab.rebaseBefore : null;
+    const after = status.head;
+    tab.rebaseBefore = null;
     notify(
       "info",
-      status.operation ? `Continued the ${name}: it stopped again.` : `The ${name} is finished.`,
+      `The ${name} is finished.`,
+      before && after
+        ? {
+            label: "Undo",
+            run: async () => {
+              const undone = await write(tab, () => backend.undoReplay(tab.id, before, after));
+              if (undone) {
+                applyStatus(tab, undone, true);
+                notify("info", "Rebase undone.");
+              }
+            },
+          }
+        : undefined,
     );
   }
 
@@ -1241,8 +1272,94 @@ export function createWorkspace(
     if (!status) return;
     closeDialog(tab);
     closeResolver(tab);
+    tab.rebaseBefore = null;
     applyStatus(tab, status, true);
     notify("info", "Cancelled: the repository is back where it was.");
+  }
+
+  // ---------- rebase ----------
+
+  /** Asks how to rebase the current branch onto `onto`, once the commits it would replay are known. */
+  async function askRebase(tab: RepoTab, onto: string, interactive = false): Promise<void> {
+    const plan = await backend.rebasePlan(tab.id, onto).catch(() => null);
+    openDialog(tab, { type: "rebase", onto, plan, interactive });
+  }
+
+  async function rebase(
+    tab: RepoTab,
+    onto: string,
+    items: TodoItem[] | null,
+    autostash: boolean,
+  ): Promise<void> {
+    const result = await write(tab, () => backend.rebase(tab.id, onto, items, autostash));
+    if (!result) {
+      const failure = tab.writeError;
+      if (failure?.kind === "wouldOverwriteChanges") {
+        notify(
+          "error",
+          "You have uncommitted changes. Commit or stash them first, or tick “Stash my changes while rebasing”.",
+        );
+      } else if (failure && INLINE_ERRORS.includes(failure.kind)) {
+        notify("error", failure.message);
+      }
+      return;
+    }
+    closeDialog(tab);
+    applyStatus(tab, result.status, true);
+    switch (result.outcome) {
+      case "upToDate":
+        notify("info", `This branch is already on top of ${onto}.`);
+        break;
+      case "done":
+        notify("info", `Rebased onto ${onto}.`, {
+          label: "Undo",
+          run: async () => {
+            const status = await write(tab, () =>
+              backend.undoReplay(tab.id, result.before, result.after),
+            );
+            if (status) {
+              applyStatus(tab, status, true);
+              notify("info", "Rebase undone.");
+            }
+          },
+        });
+        break;
+      case "stopped":
+        tab.rebaseBefore = result.before;
+        notify(
+          "info",
+          "The rebase stopped for you to edit a commit. Make your changes, commit or amend, then continue.",
+        );
+        break;
+      case "conflicts":
+        tab.rebaseBefore = result.before;
+        notify(
+          "error",
+          `The rebase stopped on conflicts: resolve them, then continue (or skip the commit, or abort).`,
+        );
+        openResolver(tab);
+        break;
+    }
+  }
+
+  async function skipOperation(tab: RepoTab): Promise<void> {
+    const status = await write(tab, () => backend.skipOperation(tab.id));
+    if (!status) {
+      const failure = tab.writeError;
+      if (failure && INLINE_ERRORS.includes(failure.kind)) notify("error", failure.message);
+      return;
+    }
+    applyStatus(tab, status, true);
+    if (status.conflicted.length > 0) {
+      openResolver(tab);
+      notify("info", "Skipped that commit. The next one conflicts too.");
+    } else {
+      closeResolver(tab);
+      notify(
+        "info",
+        status.operation ? "Skipped that commit." : "Skipped. The operation is finished.",
+      );
+    }
   }
 
   async function conflictFile(tab: RepoTab, path: string) {
@@ -1326,6 +1443,7 @@ export function createWorkspace(
         remote: null,
         stashes: [],
         resolverPath: null,
+        rebaseBefore: null,
       });
       tabs.value = [...tabs.value, tab];
       activeId.value = tab.id;
@@ -1512,6 +1630,9 @@ export function createWorkspace(
     askUpstream,
     askPush,
     askMerge,
+    askRebase,
+    rebase,
+    skipOperation,
     merge,
     openResolver,
     closeResolver,

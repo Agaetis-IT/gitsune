@@ -206,12 +206,29 @@ fn first_line(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// "Commit 2 of 5" for a rebase that is under way.
+fn rebase_progress(dir: &Path) -> String {
+    for folder in ["rebase-merge", "rebase-apply"] {
+        let (done, total) = if folder == "rebase-merge" {
+            ("msgnum", "end")
+        } else {
+            ("next", "last")
+        };
+        let read = |name: &str| first_line(&dir.join(folder).join(name));
+        let (done, total) = (read(done), read(total));
+        if !done.is_empty() && !total.is_empty() {
+            return format!("Commit {done} of {total}");
+        }
+    }
+    String::new()
+}
+
 /// Detects an operation in progress from the files git keeps while it waits.
 pub fn read_operation(runner: &Runner, workdir: &Path) -> Option<Operation> {
     let dir = git_dir(runner, workdir)?;
     let has = |name: &str| dir.join(name).exists();
     let (kind, message) = if has("rebase-merge") || has("rebase-apply") {
-        (OperationKind::Rebase, String::new())
+        (OperationKind::Rebase, rebase_progress(&dir))
     } else if has("MERGE_HEAD") {
         (OperationKind::Merge, first_line(&dir.join("MERGE_MSG")))
     } else if has("CHERRY_PICK_HEAD") {

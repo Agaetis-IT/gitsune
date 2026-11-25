@@ -49,6 +49,17 @@ export function commitMenu(commit: { id: string }, ctx: MenuContext): MenuItem[]
     }),
     write(ctx, { id: "revert", label: "Revert this commit" }),
     write(ctx, { id: "reset", label: "Reset the current branch to here…", danger: true }),
+    write(ctx, {
+      id: "rebase",
+      label: "Rebase the current branch onto this commit…",
+      separatorBefore: true,
+      disabled: atHead ? "This commit is already the current one." : undefined,
+    }),
+    write(ctx, {
+      id: "rebaseInteractive",
+      label: "Rebase interactively from this commit…",
+      disabled: atHead ? "This commit is already the current one." : undefined,
+    }),
     { id: "copyId", label: "Copy the commit id", separatorBefore: true },
   ];
 }
@@ -92,6 +103,11 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
         disabled: ref.isHead ? "This is the current branch." : undefined,
       }),
       write(ctx, {
+        id: "rebase",
+        label: `Rebase the current branch onto ${ref.name}…`,
+        disabled: ref.isHead ? "This is the current branch." : undefined,
+      }),
+      write(ctx, {
         id: "delete",
         label: "Delete…",
         danger: true,
@@ -105,6 +121,7 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
     return [
       write(ctx, { id: "checkout", label: "Checkout as a local branch" }),
       write(ctx, { id: "merge", label: `Merge ${ref.name} into the current branch…` }),
+      write(ctx, { id: "rebase", label: `Rebase the current branch onto ${ref.name}…` }),
       write(ctx, {
         id: "deleteRemote",
         label: "Delete on the remote…",

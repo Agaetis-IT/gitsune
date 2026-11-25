@@ -67,7 +67,10 @@ pub fn run() {
             commands::resolve_conflict_file,
             commands::resolve_conflict_side,
             commands::continue_operation,
-            commands::abort_operation
+            commands::abort_operation,
+            commands::rebase_preview,
+            commands::rebase_onto,
+            commands::skip_operation
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

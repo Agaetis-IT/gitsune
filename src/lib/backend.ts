@@ -2,6 +2,12 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   type ActivityEntry,
+  type RebasePlan,
+  type RebaseResult,
+  type TodoItem,
+  rebaseOnto,
+  rebasePreview,
+  skipOperation,
   type ConflictFile,
   type MergeInfo,
   type MergeMode,
@@ -223,6 +229,16 @@ export interface RepoBackend {
   /** Finishes the operation in progress (commits the merge...). */
   continueOperation(repoId: string): Promise<WorkingStatus>;
   abortOperation(repoId: string): Promise<WorkingStatus>;
+  rebasePlan(repoId: string, onto: string): Promise<RebasePlan>;
+  /** Conflicts and a stop for `edit` are not errors: the rebase stays in progress. */
+  rebase(
+    repoId: string,
+    onto: string,
+    items: TodoItem[] | null,
+    autostash: boolean,
+  ): Promise<RebaseResult>;
+  /** Leaves out the commit a rebase or a cherry-pick is stuck on. */
+  skipOperation(repoId: string): Promise<WorkingStatus>;
   /** The names of the remotes. */
   remotes(repoId: string): Promise<string[]>;
   /** Downloads new commits and refs (`remote` null: every remote). */
@@ -293,6 +309,9 @@ export const tauriBackend: RepoBackend = {
     listen<{ repoId: string }>("activity-changed", (event) => handler(event.payload.repoId)),
   createBranch,
   remotes: listRemotes,
+  rebasePlan: rebasePreview,
+  rebase: rebaseOnto,
+  skipOperation,
   mergeInfo: mergePreview,
   merge: mergeIntoCurrent,
   conflictFile: getConflictFile,

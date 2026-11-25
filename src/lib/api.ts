@@ -675,3 +675,54 @@ export const continueOperation = (repoId: string) =>
 
 export const abortOperation = (repoId: string) =>
   gitInvoke<WorkingStatus>("abort_operation", { repoId });
+
+// ---------- rebase ----------
+
+export type TodoAction = "pick" | "reword" | "edit" | "squash" | "fixup" | "drop";
+
+/** One line of the list of an interactive rebase. */
+export interface TodoItem {
+  action: TodoAction;
+  id: string;
+  /** The message of the commit once done (reword, squash); `null` keeps git's own. */
+  message: string | null;
+}
+
+export interface RebaseCommit {
+  id: string;
+  summary: string;
+}
+
+/** What rebasing onto a target would replay. */
+export interface RebasePlan {
+  /** The commits of the current branch not in the target, oldest first (merges are not listed). */
+  commits: RebaseCommit[];
+  merges: number;
+  /** Commits already on the upstream: rewriting them means a force push later. */
+  pushed: number;
+}
+
+export type RebaseOutcome = "upToDate" | "done" | "stopped" | "conflicts";
+
+export interface RebaseResult {
+  status: WorkingStatus;
+  outcome: RebaseOutcome;
+  /** The branch tip before and after: what Undo needs. */
+  before: string;
+  after: string;
+}
+
+export const rebasePreview = (repoId: string, onto: string) =>
+  gitInvoke<RebasePlan>("rebase_preview", { repoId, onto });
+
+/** With `items` the list of commits is the given one (interactive rebase). */
+export const rebaseOnto = (
+  repoId: string,
+  onto: string,
+  items: TodoItem[] | null,
+  autostash: boolean,
+) => gitInvoke<RebaseResult>("rebase_onto", { repoId, onto, items, autostash });
+
+/** Leaves out the commit a rebase or a cherry-pick is stuck on. */
+export const skipOperation = (repoId: string) =>
+  gitInvoke<WorkingStatus>("skip_operation", { repoId });

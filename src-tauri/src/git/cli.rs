@@ -588,6 +588,9 @@ pub fn classify(stdout: &str, stderr: &str) -> Option<ErrorKind> {
         || mentions("would be overwritten by merge")
         || mentions("would be overwritten by cherry-pick")
         || mentions("would be overwritten by revert")
+        || mentions("cannot rebase: you have unstaged changes")
+        || mentions("cannot rebase: your index contains uncommitted changes")
+        || mentions("please commit or stash them")
     {
         return Some(ErrorKind::WouldOverwriteChanges);
     }

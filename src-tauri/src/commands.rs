@@ -12,8 +12,9 @@ use crate::git::{
     self, ActivityEntry, Area, CheckoutResult, CheckoutTarget, CommitDetail, CommitOpResult,
     CommitResult, ConflictFile, DeletedBranch, DeletedTag, DirtyStrategy, DiscardResult,
     DroppedStash, FileDiff, GitError, GraphCache, GraphMeta, GraphPage, MergeInfo, MergeMode,
-    MergeResult, PullStrategy, PushOptions, RefInfo, RemoteResult, RepoInfo, RepoStores,
-    RepoWatcher, ResetMode, ResetResult, SearchResult, Side, Snapshot, StashEntry, WorkingStatus,
+    MergeResult, PullStrategy, PushOptions, RebasePlan, RebaseResult, RefInfo, RemoteResult,
+    RepoInfo, RepoStores, RepoWatcher, ResetMode, ResetResult, SearchResult, Side, Snapshot,
+    StashEntry, TodoItem, WorkingStatus,
 };
 
 struct OpenRepo {
@@ -1013,4 +1014,41 @@ pub async fn abort_operation(
     registry: State<'_, RepoRegistry>,
 ) -> Result<WorkingStatus, GitError> {
     with_ctx(&registry, &repo_id, git::abort_operation)
+}
+
+// ---------- rebase ----------
+
+/// The commits a rebase onto `onto` would replay, to show before asking.
+#[tauri::command]
+pub async fn rebase_preview(
+    repo_id: String,
+    onto: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<RebasePlan, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::rebase_plan(ctx, &onto))
+}
+
+/// Rebases the current branch onto `onto`. With `items` the list of commits is the one given
+/// (interactive rebase). Conflicts and a stop for `edit` are not errors: the rebase stays in
+/// progress and the outcome says so.
+#[tauri::command]
+pub async fn rebase_onto(
+    repo_id: String,
+    onto: String,
+    items: Option<Vec<TodoItem>>,
+    autostash: bool,
+    registry: State<'_, RepoRegistry>,
+) -> Result<RebaseResult, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::rebase(ctx, &onto, items.as_deref(), autostash)
+    })
+}
+
+/// Leaves out the commit a rebase or a cherry-pick is stuck on.
+#[tauri::command]
+pub async fn skip_operation(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, git::skip_operation)
 }

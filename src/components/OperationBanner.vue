@@ -67,6 +67,16 @@ const busy = computed(() => props.tab.busy);
       Continue
     </Button>
     <Button
+      v-if="operation && (operation.kind === 'rebase' || operation.kind === 'cherryPick')"
+      size="sm"
+      variant="outline"
+      :disabled="busy || tab.readOnly"
+      title="Leave this commit out and go on with the next one"
+      @click="workspace.skipOperation(tab)"
+    >
+      Skip
+    </Button>
+    <Button
       size="sm"
       variant="outline"
       :disabled="busy || tab.readOnly"
