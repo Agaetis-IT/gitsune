@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RefInfo } from "@/lib/api";
-import { commitMenu, laneMenu, type MenuContext, refMenu } from "./menus";
+import { commitMenu, laneMenu, type MenuContext, pullRequestTargetOf, refMenu } from "./menus";
 
 const ctx = (overrides: Partial<MenuContext> = {}): MenuContext => ({
   readOnly: false,
@@ -69,6 +69,36 @@ describe("commit menu", () => {
     ]);
     expect(items.find((i) => i.id === "copyId")?.disabled).toBeUndefined();
     expect(items[0].disabled).toBe("Read-only mode is on.");
+  });
+});
+
+describe("commit menu, pull request", () => {
+  it("offers a pull request into the branch at the commit", () => {
+    const items = commitMenu({ id: "c1", author: "Ada" }, ctx({ pullRequestTarget: "develop" }));
+    const item = items.find((i) => i.id === "pullRequestHere");
+    expect(item?.label).toBe("Create a pull request into develop…");
+    expect(item?.disabled).toBeUndefined();
+  });
+
+  it("offers nothing for a commit without a branch, and waits for a branch when detached", () => {
+    expect(ids(commitMenu({ id: "c1", author: "Ada" }, ctx()))).not.toContain("pullRequestHere");
+    const detached = commitMenu(
+      { id: "c1", author: "Ada" },
+      ctx({ pullRequestTarget: "develop", detached: true }),
+    );
+    expect(detached.find((i) => i.id === "pullRequestHere")?.disabled).toMatch(/detached/);
+  });
+
+  it("takes the branch name of a local or a remote ref, never the current branch", () => {
+    const refs = [
+      ref("v1", "tag"),
+      ref("origin/HEAD", "remote"),
+      ref("feat/x", "local", true),
+      ref("origin/develop", "remote"),
+    ];
+    expect(pullRequestTargetOf(refs, "feat/x")).toBe("develop");
+    expect(pullRequestTargetOf([ref("v1", "tag")], "feat/x")).toBeNull();
+    expect(pullRequestTargetOf([ref("feat/x", "local")], "feat/x")).toBeNull();
   });
 });
 

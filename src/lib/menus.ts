@@ -26,6 +26,23 @@ export interface MenuContext {
   hidden?: boolean;
   /** The graph is focused on the author of the commit the menu is about. */
   authorFocused?: boolean;
+  /** The branch at the commit a pull request from the current branch would go into. */
+  pullRequestTarget?: string | null;
+}
+
+/**
+ * The branch a pull request from the current branch goes into when it starts from a commit: the
+ * first branch (local or remote) at that commit, other than the current one.
+ */
+export function pullRequestTargetOf(
+  refs: readonly RefInfo[],
+  headBranch: string | null,
+): string | null {
+  const names = refs
+    .filter((ref) => ref.kind !== "tag")
+    .map((ref) => (ref.kind === "remote" ? ref.name.slice(ref.name.indexOf("/") + 1) : ref.name))
+    .filter((name) => name !== "HEAD" && name !== headBranch);
+  return names[0] ?? null;
 }
 
 const READ_ONLY = "Read-only mode is on.";
@@ -44,6 +61,15 @@ export function commitMenu(commit: { id: string; author: string }, ctx: MenuCont
     }),
     write(ctx, { id: "createBranch", label: "Create a branch here…" }),
     write(ctx, { id: "createTag", label: "Create a tag here…" }),
+    ...(ctx.pullRequestTarget
+      ? [
+          {
+            id: "pullRequestHere",
+            label: `Create a pull request into ${ctx.pullRequestTarget}…`,
+            disabled: ctx.detached ? "HEAD is detached: check out a branch first." : undefined,
+          },
+        ]
+      : []),
     write(ctx, {
       id: "cherryPick",
       label: "Cherry-pick onto the current branch",

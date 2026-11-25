@@ -63,7 +63,14 @@ import type {
   StatusEntry,
   Worktree,
 } from "@/lib/api";
-import { commitMenu, laneMenu, type MenuItem, refMenu, worktreeMenu } from "@/lib/menus";
+import {
+  commitMenu,
+  laneMenu,
+  type MenuItem,
+  pullRequestTargetOf,
+  refMenu,
+  worktreeMenu,
+} from "@/lib/menus";
 import { personKey } from "@/lib/metro/people";
 import { describeUpdates } from "@/lib/autoFetch";
 import { paletteEntries, remember } from "@/lib/commandPalette";
@@ -147,7 +154,7 @@ const canHideLane = computed(() => {
 
 type MenuTarget =
   | { kind: "ref"; ref: RefInfo; commitId: string | null }
-  | { kind: "commit"; id: string; author: string }
+  | { kind: "commit"; id: string; author: string; pullRequestTarget: string | null }
   | { kind: "lane"; lane: Lane }
   | { kind: "worktree"; tree: Worktree };
 const menu = ref<{ target: MenuTarget; items: MenuItem[]; x: number; y: number } | null>(null);
@@ -230,10 +237,17 @@ function onGraphMenu(target: GraphContextTarget) {
   if (target.kind === "ref") {
     openRefMenu(target.ref, x, y, target.commit?.id ?? null);
   } else if (target.kind === "commit") {
+    const pullRequestTarget = pullRequestTargetOf(target.commit.refs, tab.headBranch);
     menu.value = {
-      target: { kind: "commit", id: target.commit.id, author: target.commit.author },
+      target: {
+        kind: "commit",
+        id: target.commit.id,
+        author: target.commit.author,
+        pullRequestTarget,
+      },
       items: commitMenu(target.commit, {
         ...menuContext(false, false, false),
+        pullRequestTarget,
         authorFocused:
           tab.focusAuthor !== null && tab.focusAuthor === personKey(target.commit.author),
       }),
@@ -293,7 +307,11 @@ function onMenuSelect(id: string) {
     if (id === "checkoutCommit") void workspace.checkout(tab, { kind: "commit", id: t.id }, null);
     else if (id === "createBranch") workspace.askCreateBranch(tab, { id: t.id, label: short });
     else if (id === "createTag") workspace.askCreateTag(tab, { id: t.id, label: short });
-    else if (id === "cherryPick") void workspace.cherryPick(tab, { id: t.id, label: short });
+    else if (id === "pullRequestHere") {
+      if (tab.headBranch && t.pullRequestTarget) {
+        void workspace.pullRequestAction(tab, tab.headBranch, t.pullRequestTarget);
+      }
+    } else if (id === "cherryPick") void workspace.cherryPick(tab, { id: t.id, label: short });
     else if (id === "revert") void workspace.revert(tab, { id: t.id, label: short });
     else if (id === "reset") workspace.askReset(tab, { id: t.id, label: short });
     else if (id === "rebase") void workspace.askRebase(tab, t.id);

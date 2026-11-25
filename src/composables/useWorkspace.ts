@@ -24,6 +24,7 @@ import {
   type TodoItem,
   type Worktree,
   type PushOptions,
+  type RangeCommit,
   type RefInfo,
   type RemoteResult,
   type RefKind,
@@ -2198,15 +2199,16 @@ export function createWorkspace(
   /**
    * What "pull request" does for a branch: open the one that exists; otherwise ask for the text
    * of a new one and create it here (the user is signed in with the tool of the host), or open the
-   * page of the host that starts one.
+   * page of the host that starts one. With a `target` (the branch of a commit the user chose) a
+   * new pull request into it is asked for, whatever pull requests the branch already has.
    */
-  async function pullRequestAction(tab: RepoTab, branch: string): Promise<void> {
+  async function pullRequestAction(tab: RepoTab, branch: string, target?: string): Promise<void> {
     if (!tab.hosted) await loadHosted(tab);
     if (tab.prLoadedAt === 0) await loadPullRequests(tab);
-    const existing = tab.pullRequests.find((pr) => pr.branch === branch);
+    const existing = target ? undefined : tab.pullRequests.find((pr) => pr.branch === branch);
     if (existing) return openPullRequestPage(tab, existing.id);
     if (!tab.hosted || tab.prSignedOut || tab.readOnly) return openPullRequest(tab, branch);
-    return askCreatePullRequest(tab, branch, tab.hosted);
+    return askCreatePullRequest(tab, branch, tab.hosted, target);
   }
 
   /** Opens the dialog of a new pull request with the target, the title and the text filled in. */
@@ -2214,6 +2216,7 @@ export function createWorkspace(
     tab: RepoTab,
     branch: string,
     hosted: HostedRepo,
+    chosen?: string,
   ): Promise<void> {
     const remotes = await backend.remoteUrls(tab.id).catch(() => []);
     const remote = pickHostedRepo(remotes)?.remote ?? remotes[0]?.name ?? "origin";
@@ -2223,16 +2226,29 @@ export function createWorkspace(
       .map((ref) => ref.name.slice(prefix.length))
       .filter((name) => name !== "HEAD" && name !== branch);
     const asked = await backend.defaultBranch(hosted).catch(() => null);
-    const target =
-      [asked, "main", "master", "develop"].find(
-        (name): name is string => !!name && name !== branch && targets.includes(name),
-      ) ??
-      targets[0] ??
-      asked ??
-      "main";
-    const commits = await backend
-      .commitsBetween(tab.id, `${prefix}${target}`, branch)
-      .catch(() => []);
+    // The usual targets that exist, the default branch of the host first.
+    const candidates = (chosen ? [chosen] : [asked, "main", "master", "develop"]).filter(
+      (name, index, all): name is string =>
+        !!name && name !== branch && targets.includes(name) && all.indexOf(name) === index,
+    );
+    // The branch is meant for the target it is closest to: `develop` rather than `main` when
+    // the work started there, even if `main` is the default branch of the host.
+    const ahead = await Promise.all(
+      candidates.map(async (name) => ({
+        name,
+        commits: await backend.commitsBetween(tab.id, `${prefix}${name}`, branch).catch(() => null),
+      })),
+    );
+    let closest: { name: string; commits: RangeCommit[] } | null = null;
+    for (const entry of ahead) {
+      if (entry.commits && (!closest || entry.commits.length < closest.commits.length)) {
+        closest = { name: entry.name, commits: entry.commits };
+      }
+    }
+    const target = closest?.name ?? chosen ?? targets[0] ?? asked ?? "main";
+    const commits =
+      closest?.commits ??
+      (await backend.commitsBetween(tab.id, `${prefix}${target}`, branch).catch(() => []));
     const local = tab.refs.find((ref) => ref.kind === "local" && ref.name === branch);
     const onRemote = tab.refs.find(
       (ref) => ref.kind === "remote" && ref.name === `${prefix}${branch}`,
@@ -2249,6 +2265,27 @@ export function createWorkspace(
       needsPush: !onRemote || (!!local && onRemote.target !== local.target),
       newOnRemote: !onRemote,
       error: null,
+    };
+  }
+
+  /**
+   * The title and the description for another target of the open pull request dialog: the
+   * commits to list are the ones the new target does not have. `null` when they cannot be read.
+   */
+  async function describePullRequest(
+    tab: RepoTab,
+    target: string,
+  ): Promise<{ title: string; description: string } | null> {
+    const dialog = tab.dialog;
+    const hosted = tab.hosted;
+    if (dialog?.type !== "createPullRequest" || !hosted) return null;
+    const commits = await backend
+      .commitsBetween(tab.id, `${dialog.remote}/${target}`, dialog.branch)
+      .catch(() => null);
+    if (!commits) return null;
+    return {
+      title: pullRequestTitle(dialog.branch, commits, hosted),
+      description: pullRequestDescription(dialog.branch, commits, hosted),
     };
   }
 
@@ -2447,6 +2484,7 @@ export function createWorkspace(
     loadPullRequests,
     pullRequestAction,
     createPullRequest,
+    describePullRequest,
     openPullRequestPage,
     openTicket,
     prefillTicket,

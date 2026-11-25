@@ -2990,6 +2990,54 @@ describe("opening things outside the application", () => {
       });
     });
 
+    it("targets the branch it is closest to, not the default branch of the host", async () => {
+      const many = Array.from({ length: 40 }, (_, i) => ({ id: `${i}`, summary: `Commit ${i}` }));
+      const { workspace, tab } = await ready({
+        defaultBranch: vi.fn(async () => "main" as string | null),
+        commitsBetween: vi.fn(async (_id: string, base: string) =>
+          base === "origin/main" ? many : [{ id: "1", summary: "Add the form" }],
+        ),
+      });
+      await workspace.pullRequestAction(tab, "feat/login/5310");
+      expect(tab.dialog).toMatchObject({
+        target: "develop",
+        title: "AB#5310 Add the form",
+        description: "AB#5310",
+      });
+    });
+
+    it("goes into the branch it is asked for, even when another one is closer", async () => {
+      const { workspace, backend, tab } = await ready({
+        defaultBranch: vi.fn(async () => "develop" as string | null),
+      });
+      await workspace.pullRequestAction(tab, "feat/login/5310", "main");
+      expect(tab.dialog).toMatchObject({ type: "createPullRequest", target: "main" });
+      expect(backend.commitsBetween).toHaveBeenCalledTimes(1);
+      expect(backend.commitsBetween).toHaveBeenCalledWith(
+        "/fake/alpha",
+        "origin/main",
+        "feat/login/5310",
+      );
+    });
+
+    it("lists the commits of another target when the target changes", async () => {
+      const { workspace, tab } = await ready({
+        commitsBetween: vi.fn(async (_id: string, base: string) =>
+          base === "origin/develop"
+            ? [{ id: "1", summary: "Only one" }]
+            : [
+                { id: "1", summary: "Only one" },
+                { id: "2", summary: "Another" },
+              ],
+        ),
+      });
+      await workspace.pullRequestAction(tab, "feat/login/5310", "main");
+      expect(await workspace.describePullRequest(tab, "develop")).toEqual({
+        title: "AB#5310 Only one",
+        description: "AB#5310",
+      });
+    });
+
     it("pushes first, creates the pull request and opens it", async () => {
       const push = vi.fn(async () => ({ status: cleanStatus(), summary: "" }));
       const { workspace, backend, tab } = await ready({ push });
