@@ -1,0 +1,472 @@
+//! Layout tests on invented graphs. Commits are listed newest first, parents by name.
+
+use super::naming::{PALETTE_SIZE, color_for, merge_branch_name, strip_remote};
+use super::*;
+
+fn graph(spec: &[(&str, &[&str])]) -> Vec<Commit> {
+    graph_with_subjects(&spec.iter().map(|(n, p)| (*n, *p, "")).collect::<Vec<_>>())
+}
+
+fn graph_with_subjects(spec: &[(&str, &[&str], &str)]) -> Vec<Commit> {
+    let row_of = |name: &str| spec.iter().position(|(n, _, _)| *n == name).unwrap();
+    spec.iter()
+        .map(|(_, parents, subject)| Commit {
+            parents: parents.iter().map(|p| row_of(p)).collect(),
+            subject: subject.to_string(),
+        })
+        .collect()
+}
+
+fn label(row: usize, name: &str, kind: RefKind, is_head: bool) -> RefLabel {
+    RefLabel {
+        row,
+        name: name.to_string(),
+        kind,
+        is_head,
+    }
+}
+
+fn cols(layout: &Layout) -> Vec<u32> {
+    layout.rows.iter().map(|r| r.col).collect()
+}
+
+// ---------- structure ----------
+
+#[test]
+fn empty_graph_has_no_rows() {
+    let layout = layout(&[], &[]);
+    assert!(layout.rows.is_empty() && layout.lanes.is_empty());
+    assert_eq!(layout.max_cols, 0);
+}
+
+#[test]
+fn linear_history_is_a_single_straight_lane() {
+    let commits = graph(&[("c", &["b"]), ("b", &["a"]), ("a", &[])]);
+    let layout = layout(&commits, &[]);
+    assert_eq!(cols(&layout), vec![0, 0, 0]);
+    assert_eq!(layout.lanes.len(), 1);
+    assert!(layout.rows.iter().all(|r| r.edges.is_empty()));
+    assert_eq!(
+        (layout.lanes[0].first_row, layout.lanes[0].last_row),
+        (0, 2)
+    );
+    assert_eq!(layout.max_cols, 1);
+}
+
+#[test]
+fn branch_and_merge_forks_to_the_right_and_converges_back() {
+    //  M  merge of B and F2
+    //  F2 (feature)   B (main)
+    //  F1 (feature)   |
+    //  A  fork point
+    let commits = graph(&[
+        ("M", &["B", "F2"]),
+        ("F2", &["F1"]),
+        ("B", &["A"]),
+        ("F1", &["A"]),
+        ("A", &[]),
+    ]);
+    let layout = layout(&commits, &[]);
+    assert_eq!(cols(&layout), vec![0, 1, 0, 1, 0]);
+    assert_eq!(
+        layout.rows[0].edges,
+        vec![Edge {
+            lane: 1,
+            from_col: 0,
+            to_col: 1,
+            bend: Bend::Start
+        }]
+    );
+    assert_eq!(
+        layout.rows[3].edges,
+        vec![Edge {
+            lane: 1,
+            from_col: 1,
+            to_col: 0,
+            bend: Bend::End
+        }]
+    );
+    assert_eq!(
+        (layout.lanes[1].first_row, layout.lanes[1].last_row),
+        (0, 4)
+    );
+    assert_eq!(layout.max_cols, 2);
+}
+
+#[test]
+fn octopus_merge_spreads_parents_over_adjacent_columns() {
+    let commits = graph(&[
+        ("O", &["P1", "P2", "P3"]),
+        ("P1", &["R"]),
+        ("P2", &["R"]),
+        ("P3", &["R"]),
+        ("R", &[]),
+    ]);
+    let layout = layout(&commits, &[]);
+    assert_eq!(cols(&layout), vec![0, 0, 1, 2, 0]);
+    assert_eq!(layout.rows[0].edges.len(), 2);
+    // Both side lanes run down to R and bend into its column in the last span.
+    let ends: Vec<_> = layout.rows[3]
+        .edges
+        .iter()
+        .map(|e| (e.from_col, e.to_col))
+        .collect();
+    assert_eq!(ends, vec![(1, 0), (2, 0)]);
+}
+
+#[test]
+fn separate_histories_get_their_own_lanes_and_reuse_freed_columns() {
+    // Two unrelated chains: the second tip takes column 1 while the first is alive,
+    // and a third chain started after the first ended reuses column 0.
+    let commits = graph(&[
+        ("x2", &["x1"]),
+        ("y2", &["y1"]),
+        ("x1", &[]),
+        ("z1", &[]),
+        ("y1", &[]),
+    ]);
+    let layout = layout(&commits, &[]);
+    assert_eq!(cols(&layout), vec![0, 1, 0, 0, 1]);
+    assert_eq!(layout.lanes.len(), 3);
+}
+
+#[test]
+fn several_children_of_one_commit_converge_on_the_leftmost_lane() {
+    // Two branch tips on top of the same base.
+    let commits = graph(&[("t1", &["base"]), ("t2", &["base"]), ("base", &[])]);
+    let layout = layout(&commits, &[]);
+    assert_eq!(cols(&layout), vec![0, 1, 0]);
+    assert_eq!(
+        layout.rows[1].edges,
+        vec![Edge {
+            lane: 1,
+            from_col: 1,
+            to_col: 0,
+            bend: Bend::End
+        }]
+    );
+}
+
+#[test]
+fn merging_the_very_next_commit_bends_once_from_the_merge_commit() {
+    // The second parent is the next row: fork and converge happen in the same span.
+    let commits = graph(&[("M", &["A", "B"]), ("B", &["A"]), ("A", &[])]);
+    let layout = layout(&commits, &[]);
+    assert_eq!(cols(&layout), vec![0, 1, 0]);
+    assert_eq!(
+        layout.rows[1].edges,
+        vec![Edge {
+            lane: 1,
+            from_col: 1,
+            to_col: 0,
+            bend: Bend::End
+        }]
+    );
+}
+
+#[test]
+fn layout_is_deterministic() {
+    let commits = graph(&[
+        ("M", &["B", "F2"]),
+        ("F2", &["F1"]),
+        ("B", &["A"]),
+        ("F1", &["A"]),
+        ("A", &[]),
+    ]);
+    let refs = [label(0, "main", RefKind::Local, true)];
+    assert_eq!(layout(&commits, &refs), layout(&commits, &refs));
+}
+
+// ---------- naming and colors ----------
+
+#[test]
+fn lane_takes_the_best_ref_head_then_local_then_remote_then_tag() {
+    let commits = graph(&[("c", &["b"]), ("b", &["a"]), ("a", &[])]);
+    let refs = [
+        label(0, "v9", RefKind::Tag, false),
+        label(0, "origin/main", RefKind::Remote, false),
+        label(1, "old", RefKind::Local, false),
+        label(2, "main", RefKind::Local, true),
+    ];
+    let layout = layout(&commits, &refs);
+    assert_eq!(layout.lanes[0].name.as_deref(), Some("main"));
+    assert_eq!(layout.lanes[0].kind, LaneKind::Branch);
+
+    // Without the head ref the earliest local branch wins over the remote and the tag.
+    let layout = super::layout(&commits, &refs[..3]);
+    assert_eq!(layout.lanes[0].name.as_deref(), Some("old"));
+    let layout = super::layout(&commits, &refs[..2]);
+    assert_eq!(layout.lanes[0].name.as_deref(), Some("origin/main"));
+    let layout = super::layout(&commits, &refs[..1]);
+    assert_eq!(layout.lanes[0].name.as_deref(), Some("v9"));
+}
+
+#[test]
+fn a_local_branch_and_its_remote_share_the_same_color() {
+    let commits = graph(&[("a", &[]), ("b", &[])]);
+    let local = layout(&commits, &[label(0, "feature/x", RefKind::Local, false)]);
+    let remote = layout(
+        &commits,
+        &[label(0, "origin/feature/x", RefKind::Remote, false)],
+    );
+    assert_eq!(local.lanes[0].color, remote.lanes[0].color);
+    assert_eq!(local.lanes[0].color, Some(color_for("feature/x")));
+}
+
+#[test]
+fn merged_lane_without_ref_is_named_after_the_merge_subject() {
+    let commits = graph_with_subjects(&[
+        ("M", &["B", "F"], "Merge branch 'feature/login'"),
+        ("F", &["A"], ""),
+        ("B", &["A"], ""),
+        ("A", &[], ""),
+    ]);
+    let layout = layout(&commits, &[label(0, "main", RefKind::Local, true)]);
+    let merged = &layout.lanes[1];
+    assert_eq!(merged.name.as_deref(), Some("feature/login"));
+    assert_eq!(merged.kind, LaneKind::Merged);
+    assert_eq!(merged.color, Some(color_for("feature/login")));
+}
+
+#[test]
+fn a_surviving_ref_wins_over_the_merge_subject() {
+    let commits = graph_with_subjects(&[
+        ("M", &["B", "F"], "Merge branch 'login'"),
+        ("F", &["A"], ""),
+        ("B", &["A"], ""),
+        ("A", &[], ""),
+    ]);
+    let refs = [label(1, "feature/login", RefKind::Local, false)];
+    let layout = layout(&commits, &refs);
+    assert_eq!(layout.lanes[1].name.as_deref(), Some("feature/login"));
+    assert_eq!(layout.lanes[1].kind, LaneKind::Branch);
+}
+
+#[test]
+fn unnamed_lane_is_anonymous_without_color() {
+    let commits = graph_with_subjects(&[
+        ("M", &["B", "F"], "Integrate things"),
+        ("F", &["A"], ""),
+        ("B", &["A"], ""),
+        ("A", &[], ""),
+    ]);
+    let layout = layout(&commits, &[]);
+    assert_eq!(layout.lanes[1].kind, LaneKind::Anonymous);
+    assert_eq!(
+        (layout.lanes[1].name.clone(), layout.lanes[1].color),
+        (None, None)
+    );
+}
+
+#[test]
+fn merge_subjects_are_parsed() {
+    let cases = [
+        ("Merge branch 'feature/x'", Some("feature/x")),
+        ("Merge branch 'x' into 'main'", Some("x")),
+        ("Merge branches 'a' and 'b'", Some("a")),
+        (
+            "Merge remote-tracking branch 'origin/feature/y'",
+            Some("feature/y"),
+        ),
+        (
+            "Merge pull request #42 from fakeuser/fix-bug",
+            Some("fix-bug"),
+        ),
+        (
+            "Merge pull request #7 from fakeuser/feature/z",
+            Some("feature/z"),
+        ),
+        ("Merge tag 'v1.0'", None),
+        ("Merge branch ''", None),
+        ("Update docs", None),
+    ];
+    for (subject, expected) in cases {
+        assert_eq!(merge_branch_name(subject).as_deref(), expected, "{subject}");
+    }
+}
+
+#[test]
+fn colors_are_stable_and_within_the_palette() {
+    assert_eq!(color_for("main"), color_for("main"));
+    for name in ["main", "develop", "feature/a", "feature/b", "release/1.0"] {
+        assert!(color_for(name) < PALETTE_SIZE);
+    }
+    assert_eq!(strip_remote("origin/main"), "main");
+    assert_eq!(strip_remote("main"), "main");
+}
+
+// ---------- topological order ----------
+
+fn raw(spec: &[(i64, &[usize])]) -> Vec<RawCommit> {
+    spec.iter()
+        .map(|(time, parents)| RawCommit {
+            parents: parents.to_vec(),
+            time: *time,
+        })
+        .collect()
+}
+
+#[test]
+fn topological_order_puts_children_first_and_newest_first_among_ready() {
+    // 0 <- 1 <- 3 and 0 <- 2 <- 3 style diamond, plus an independent tip.
+    // index: 0=root(t=1), 1=left(t=5), 2=right(t=3), 3=merge(t=9), 4=other tip(t=4)
+    let commits = raw(&[(1, &[]), (5, &[0]), (3, &[0]), (9, &[1, 2]), (4, &[0])]);
+    assert_eq!(topological_order(&commits), vec![3, 1, 4, 2, 0]);
+}
+
+#[test]
+fn topological_order_survives_clock_skew() {
+    // The parent claims to be newer than its child.
+    let commits = raw(&[(100, &[]), (1, &[0])]);
+    assert_eq!(topological_order(&commits), vec![1, 0]);
+}
+
+#[test]
+fn topological_order_breaks_ties_by_index() {
+    let commits = raw(&[(7, &[]), (7, &[]), (7, &[])]);
+    assert_eq!(topological_order(&commits), vec![0, 1, 2]);
+}
+
+// ---------- invariants on random graphs ----------
+
+/// Checks that the layout really draws what the graph says.
+pub(crate) fn validate(commits: &[Commit], layout: &Layout) -> Result<(), String> {
+    let n = commits.len();
+    if layout.rows.len() != n {
+        return Err(format!("{} rows for {n} commits", layout.rows.len()));
+    }
+    let lane_ok = |id: u32| (id as usize) < layout.lanes.len();
+
+    let mut occupied: Vec<Vec<(u32, u32)>> = vec![Vec::new(); n];
+    for (i, row) in layout.rows.iter().enumerate() {
+        if !lane_ok(row.lane) {
+            return Err(format!("row {i}: unknown lane"));
+        }
+        let lane = &layout.lanes[row.lane as usize];
+        if row.col != lane.col || row.col >= layout.max_cols {
+            return Err(format!(
+                "row {i}: column {} not lane column {}",
+                row.col, lane.col
+            ));
+        }
+        if !(lane.first_row <= i && i <= lane.last_row) {
+            return Err(format!("row {i}: outside its lane extent"));
+        }
+        for e in &row.edges {
+            if !lane_ok(e.lane) || e.from_col >= layout.max_cols || e.to_col >= layout.max_cols {
+                return Err(format!("row {i}: bad edge {e:?}"));
+            }
+        }
+        occupied[i].push((row.col, row.lane));
+    }
+    for lane in &layout.lanes {
+        // Vertical presence strictly between first and last row.
+        for slot in occupied
+            .iter_mut()
+            .take(lane.last_row)
+            .skip(lane.first_row + 1)
+        {
+            slot.push((lane.col, lane.id));
+        }
+    }
+    for (i, slot) in occupied.iter_mut().enumerate() {
+        slot.sort_unstable();
+        slot.dedup();
+        if slot.windows(2).any(|w| w[0].0 == w[1].0) {
+            return Err(format!("row {i}: two lanes share a column: {slot:?}"));
+        }
+    }
+
+    for (i, commit) in commits.iter().enumerate() {
+        let row = &layout.rows[i];
+        let forks: Vec<u32> = row
+            .edges
+            .iter()
+            .filter(|e| e.lane != row.lane && layout.lanes[e.lane as usize].first_row == i)
+            .map(|e| e.lane)
+            .collect();
+        if forks.len() != commit.parents.len().saturating_sub(1) {
+            return Err(format!(
+                "row {i}: {} forks for {} parents",
+                forks.len(),
+                commit.parents.len()
+            ));
+        }
+        for (k, &parent) in commit.parents.iter().enumerate() {
+            let lane_id = if k == 0 { row.lane } else { forks[k - 1] };
+            // The lane must not be used by an unrelated commit before reaching the parent.
+            if (i + 1..parent).any(|r| layout.rows[r].lane == lane_id) {
+                return Err(format!(
+                    "row {i}: lane {lane_id} crosses a foreign commit before {parent}"
+                ));
+            }
+            if layout.rows[parent].lane != lane_id {
+                let before = &layout.rows[parent - 1];
+                let arrives = before
+                    .edges
+                    .iter()
+                    .any(|e| e.lane == lane_id && e.to_col == layout.rows[parent].col);
+                if !arrives || layout.lanes[lane_id as usize].last_row != parent {
+                    return Err(format!(
+                        "row {i}: lane {lane_id} does not arrive at parent {parent}"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Small deterministic generator so failures are reproducible.
+struct Lcg(u64);
+impl Lcg {
+    fn next(&mut self, bound: usize) -> usize {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((self.0 >> 33) as usize) % bound
+    }
+}
+
+fn random_graph(seed: u64, n: usize) -> Vec<Commit> {
+    let mut rng = Lcg(seed);
+    (0..n)
+        .map(|i| {
+            let mut parents = Vec::new();
+            let available = n - 1 - i;
+            if available > 0 && rng.next(50) != 0 {
+                let wanted = match rng.next(20) {
+                    0 => 3,
+                    1..=3 => 2,
+                    _ => 1,
+                };
+                while parents.len() < wanted.min(available) {
+                    let parent = i + 1 + rng.next(available.min(25));
+                    if !parents.contains(&parent) {
+                        parents.push(parent);
+                    }
+                }
+            }
+            let subject = if parents.len() > 1 {
+                format!("Merge branch 'topic-{i}'")
+            } else {
+                String::new()
+            };
+            Commit { parents, subject }
+        })
+        .collect()
+}
+
+#[test]
+fn random_graphs_keep_every_invariant() {
+    for seed in 0..40 {
+        for n in [1, 2, 5, 40, 400] {
+            let commits = random_graph(seed, n);
+            let layout = layout(&commits, &[]);
+            if let Err(message) = validate(&commits, &layout) {
+                panic!("seed {seed}, n {n}: {message}");
+            }
+        }
+    }
+}
