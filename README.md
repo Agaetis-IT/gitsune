@@ -75,4 +75,8 @@ All design decisions, measurements and the milestone plan are in [SPEC.md](SPEC.
 
 ## Not included
 
-GitHub/GitLab integrations, submodules and worktrees, file editing.
+Submodules, Git LFS, editing files in the application, and signing or notarizing the macOS package (it is not signed: open it with a right click the first time). Linux and Windows are experimental, see §22 of [SPEC.md](SPEC.md).
+
+## License
+
+[MIT](LICENSE), copyright (c) 2026 Agaetis.
