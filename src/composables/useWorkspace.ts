@@ -67,6 +67,13 @@ export interface RepoTab {
   /** Lane drawn in full while the others fade; `null` for no highlight. */
   highlightLane: number | null;
   search: SearchState;
+  /** The commit at the top of the view and how far it is scrolled, to keep the place on refresh. */
+  topAnchor: { id: string; offset: number } | null;
+  /** Where to put the view when the graph is replaced by a refresh; `null` goes back to the top. */
+  anchor: { row: number; offset: number } | null;
+  refreshing: boolean;
+  /** Another change arrived while refreshing: refresh again once done. */
+  refreshQueued: boolean;
 }
 
 export type DiffMode = "unified" | "split";
@@ -96,6 +103,7 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
       tab.source = source;
       clearSelection(tab);
       tab.highlightLane = null;
+      tab.anchor = null;
       tab.scrollTop = 0;
       // Rows changed: look for the same words in the new graph.
       if (tab.search.query.trim()) void search(tab, tab.search.query);
@@ -105,6 +113,98 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
     } finally {
       if (request === tab.request) tab.loading = false;
     }
+  }
+
+  /**
+   * Brings a tab up to date after the repository changed behind our back (commit, fetch,
+   * checkout...), keeping the place in the history: the commit at the top of the view stays
+   * there (unless the view was at the very top, which then shows the newest commits), and the
+   * selected commit, its details, the open diff and the highlighted branch follow it.
+   * Changes arriving meanwhile are grouped into one more refresh.
+   */
+  async function refreshGraph(tab: RepoTab): Promise<void> {
+    if (tab.refreshing) {
+      tab.refreshQueued = true;
+      return;
+    }
+    tab.refreshing = true;
+    try {
+      do {
+        tab.refreshQueued = false;
+        await refreshOnce(tab);
+      } while (tab.refreshQueued && tabs.value.includes(tab));
+    } finally {
+      tab.refreshing = false;
+    }
+  }
+
+  async function refreshOnce(tab: RepoTab): Promise<void> {
+    const request = ++tab.request;
+    const selectedId = tab.selectedCommit?.id ?? null;
+    const top = tab.topAnchor;
+    const atTop = tab.scrollTop <= 1;
+    const highlighted =
+      tab.highlightLane === null ? undefined : tab.source?.meta.lanes[tab.highlightLane];
+    tab.loading = true;
+    try {
+      const [source, refs] = await Promise.all([
+        backend.graph(tab.id, [...tab.hidden]),
+        backend.refs(tab.id),
+      ]);
+      if (request !== tab.request) return;
+
+      const wanted = [selectedId, top?.id].filter((id): id is string => !!id);
+      const found = wanted.length > 0 ? await backend.locate(tab.id, wanted) : [];
+      if (request !== tab.request) return;
+      const rowOf = (id: string | null | undefined): number | null => {
+        const at = id ? wanted.indexOf(id) : -1;
+        return at === -1 ? null : (found[at] ?? null);
+      };
+      const selectedRow = rowOf(selectedId);
+      const topRow = rowOf(top?.id);
+
+      // The selected row now has a new number: read it again for its current refs.
+      let fresh: GraphRow | null = null;
+      if (selectedRow !== null) {
+        fresh = (await source.fetchPage(selectedRow, 1)).rows[0] ?? null;
+        if (request !== tab.request) return;
+      }
+
+      tab.refs = refs;
+      tab.source = source;
+      if (atTop) tab.anchor = { row: 0, offset: 0 };
+      else if (topRow !== null && top) tab.anchor = { row: topRow, offset: top.offset };
+      else tab.anchor = { row: selectedRow ?? 0, offset: 0 };
+
+      if (selectedRow !== null && fresh?.id === selectedId) {
+        tab.selected = selectedRow;
+        tab.selectedCommit = fresh;
+      } else if (tab.selected !== null) {
+        clearSelection(tab); // the commit is gone from the graph (or was never known)
+      }
+
+      // Lane numbers changed: find the highlighted branch again by name.
+      tab.highlightLane =
+        highlighted === undefined
+          ? null
+          : (source.meta.lanes.find(
+              (l) => l.name === highlighted.name && l.kind === highlighted.kind,
+            )?.id ?? null);
+      tab.error = "";
+      if (tab.search.query.trim()) void search(tab, tab.search.query);
+    } catch (error) {
+      if (request === tab.request) tab.error = message(error);
+    } finally {
+      if (request === tab.request) tab.loading = false;
+    }
+  }
+
+  /** Refreshes tabs when their repository changes on disk. Returns a function to stop. */
+  function watchRepos(): Promise<() => void> {
+    return backend.onRepoChanged((repoId) => {
+      const tab = tabs.value.find((candidate) => candidate.id === repoId);
+      if (tab) void refreshGraph(tab);
+    });
   }
 
   async function openPath(path: string): Promise<void> {
@@ -140,6 +240,10 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
         openFile: null,
         highlightLane: null,
         search: emptySearch(0),
+        topAnchor: null,
+        anchor: null,
+        refreshing: false,
+        refreshQueued: false,
       });
       tabs.value = [...tabs.value, tab];
       activeId.value = tab.id;
@@ -319,6 +423,8 @@ export function createWorkspace(backend: RepoBackend, recents: RecentStore) {
     openError,
     opening,
     openPath,
+    refreshGraph,
+    watchRepos,
     pickAndOpen,
     closeTab,
     activate,

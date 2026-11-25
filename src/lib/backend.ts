@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   getCommitDetail,
@@ -7,6 +8,7 @@ import {
   type FileChange,
   type FileDiff,
   getGraphPage,
+  locateCommits,
   searchCommits,
   type SearchResult,
   type GraphMeta,
@@ -34,6 +36,15 @@ export interface RepoBackend {
   graph(repoId: string, hiddenRefs: string[]): Promise<GraphSource>;
   /** Message and changed files of a commit. */
   commitDetail(repoId: string, commitId: string): Promise<CommitDetail>;
+  /** Every ref of the repository (to refresh the sidebar). */
+  refs(repoId: string): Promise<RefInfo[]>;
+  /** Rows of these commits in the current graph (`null` when a commit is not in it). */
+  locate(repoId: string, commitIds: string[]): Promise<Array<number | null>>;
+  /**
+   * Calls `handler` with the id of a repository whose refs moved (a commit, a fetch, a checkout
+   * in a terminal...). Returns a function that stops listening.
+   */
+  onRepoChanged(handler: (repoId: string) => void): Promise<() => void>;
   /** Rows of the current graph matching `query` (see `searchCommits`). */
   search(repoId: string, query: string, limit: number): Promise<SearchResult>;
   /** Diff of one file of a commit; `force` allows files over the automatic size limit. */
@@ -58,6 +69,10 @@ export const tauriBackend: RepoBackend = {
   },
   commitDetail: getCommitDetail,
   search: searchCommits,
+  refs: listRefs,
+  locate: locateCommits,
+  onRepoChanged: (handler) =>
+    listen<{ repoId: string }>("repo-changed", (event) => handler(event.payload.repoId)),
   fileDiff: (repoId, commitId, file, force) =>
     getFileDiff(repoId, commitId, file.path, file.oldPath, force),
 };

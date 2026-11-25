@@ -11,6 +11,7 @@ async function start() {
     ? await import("@/dev/fixtureBackend").then((m) => m.createFixtureBackend())
     : tauriBackend;
   const workspace = useWorkspace(backend);
+  void workspace.watchRepos();
   createApp(App).mount("#app");
   if (demo) await workspace.openPath("demo-repo");
 }

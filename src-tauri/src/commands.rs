@@ -1,19 +1,36 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use gix::ThreadSafeRepository;
-use tauri::State;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::git::{
-    self, CommitDetail, FileDiff, GraphCache, GraphMeta, GraphPage, RefInfo, RepoInfo, SearchResult,
+    self, CommitDetail, FileDiff, GraphCache, GraphMeta, GraphPage, RefInfo, RepoInfo, RepoStores,
+    RepoWatcher, SearchResult,
 };
 
 struct OpenRepo {
     repo: ThreadSafeRepository,
     /// Layout of the whole graph, built on first use.
     graph: Option<Arc<GraphCache>>,
+    /// Commits already read, so a rebuild only reads the new ones.
+    stores: Arc<RepoStores>,
+    /// Reports changes of the refs for as long as the repository is open.
+    _watcher: Option<RepoWatcher>,
 }
+
+/// Payload of the `repo-changed` event: the refs of a repository moved.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoChanged {
+    repo_id: String,
+}
+
+/// How long changes are grouped before `repo-changed` is sent.
+const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Opened repositories, keyed by repository id (its root path).
 #[derive(Default)]
@@ -24,11 +41,26 @@ pub struct RepoRegistry {
 const POISONED: &str = "repository registry poisoned";
 
 impl RepoRegistry {
-    fn insert(&self, id: String, repo: ThreadSafeRepository) -> Result<(), String> {
+    /// Registers a repository with its watcher. Opening one that is already open keeps its
+    /// cached graph and its watcher.
+    fn insert(
+        &self,
+        id: String,
+        repo: ThreadSafeRepository,
+        watcher: Option<RepoWatcher>,
+    ) -> Result<(), String> {
         let mut repos = self.repos.lock().map_err(|_| POISONED.to_string())?;
-        // Opening an already open repository keeps its cached graph.
-        repos.entry(id).or_insert(OpenRepo { repo, graph: None });
+        repos.entry(id).or_insert(OpenRepo {
+            repo,
+            graph: None,
+            stores: Arc::new(RepoStores::default()),
+            _watcher: watcher,
+        });
         Ok(())
+    }
+
+    fn is_open(&self, id: &str) -> bool {
+        self.repos.lock().is_ok_and(|repos| repos.contains_key(id))
     }
 
     fn get(&self, id: &str) -> Result<ThreadSafeRepository, String> {
@@ -57,20 +89,21 @@ impl RepoRegistry {
         id: &str,
         rebuild_hiding: Option<&HashSet<String>>,
     ) -> Result<(ThreadSafeRepository, Arc<GraphCache>), String> {
-        let (repo, cached) = {
+        let (repo, cached, stores) = {
             let repos = self.repos.lock().map_err(|_| POISONED.to_string())?;
             let open = repos
                 .get(id)
                 .ok_or_else(|| format!("repository not open: {id}"))?;
-            (open.repo.clone(), open.graph.clone())
+            (open.repo.clone(), open.graph.clone(), open.stores.clone())
         };
         if let (None, Some(graph)) = (rebuild_hiding, &cached) {
             return Ok((repo, graph.clone()));
         }
         let none = HashSet::new();
-        let graph = Arc::new(git::build_graph_cache(
+        let graph = Arc::new(git::build_graph_cache_with(
             &repo,
             rebuild_hiding.unwrap_or(&none),
+            &stores,
         )?);
         let mut repos = self.repos.lock().map_err(|_| POISONED.to_string())?;
         if let Some(open) = repos.get_mut(id) {
@@ -81,9 +114,29 @@ impl RepoRegistry {
 }
 
 #[tauri::command]
-pub fn open_repo(path: String, registry: State<RepoRegistry>) -> Result<RepoInfo, String> {
+pub fn open_repo(
+    path: String,
+    app: AppHandle,
+    registry: State<RepoRegistry>,
+) -> Result<RepoInfo, String> {
     let (repo, info) = git::open_repository(&PathBuf::from(path))?;
-    registry.insert(info.id.clone(), repo)?;
+    let watcher = if registry.is_open(&info.id) {
+        None
+    } else {
+        let repo_id = info.id.clone();
+        // Without a watcher the repository still works, it just does not refresh by itself.
+        git::watch_refs(&repo, REFRESH_DEBOUNCE, move || {
+            let _ = app.emit(
+                "repo-changed",
+                RepoChanged {
+                    repo_id: repo_id.clone(),
+                },
+            );
+        })
+        .map_err(|error| eprintln!("{error}"))
+        .ok()
+    };
+    registry.insert(info.id.clone(), repo, watcher)?;
     Ok(info)
 }
 
@@ -164,4 +217,16 @@ pub async fn search_commits(
 ) -> Result<SearchResult, String> {
     let (repo, graph) = registry.graph(&repo_id, None)?;
     Ok(git::graph_search(&repo, &graph, &query, limit))
+}
+
+/// Rows of the given commit ids in the current graph (`null` for commits it does not contain).
+/// Used after a refresh to find where the selected commit and the top of the view went.
+#[tauri::command]
+pub async fn locate_commits(
+    repo_id: String,
+    ids: Vec<String>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<Option<usize>>, String> {
+    let (_, graph) = registry.graph(&repo_id, None)?;
+    Ok(git::locate_commits(&graph, &ids))
 }

@@ -150,6 +150,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             v-model:density="density"
             :selected="active.selected"
             :initial-scroll-top="active.scrollTop"
+            :anchor="active.anchor"
             :meta="active.source.meta"
             :fetch-page="active.source.fetchPage"
             :highlight-lane="active.highlightLane"
@@ -157,6 +158,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             @lane-click="lanePopover = $event"
             @update:selected="workspace.select(active, $event)"
             @update:scroll-top="active.scrollTop = $event"
+            @update:top-commit="active.topAnchor = $event"
             @select="workspace.select(active, $event.row, $event)"
             @error="active.error = $event"
           />

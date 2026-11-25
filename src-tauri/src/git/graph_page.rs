@@ -5,7 +5,7 @@
 //! every page comes from the same layout, lanes and columns are consistent across pages.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use gix::ObjectId;
@@ -14,7 +14,8 @@ use serde::Serialize;
 
 use super::graph::{CommitGraph, first_line, load_graph};
 use super::refs::{RefInfo, list_refs};
-use super::search::{SearchIndex, SearchResult, build_index, search};
+use super::search::{SearchIndex, SearchResult, SearchStore, build_index, search};
+use super::store::RepoStores;
 use crate::layout::{self, Edge, Lane, Layout};
 
 /// Largest page the backend will return, whatever the caller asks.
@@ -29,8 +30,12 @@ pub struct GraphCache {
     refs: Vec<GraphRef>,
     load_ms: u128,
     layout_ms: u128,
+    /// Row of every commit of the graph, to find a commit again after a rebuild.
+    row_of: HashMap<ObjectId, usize>,
     /// Built the first time a search is made.
     search_index: OnceLock<SearchIndex>,
+    /// Search entries of the repository, reused by the next builds.
+    search_store: Arc<Mutex<SearchStore>>,
 }
 
 /// A visible ref and the row of the commit it points at.
@@ -90,9 +95,21 @@ pub struct GraphPage {
 ///
 /// `hidden` holds full ref names (`refs/heads/main`). Commits only reachable from hidden refs
 /// are left out of the graph.
+/// A build from scratch, for tests.
+#[cfg(test)]
 pub fn build_graph_cache(
     repo: &ThreadSafeRepository,
     hidden: &HashSet<String>,
+) -> Result<GraphCache, String> {
+    build_graph_cache_with(repo, hidden, &RepoStores::default())
+}
+
+/// Like [`build_graph_cache`], reusing what `stores` remembers from earlier builds: only the
+/// commits that appeared since are read again. The result is the same as a build from scratch.
+pub fn build_graph_cache_with(
+    repo: &ThreadSafeRepository,
+    hidden: &HashSet<String>,
+    stores: &RepoStores,
 ) -> Result<GraphCache, String> {
     let refs: Vec<RefInfo> = list_refs(repo)?
         .into_iter()
@@ -100,7 +117,13 @@ pub fn build_graph_cache(
         .collect();
 
     let started = Instant::now();
-    let graph = load_graph(repo, &refs)?;
+    let graph = {
+        let mut commits = stores
+            .commits
+            .lock()
+            .map_err(|_| "commit store poisoned".to_string())?;
+        load_graph(repo, &refs, &mut commits)?
+    };
     let load_ms = started.elapsed().as_millis();
 
     let started = Instant::now();
@@ -137,7 +160,9 @@ pub fn build_graph_cache(
         refs: graph_refs,
         load_ms,
         layout_ms,
+        row_of,
         search_index: OnceLock::new(),
+        search_store: stores.search.clone(),
     })
 }
 
@@ -210,8 +235,19 @@ pub fn graph_search(
     query: &str,
     limit: usize,
 ) -> SearchResult {
-    let index = cache
-        .search_index
-        .get_or_init(|| build_index(repo, &cache.graph.ids));
+    let index = cache.search_index.get_or_init(|| {
+        let mut store = cache.search_store.lock().unwrap_or_else(|e| e.into_inner());
+        build_index(repo, &cache.graph.ids, &mut store)
+    });
     search(index, query, limit)
+}
+
+/// Rows of the given commit ids in the graph (`None` for commits it does not contain).
+pub fn locate_commits(cache: &GraphCache, ids: &[String]) -> Vec<Option<usize>> {
+    ids.iter()
+        .map(|id| {
+            let id = ObjectId::from_hex(id.as_bytes()).ok()?;
+            cache.row_of.get(&id).copied()
+        })
+        .collect()
 }

@@ -19,6 +19,11 @@ const props = withDefaults(
     highlightLane?: number | null;
     /** Rows matching the current search, tinted. */
     matches?: readonly number[];
+    /**
+     * Where to put the view when `meta` is replaced by a refreshed graph. Without it a new
+     * graph starts at the top.
+     */
+    anchor?: { row: number; offset: number } | null;
   }>(),
   {
     density: "compact",
@@ -26,6 +31,7 @@ const props = withDefaults(
     initialScrollTop: 0,
     highlightLane: null,
     matches: () => [],
+    anchor: null,
   },
 );
 
@@ -33,6 +39,8 @@ const emit = defineEmits<{
   "update:selected": [row: number | null];
   "update:density": [density: Density];
   "update:scrollTop": [scrollTop: number];
+  /** The commit at the top of the view and how far it is scrolled (to keep the place on refresh). */
+  "update:topCommit": [top: { id: string; offset: number } | null];
   select: [row: GraphRow];
   /** A lane line was clicked (position relative to this component); `null` for any other click. */
   laneClick: [target: { lane: Lane; x: number; y: number } | null];
@@ -63,6 +71,10 @@ let scrollTop = 0;
 let scrollLeft = 0;
 let frame = 0;
 let pendingSelect: number | null = null;
+/** A refreshed graph is loading: keep showing the previous picture until its rows arrive. */
+let reloading = false;
+let reloadTimer: ReturnType<typeof setTimeout> | undefined;
+let reportedTop: { id: string; offset: number } | null = null;
 
 const cache = new RowCache({
   fetchPage: (cursor, limit) => props.fetchPage(cursor, limit),
@@ -74,6 +86,11 @@ const cache = new RowCache({
         emit("select", row);
       }
     }
+    if (reloading) {
+      const { first, last } = visibleRange();
+      if (cache.has(first, last)) endReload();
+    }
+    reportTop();
     scheduleDraw();
   },
   onError: (error) => emit("error", String(error)),
@@ -105,8 +122,25 @@ function loadVisible() {
   cache.ensure(first, last, props.meta.total);
 }
 
+function endReload() {
+  reloading = false;
+  clearTimeout(reloadTimer);
+  scheduleDraw();
+}
+
+/** Tells the parent which commit is at the top of the view, when it is known. */
+function reportTop() {
+  const row = Math.floor(scrollTop / metrics.value.rowH);
+  const data = cache.getRow(row);
+  if (!data) return;
+  const offset = scrollTop - row * metrics.value.rowH;
+  if (reportedTop?.id === data.id && reportedTop.offset === offset) return;
+  reportedTop = { id: data.id, offset };
+  emit("update:topCommit", reportedTop);
+}
+
 function scheduleDraw() {
-  if (frame) return;
+  if (frame || reloading) return;
   frame = requestAnimationFrame(() => {
     frame = 0;
     render();
@@ -152,6 +186,7 @@ function onScroll() {
   scrollLeft = el.scrollLeft;
   emit("update:scrollTop", scrollTop);
   tooltip.value = null;
+  reportTop();
   loadVisible();
   scheduleDraw();
 }
@@ -318,16 +353,32 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   themeObserver?.disconnect();
   if (frame) cancelAnimationFrame(frame);
+  clearTimeout(reloadTimer);
 });
 
 // A new graph: forget loaded rows and go back to the top.
 watch(
   () => props.meta,
   async () => {
+    const anchor = props.anchor;
     cache.reset();
     pendingSelect = null;
     hoverRow.value = null;
     tooltip.value = null;
+    reportedTop = null;
+    if (anchor) {
+      // A refresh: stay where we were, and keep the old picture until the new rows arrive.
+      reloading = true;
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(endReload, 1500);
+      await nextTick();
+      if (scroller.value) {
+        scroller.value.scrollTop = anchor.row * metrics.value.rowH + anchor.offset;
+        scrollTop = scroller.value.scrollTop;
+      }
+      loadVisible();
+      return;
+    }
     await nextTick();
     if (scroller.value) {
       scroller.value.scrollTop = 0;

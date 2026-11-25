@@ -205,3 +205,10 @@ export const MAX_SEARCH_RESULTS = 2000;
  */
 export const searchCommits = (repoId: string, query: string, limit: number) =>
   invoke<SearchResult>("search_commits", { repoId, query, limit });
+
+/**
+ * Rows of the given commit ids in the current graph (`null` for commits it does not contain).
+ * Used after a refresh to find where the selected commit and the top of the view went.
+ */
+export const locateCommits = (repoId: string, ids: string[]) =>
+  invoke<Array<number | null>>("locate_commits", { repoId, ids });

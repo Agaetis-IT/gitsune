@@ -112,6 +112,9 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
     open: async (path) => ({ info: infoFor(path), refs: REFS }),
     close: vi.fn(async () => {}),
     commitDetail: async (_repoId, id) => detailFor(id),
+    refs: async () => REFS,
+    locate: async (_repoId, ids) => ids.map(() => null),
+    onRepoChanged: async () => () => {},
     search: async (_repoId, query) => searchFor(query),
     fileDiff: async (_repoId, id, file, force) => diffFor(id, file, force),
     graph: async (id, hidden) => {
@@ -574,5 +577,282 @@ describe("highlight and branch hiding", () => {
     const calls = graphCalls.length;
     await workspace.hideBranch(tab, "no such lane");
     expect(graphCalls).toHaveLength(calls);
+  });
+});
+
+// ---------- refresh when the repository changes on disk ----------
+
+interface World {
+  /** Commit ids by row, newest first. */
+  ids: string[];
+  refs: RefInfo[];
+  /** Lane names by lane id. */
+  lanes: string[];
+}
+
+const laneOf = (id: number, name: string) => ({
+  id,
+  col: id,
+  firstRow: 0,
+  lastRow: 10,
+  forked: false,
+  joins: false,
+  name,
+  kind: "branch" as const,
+  color: id,
+});
+
+/** A backend whose repository can change: the graph, the refs and the row of each commit follow `world`. */
+function changingRepo(world: World, overrides: Partial<RepoBackend> = {}) {
+  const handlers: Array<(repoId: string) => void> = [];
+  const graphCalls: string[][] = [];
+  /** While `on`, graph requests wait until their release function is called. */
+  const hold = { on: false, releases: [] as Array<() => void> };
+  const rowFor = (row: number): GraphRow => ({ ...commitRow(row), id: world.ids[row] });
+  const backend: Partial<RepoBackend> = {
+    graph: (_id, hidden) => {
+      graphCalls.push(hidden);
+      // The graph is read when the request is answered, so it reflects the world at that time.
+      const answer = (): GraphSource => ({
+        meta: {
+          ...emptyMeta(world.ids.length),
+          lanes: world.lanes.map((name, id) => laneOf(id, name)),
+        },
+        fetchPage: async (cursor, limit) => ({
+          start: cursor,
+          rows: world.ids.slice(cursor, cursor + limit).map((_, i) => rowFor(cursor + i)),
+          nextCursor: null,
+          total: world.ids.length,
+        }),
+      });
+      if (!hold.on) return Promise.resolve(answer());
+      return new Promise((resolve) => hold.releases.push(() => resolve(answer())));
+    },
+    refs: async () => world.refs,
+    locate: async (_id, wanted) =>
+      wanted.map((id) => {
+        const row = world.ids.indexOf(id);
+        return row === -1 ? null : row;
+      }),
+    onRepoChanged: async (handler) => {
+      handlers.push(handler);
+      return () => handlers.splice(handlers.indexOf(handler), 1);
+    },
+    ...overrides,
+  };
+  const change = () => handlers.forEach((handler) => handler("/fake/a"));
+  return { backend, change, graphCalls, rowFor, hold };
+}
+
+async function openChanging(world: World, overrides: Partial<RepoBackend> = {}) {
+  const repo = changingRepo(world, overrides);
+  const { workspace, backend } = setup(repo.backend);
+  await workspace.watchRepos();
+  await workspace.openPath("/fake/a");
+  return { ...repo, workspace, backend, tab: workspace.tabs.value[0] };
+}
+
+const newWorld = (): World => ({
+  ids: ["c0", "c1", "c2", "c3", "c4"],
+  refs: REFS,
+  lanes: ["main", "feature/x"],
+});
+
+describe("refreshing when the repository changes", () => {
+  it("keeps the commit at the top of the view and follows the selected commit", async () => {
+    const world = newWorld();
+    const { workspace, tab, change, rowFor, backend } = await openChanging(world);
+    workspace.select(tab, 2, rowFor(2));
+    await vi.waitFor(() => expect(tab.detail?.id).toBe("c2"));
+    workspace.openFile(tab, FILE);
+    tab.scrollTop = 300;
+    tab.topAnchor = { id: "c1", offset: 7 };
+    const detailCalls = vi.spyOn(backend, "commitDetail");
+
+    world.ids = ["n1", "n0", ...world.ids]; // two new commits on top
+    change();
+    await vi.waitFor(() => expect(tab.source?.meta.total).toBe(7));
+
+    expect(tab.anchor).toEqual({ row: 3, offset: 7 }); // c1 was row 1, now row 3
+    expect(tab.selected).toBe(4);
+    expect(tab.selectedCommit?.id).toBe("c2");
+    expect(tab.detail?.id).toBe("c2");
+    expect(tab.openFile).toEqual(FILE);
+    expect(detailCalls).not.toHaveBeenCalled(); // same commit: its details are kept
+    expect(tab.loading).toBe(false);
+    expect(tab.error).toBe("");
+  });
+
+  it("stays at the top, showing the newest commits, when the view was at the top", async () => {
+    const world = newWorld();
+    const { tab, change } = await openChanging(world);
+    tab.scrollTop = 0;
+    tab.topAnchor = { id: "c0", offset: 0 };
+
+    world.ids = ["n0", ...world.ids];
+    change();
+    await vi.waitFor(() => expect(tab.source?.meta.total).toBe(6));
+    expect(tab.anchor).toEqual({ row: 0, offset: 0 });
+  });
+
+  it("lets go of the selection when its commit is no longer in the graph", async () => {
+    const world = newWorld();
+    const { workspace, tab, change, rowFor } = await openChanging(world);
+    workspace.select(tab, 3, rowFor(3));
+    await vi.waitFor(() => expect(tab.detail?.id).toBe("c3"));
+    workspace.openFile(tab, FILE);
+
+    world.ids = ["c0", "c1", "c2"]; // c3 and c4 were dropped (a branch was deleted)
+    change();
+    await vi.waitFor(() => expect(tab.source?.meta.total).toBe(3));
+    expect(tab.selected).toBeNull();
+    expect(tab.selectedCommit).toBeNull();
+    expect(tab.detail).toBeNull();
+    expect(tab.openFile).toBeNull();
+  });
+
+  it("falls back to the selected commit when the commit at the top is gone", async () => {
+    const world = newWorld();
+    const { workspace, tab, change, rowFor } = await openChanging(world);
+    workspace.select(tab, 3, rowFor(3));
+    tab.scrollTop = 100;
+    tab.topAnchor = { id: "c0", offset: 4 };
+
+    world.ids = ["c9", "c8", "c3", "c4"]; // c0 is gone, c3 moved to row 2
+    change();
+    await vi.waitFor(() => expect(tab.source?.meta.total).toBe(4));
+    expect(tab.anchor).toEqual({ row: 2, offset: 0 });
+    expect(tab.selected).toBe(2);
+  });
+
+  it("refreshes the refs of the sidebar and keeps the hidden ones hidden", async () => {
+    const world = newWorld();
+    const { workspace, tab, change, graphCalls } = await openChanging(world);
+    await workspace.toggleRef(tab, "refs/heads/feature/x");
+
+    world.refs = [...REFS, ref("brand-new", "local")];
+    change();
+    await vi.waitFor(() => expect(tab.refs).toHaveLength(6));
+    expect(tab.refs[tab.refs.length - 1]?.name).toBe("brand-new");
+    expect(lastOf(graphCalls)).toEqual(["refs/heads/feature/x"]);
+  });
+
+  it("finds the highlighted branch again by name, and drops it if the branch is gone", async () => {
+    const world = newWorld();
+    const { workspace, tab, change } = await openChanging(world);
+    workspace.toggleHighlight(tab, 1); // feature/x
+
+    world.lanes = ["main", "other", "feature/x"]; // its lane number changed
+    change();
+    await vi.waitFor(() => expect(tab.source?.meta.lanes).toHaveLength(3));
+    expect(tab.highlightLane).toBe(2);
+
+    world.lanes = ["main"];
+    change();
+    await vi.waitFor(() => expect(tab.source?.meta.lanes).toHaveLength(1));
+    expect(tab.highlightLane).toBeNull();
+  });
+
+  it("searches the same words again in the new graph", async () => {
+    const world = newWorld();
+    const { workspace, tab, change } = await openChanging(world, {
+      search: async (_id, query) => searchFor(query),
+    });
+    await workspace.search(tab, "2");
+    workspace.stepMatch(tab, 1);
+    const before = tab.search;
+    expect(before.current).toBe(1);
+
+    change();
+    await vi.waitFor(() => expect(tab.search).not.toBe(before));
+    await vi.waitFor(() => expect(tab.search.loading).toBe(false));
+    expect(tab.search.query).toBe("2");
+    expect(tab.search.rows).toEqual([10, 20]);
+  });
+
+  it("groups changes that arrive during a refresh into one more refresh", async () => {
+    const world = newWorld();
+    const { tab, change, graphCalls, hold } = await openChanging(world);
+    const baseline = graphCalls.length;
+    hold.on = true;
+
+    change();
+    change();
+    change();
+    expect(graphCalls.length - baseline).toBe(1); // one refresh running, the others queued
+    world.ids = ["n0", ...world.ids];
+    hold.releases.shift()?.();
+    await vi.waitFor(() => expect(graphCalls.length - baseline).toBe(2));
+    hold.releases.shift()?.();
+    await vi.waitFor(() => expect(tab.refreshing).toBe(false));
+    expect(graphCalls.length - baseline).toBe(2);
+    expect(tab.source?.meta.total).toBe(6);
+  });
+
+  it("ignores changes of unknown or closed repositories", async () => {
+    const world = newWorld();
+    const { workspace, tab, change, graphCalls } = await openChanging(world);
+    const calls = graphCalls.length;
+    await workspace.closeTab(tab.id);
+    change();
+    await Promise.resolve();
+    expect(graphCalls).toHaveLength(calls);
+  });
+
+  it("reports a failed refresh and keeps showing the previous graph", async () => {
+    const world = newWorld();
+    let failing = false;
+    const repo = changingRepo(world);
+    const { workspace, backend } = setup({
+      ...repo.backend,
+      graph: async (id, hidden) => {
+        if (failing) throw new Error("cannot read the history");
+        return repo.backend.graph!(id, hidden);
+      },
+    });
+    await workspace.watchRepos();
+    await workspace.openPath("/fake/a");
+    const tab = workspace.tabs.value[0];
+    const before = tab.source;
+
+    failing = true;
+    repo.change();
+    await vi.waitFor(() => expect(tab.error).toBe("cannot read the history"));
+    expect(tab.source).toBe(before);
+    expect(tab.loading).toBe(false);
+
+    failing = false;
+    repo.change();
+    await vi.waitFor(() => expect(tab.error).toBe(""));
+    expect(backend).toBeDefined();
+  });
+
+  it("goes back to the top when the graph is rebuilt for another reason", async () => {
+    const world = newWorld();
+    const { workspace, tab, change } = await openChanging(world);
+    tab.scrollTop = 300;
+    tab.topAnchor = { id: "c1", offset: 0 };
+    change();
+    await vi.waitFor(() => expect(tab.anchor).not.toBeNull());
+
+    await workspace.toggleRef(tab, "refs/heads/feature/x");
+    expect(tab.anchor).toBeNull();
+    expect(tab.scrollTop).toBe(0);
+  });
+
+  it("lets a newer graph request win over a refresh still running", async () => {
+    const world = newWorld();
+    const { workspace, tab, change, hold } = await openChanging(world);
+    hold.on = true;
+
+    change(); // refresh (held)
+    const hide = workspace.toggleRef(tab, "refs/heads/feature/x"); // newer request (held)
+    hold.releases[1](); // the newer one answers while the world has 5 commits
+    await hide;
+    world.ids = ["n0", "n1", ...world.ids]; // 7 commits when the older one answers
+    hold.releases[0]();
+    await vi.waitFor(() => expect(tab.refreshing).toBe(false));
+    expect(tab.source?.meta.total).toBe(5);
+    expect(tab.loading).toBe(false);
   });
 });

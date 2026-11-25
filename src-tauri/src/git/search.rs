@@ -1,5 +1,8 @@
 //! Search over the commits of a graph: message, author and commit id prefix.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use gix::{ObjectId, ThreadSafeRepository};
 use serde::Serialize;
 
@@ -8,11 +11,19 @@ pub const MAX_RESULTS: usize = 2000;
 /// Bytes of each commit message kept in the index.
 const MAX_MESSAGE_BYTES: usize = 2000;
 
-/// Lowercased searchable text of every commit, indexed by row.
+/// Lowercased searchable text of one commit.
+pub struct SearchEntry {
+    id: String,
+    author: String,
+    message: String,
+}
+
+/// Entries already built, by commit id, kept between graph builds.
+pub type SearchStore = HashMap<ObjectId, Arc<SearchEntry>>;
+
+/// The searchable text of every commit of a graph, indexed by row.
 pub struct SearchIndex {
-    ids: Vec<String>,
-    authors: Vec<String>,
-    messages: Vec<String>,
+    entries: Vec<Arc<SearchEntry>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -24,34 +35,43 @@ pub struct SearchResult {
     pub total: usize,
 }
 
-/// Reads the author and message of every commit. Commits that cannot be read are never matched.
-pub fn build_index(repo: &ThreadSafeRepository, ids: &[ObjectId]) -> SearchIndex {
+/// Reads the author and message of the commits not yet in `store`. Commits that cannot be
+/// read are never matched.
+pub fn build_index(
+    repo: &ThreadSafeRepository,
+    ids: &[ObjectId],
+    store: &mut SearchStore,
+) -> SearchIndex {
     let repo = repo.to_thread_local();
-    let mut index = SearchIndex {
-        ids: Vec::with_capacity(ids.len()),
-        authors: Vec::with_capacity(ids.len()),
-        messages: Vec::with_capacity(ids.len()),
-    };
+    let mut entries = Vec::with_capacity(ids.len());
     for id in ids {
-        index.ids.push(id.to_string());
-        match repo.find_commit(*id) {
-            Ok(commit) => {
-                let author = commit
-                    .author()
-                    .map(|a| a.name.to_string())
-                    .unwrap_or_default();
-                let raw = commit.message_raw_sloppy();
-                let message = String::from_utf8_lossy(&raw[..raw.len().min(MAX_MESSAGE_BYTES)]);
-                index.authors.push(author.to_lowercase());
-                index.messages.push(message.to_lowercase());
-            }
-            Err(_) => {
-                index.authors.push(String::new());
-                index.messages.push(String::new());
-            }
-        }
+        let entry = store
+            .entry(*id)
+            .or_insert_with(|| Arc::new(read_entry(&repo, *id)))
+            .clone();
+        entries.push(entry);
     }
-    index
+    SearchIndex { entries }
+}
+
+fn read_entry(repo: &gix::Repository, id: ObjectId) -> SearchEntry {
+    let (author, message) = match repo.find_commit(id) {
+        Ok(commit) => {
+            let author = commit
+                .author()
+                .map(|a| a.name.to_string())
+                .unwrap_or_default();
+            let raw = commit.message_raw_sloppy();
+            let message = String::from_utf8_lossy(&raw[..raw.len().min(MAX_MESSAGE_BYTES)]);
+            (author.to_lowercase(), message.to_lowercase())
+        }
+        Err(_) => (String::new(), String::new()),
+    };
+    SearchEntry {
+        id: id.to_string(),
+        author,
+        message,
+    }
 }
 
 /// Commits matching every whitespace-separated term of `query`, case-insensitively.
@@ -68,11 +88,11 @@ pub fn search(index: &SearchIndex, query: &str, limit: usize) -> SearchResult {
 
     let mut rows = Vec::new();
     let mut total = 0;
-    for row in 0..index.ids.len() {
+    for (row, entry) in index.entries.iter().enumerate() {
         let matches = terms.iter().all(|term| {
-            index.messages[row].contains(term.as_str())
-                || index.authors[row].contains(term.as_str())
-                || index.ids[row].starts_with(term.as_str())
+            entry.message.contains(term.as_str())
+                || entry.author.contains(term.as_str())
+                || entry.id.starts_with(term.as_str())
         });
         if matches {
             total += 1;
