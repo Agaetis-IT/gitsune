@@ -132,6 +132,8 @@ export interface DiffLine {
 }
 
 export interface DiffHunk {
+  /** Identifies this hunk (position and exact content), to stage or unstage it. */
+  id: string;
   oldStart: number;
   oldLines: number;
   newStart: number;
@@ -212,3 +214,160 @@ export const searchCommits = (repoId: string, query: string, limit: number) =>
  */
 export const locateCommits = (repoId: string, ids: string[]) =>
   invoke<Array<number | null>>("locate_commits", { repoId, ids });
+
+// ---------- working tree: status, staging, commits ----------
+
+export type FileState =
+  "added" | "modified" | "deleted" | "renamed" | "copied" | "typeChanged" | "untracked";
+
+export interface StatusEntry {
+  path: string;
+  oldPath: string | null;
+  state: FileState;
+  submodule: boolean;
+}
+
+export interface ConflictEntry {
+  path: string;
+  /** The two-letter code of git (`UU`, `AA`, `DU`...). */
+  code: string;
+}
+
+export interface WorkingStatus {
+  branch: string | null;
+  detached: boolean;
+  /** Commit HEAD points at, `null` in a repository without commits. */
+  head: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  /** Changes in the index: what the next commit will contain. */
+  staged: StatusEntry[];
+  /** Changes in the working tree not in the index, untracked files included. */
+  unstaged: StatusEntry[];
+  conflicted: ConflictEntry[];
+}
+
+/** Which side of the index a working tree diff is about. */
+export type Area = "staged" | "unstaged";
+
+export type GitErrorKind =
+  | "readOnly"
+  | "locked"
+  | "needsIdentity"
+  | "hookFailed"
+  | "signingFailed"
+  | "nothingToCommit"
+  | "staleHunk"
+  | "other";
+
+/** A git operation that failed, with what the interface needs to react to it. */
+export class GitCommandError extends Error {
+  constructor(
+    readonly kind: GitErrorKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GitCommandError";
+  }
+}
+
+/** Converts what a command rejects with (`{ kind, message }` or a string) into an error. */
+export function toGitError(error: unknown): GitCommandError {
+  if (error instanceof GitCommandError) return error;
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const { kind, message } = error as { kind?: GitErrorKind; message: string };
+    return new GitCommandError(kind ?? "other", String(message));
+  }
+  return new GitCommandError("other", String(error));
+}
+
+async function gitInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    throw toGitError(error);
+  }
+}
+
+export interface CommitResult {
+  id: string;
+  /** What HEAD was before (`null` for the first commit), to undo the commit. */
+  before: string | null;
+  status: WorkingStatus;
+}
+
+/** The content of some files saved before they were discarded or overwritten. */
+export interface Snapshot {
+  reference: string;
+  id: string;
+  /** Seconds since the Unix epoch. */
+  time: number;
+  description: string;
+  paths: string[];
+}
+
+export interface DiscardResult {
+  snapshot: Snapshot | null;
+  status: WorkingStatus;
+}
+
+export interface Identity {
+  name: string | null;
+  email: string | null;
+}
+
+export interface ActivityEntry {
+  id: number;
+  /** Milliseconds since the Unix epoch. */
+  startedAt: number;
+  command: string;
+  durationMs: number;
+  exitCode: number;
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+}
+
+export const getStatus = (repoId: string) => gitInvoke<WorkingStatus>("get_status", { repoId });
+
+export const getWorkingDiff = (
+  repoId: string,
+  path: string,
+  oldPath: string | null,
+  area: Area,
+  force: boolean,
+) => gitInvoke<FileDiff>("get_working_diff", { repoId, path, oldPath, area, force });
+
+export const stagePaths = (repoId: string, paths: string[]) =>
+  gitInvoke<WorkingStatus>("stage_paths", { repoId, paths });
+export const unstagePaths = (repoId: string, paths: string[]) =>
+  gitInvoke<WorkingStatus>("unstage_paths", { repoId, paths });
+export const stageHunk = (repoId: string, path: string, hunkId: string) =>
+  gitInvoke<WorkingStatus>("stage_hunk", { repoId, path, hunkId });
+export const unstageHunk = (repoId: string, path: string, hunkId: string) =>
+  gitInvoke<WorkingStatus>("unstage_hunk", { repoId, path, hunkId });
+
+/** Throws away unstaged changes after saving a snapshot that brings them back. */
+export const discardPaths = (repoId: string, paths: string[]) =>
+  gitInvoke<DiscardResult>("discard_paths", { repoId, paths });
+export const listSnapshots = (repoId: string) =>
+  gitInvoke<Snapshot[]>("list_snapshots", { repoId });
+export const restoreSnapshot = (repoId: string, reference: string) =>
+  gitInvoke<DiscardResult>("restore_snapshot", { repoId, reference });
+
+export const commitChanges = (repoId: string, summary: string, body: string, amend: boolean) =>
+  gitInvoke<CommitResult>("commit_changes", { repoId, summary, body, amend });
+export const undoCommit = (repoId: string, before: string | null, after: string) =>
+  gitInvoke<WorkingStatus>("undo_commit", { repoId, before, after });
+
+export const getIdentity = (repoId: string) => gitInvoke<Identity>("get_identity", { repoId });
+export const setIdentity = (repoId: string, name: string, email: string, global: boolean) =>
+  gitInvoke<Identity>("set_identity", { repoId, name, email, global });
+
+export const setReadOnly = (repoId: string, readOnly: boolean) =>
+  gitInvoke<void>("set_read_only", { repoId, readOnly });
+export const getActivity = (repoId: string) =>
+  gitInvoke<ActivityEntry[]>("get_activity", { repoId });
+export const clearActivity = (repoId: string) => gitInvoke<void>("clear_activity", { repoId });

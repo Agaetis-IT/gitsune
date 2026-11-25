@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { GraphMeta, GraphRow, Lane } from "@/lib/api";
-import { draw, type Theme } from "@/lib/metro/draw";
+import { draw, type Theme, type WipRow } from "@/lib/metro/draw";
 import { isOnStation, laneAt, rowAtY } from "@/lib/metro/geometry";
 import { type Density, graphContentWidth, METRICS, rowTop } from "@/lib/metro/metrics";
 import { DARK_PALETTE, LIGHT_PALETTE } from "@/lib/metro/palette";
@@ -24,6 +24,8 @@ const props = withDefaults(
      * graph starts at the top.
      */
     anchor?: { row: number; offset: number } | null;
+    /** A working tree row pinned above the graph. */
+    wip?: WipRow | null;
   }>(),
   {
     density: "compact",
@@ -32,6 +34,7 @@ const props = withDefaults(
     highlightLane: null,
     matches: () => [],
     anchor: null,
+    wip: null,
   },
 );
 
@@ -41,6 +44,8 @@ const emit = defineEmits<{
   "update:scrollTop": [scrollTop: number];
   /** The commit at the top of the view and how far it is scrolled (to keep the place on refresh). */
   "update:topCommit": [top: { id: string; offset: number } | null];
+  /** The pinned working tree row was clicked. */
+  wipClick: [];
   select: [row: GraphRow];
   /** A lane line was clicked (position relative to this component); `null` for any other click. */
   laneClick: [target: { lane: Lane; x: number; y: number } | null];
@@ -56,7 +61,9 @@ const tooltip = ref<{ row: GraphRow; x: number; y: number } | null>(null);
 
 const metrics = computed(() => METRICS[props.density]);
 const matchSet = computed(() => new Set(props.matches));
-const contentH = computed(() => props.meta.total * metrics.value.rowH);
+/** Height taken by the pinned working tree row. */
+const inset = computed(() => (props.wip ? metrics.value.rowH : 0));
+const contentH = computed(() => props.meta.total * metrics.value.rowH + inset.value);
 const graphContentW = computed(() => graphContentWidth(props.meta.maxCols, metrics.value));
 // The lane area takes at most ~45% of the width and scrolls sideways on its own.
 const graphViewportW = computed(() =>
@@ -113,7 +120,10 @@ let theme = readTheme();
 function visibleRange() {
   const m = metrics.value;
   const first = Math.max(0, Math.floor(scrollTop / m.rowH));
-  const last = Math.min(props.meta.total - 1, Math.floor((scrollTop + viewH.value) / m.rowH));
+  const last = Math.min(
+    props.meta.total - 1,
+    Math.floor((scrollTop + viewH.value - inset.value) / m.rowH),
+  );
   return { first, last };
 }
 
@@ -176,6 +186,8 @@ function render() {
     hoverRow: hoverRow.value,
     highlightLane: props.highlightLane,
     matchRows: matchSet.value,
+    topInset: inset.value,
+    wip: props.wip,
   });
 }
 
@@ -206,11 +218,13 @@ function onPointerMove(event: PointerEvent) {
   const point = pointerPosition(event);
   if (!point) return onPointerLeave();
   const m = metrics.value;
-  const row = rowAtY(point.y + scrollTop, props.meta.total, m);
+  // Positions in the scrolling content, below the pinned working tree row.
+  const contentY = point.y - inset.value + scrollTop;
+  const row = point.y < inset.value ? null : rowAtY(contentY, props.meta.total, m);
   let next: typeof tooltip.value = null;
   if (row !== null && point.x < graphViewportW.value) {
     const data = cache.getRow(row);
-    if (data && isOnStation(point.x + scrollLeft, point.y + scrollTop, row, data.col, m)) {
+    if (data && isOnStation(point.x + scrollLeft, contentY, row, data.col, m)) {
       next = { row: data, x: Math.min(point.x + 14, viewW.value - 300), y: point.y + 16 };
     }
   }
@@ -219,7 +233,8 @@ function onPointerMove(event: PointerEvent) {
     const onLane =
       next === null &&
       point.x < graphViewportW.value &&
-      laneAt(point.x + scrollLeft, point.y + scrollTop, props.meta.lanes, m) !== null;
+      point.y >= inset.value &&
+      laneAt(point.x + scrollLeft, contentY, props.meta.lanes, m) !== null;
     scroller.value.style.cursor = onLane ? "pointer" : "";
   }
   if (row !== hoverRow.value) {
@@ -252,7 +267,13 @@ function onClick(event: MouseEvent) {
   const point = pointerPosition(event);
   if (!point) return;
   const m = metrics.value;
-  const row = rowAtY(point.y + scrollTop, props.meta.total, m);
+  if (point.y < inset.value) {
+    emit("laneClick", null);
+    emit("wipClick");
+    return;
+  }
+  const contentY = point.y - inset.value + scrollTop;
+  const row = rowAtY(contentY, props.meta.total, m);
 
   // A click on a lane line (not on a station) offers actions on that lane.
   if (point.x < graphViewportW.value) {
@@ -260,10 +281,8 @@ function onClick(event: MouseEvent) {
     const onStation =
       row !== null &&
       data !== undefined &&
-      isOnStation(point.x + scrollLeft, point.y + scrollTop, row, data.col, m);
-    const lane = onStation
-      ? null
-      : laneAt(point.x + scrollLeft, point.y + scrollTop, props.meta.lanes, m);
+      isOnStation(point.x + scrollLeft, contentY, row, data.col, m);
+    const lane = onStation ? null : laneAt(point.x + scrollLeft, contentY, props.meta.lanes, m);
     if (lane) {
       emit("laneClick", { lane, x: point.x, y: point.y });
       return;
@@ -279,8 +298,8 @@ function scrollToRow(row: number) {
   const m = metrics.value;
   const top = rowTop(row, m);
   if (top < el.scrollTop) el.scrollTop = top;
-  else if (top + m.rowH > el.scrollTop + el.clientHeight) {
-    el.scrollTop = top + m.rowH - el.clientHeight;
+  else if (top + m.rowH > el.scrollTop + el.clientHeight - inset.value) {
+    el.scrollTop = top + m.rowH - (el.clientHeight - inset.value);
   }
 }
 
@@ -289,14 +308,14 @@ function focusRow(row: number) {
   const el = scroller.value;
   if (!el || row < 0 || row >= props.meta.total) return;
   const m = metrics.value;
-  el.scrollTop = Math.max(0, rowTop(row, m) - (el.clientHeight - m.rowH) / 2);
+  el.scrollTop = Math.max(0, rowTop(row, m) - (el.clientHeight - inset.value - m.rowH) / 2);
   select(row);
 }
 
 function onKeydown(event: KeyboardEvent) {
   const total = props.meta.total;
   if (total === 0) return;
-  const page = Math.max(1, Math.floor(viewH.value / metrics.value.rowH) - 1);
+  const page = Math.max(1, Math.floor((viewH.value - inset.value) / metrics.value.rowH) - 1);
   const current = props.selected ?? -1;
   const target: Record<string, number> = {
     ArrowDown: current + 1,
@@ -405,7 +424,14 @@ watch(
 );
 
 watch(
-  () => [props.selected, props.highlightLane, props.matches, graphViewportW.value, textX.value],
+  () => [
+    props.selected,
+    props.highlightLane,
+    props.matches,
+    props.wip,
+    graphViewportW.value,
+    textX.value,
+  ],
   scheduleDraw,
 );
 

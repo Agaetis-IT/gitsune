@@ -12,7 +12,7 @@ use super::refs::{RefInfo, list_refs};
 
 /// Keeps watching for as long as it lives.
 pub struct RepoWatcher {
-    _debouncer: Debouncer<RecommendedWatcher>,
+    pub(super) _debouncer: Debouncer<RecommendedWatcher>,
 }
 
 /// The refs of a repository and where HEAD points: what a graph depends on.

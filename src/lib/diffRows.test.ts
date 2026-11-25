@@ -13,7 +13,7 @@ const line = (kind: DiffLine["kind"], text: string): DiffLine => ({
 });
 
 function hunkOf(...lines: DiffLine[]): DiffHunk {
-  return { oldStart: 1, oldLines: 0, newStart: 1, newLines: 0, header: "", lines };
+  return { id: "test", oldStart: 1, oldLines: 0, newStart: 1, newLines: 0, header: "", lines };
 }
 
 const texts = (rows: ReturnType<typeof toSplitRows>) =>

@@ -16,7 +16,23 @@ pub fn run() {
             commands::get_commit_detail,
             commands::get_file_diff,
             commands::search_commits,
-            commands::locate_commits
+            commands::locate_commits,
+            commands::get_status,
+            commands::get_working_diff,
+            commands::stage_paths,
+            commands::unstage_paths,
+            commands::stage_hunk,
+            commands::unstage_hunk,
+            commands::discard_paths,
+            commands::list_snapshots,
+            commands::restore_snapshot,
+            commands::commit_changes,
+            commands::undo_commit,
+            commands::get_identity,
+            commands::set_identity,
+            commands::set_read_only,
+            commands::get_activity,
+            commands::clear_activity
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

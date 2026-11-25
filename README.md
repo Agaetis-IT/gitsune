@@ -1,6 +1,6 @@
 # git-hydra
 
-A desktop git client built around a **metro-style branch graph**: one colored line per branch, commits as stations, merges as interchanges. Version 1 is read-only (browse history, search, diffs); it never changes a repository.
+A desktop git client built around a **metro-style branch graph**: one colored line per branch, commits as stations, merges as interchanges. Browsing history, searching and reading diffs are complete. Writing is being added step by step (version 2): **staging by file and hunk, committing and amending, discarding with undo** are in; branches, remotes, merge and rebase are planned (see [SPEC.md](SPEC.md), section 12). Every change the app makes goes through the `git` binary and is listed in an activity log; a read-only switch per repository refuses all writes.
 
 Tauri 2 (Rust) + Vue 3 + TypeScript + Tailwind + shadcn-vue. macOS first.
 
@@ -12,7 +12,8 @@ Tauri 2 (Rust) + Vue 3 + TypeScript + Tailwind + shadcn-vue. macOS first.
 - Click a lane in the graph to highlight or hide its branch.
 - Search commits by message, author or id (Ctrl/Cmd+F).
 - Commit details, changed files, unified and side-by-side diffs with syntax highlighting; large and binary files are handled.
-- Live refresh: commits, fetches and checkouts made in a terminal appear without losing your place.
+- Live refresh: commits, fetches and checkouts made in a terminal appear without losing your place; changes to the working tree show up in the status as you save files.
+- Stage files or single hunks, commit with a summary and description (hooks and signing behave as in the terminal), amend, discard changes with an undo, and an activity log of every git command the app ran.
 
 ## Requirements
 
@@ -62,4 +63,4 @@ All design decisions, measurements and the milestone plan are in [SPEC.md](SPEC.
 
 ## Not included
 
-Anything that writes to a repository (stage, commit, push, pull, merge, rebase, checkout), GitHub/GitLab integrations, conflict resolution, submodules and worktrees, file editing.
+Branches, checkout, push and pull, merge and rebase (planned, see the spec), GitHub/GitLab integrations, conflict resolution, submodules and worktrees, file editing.

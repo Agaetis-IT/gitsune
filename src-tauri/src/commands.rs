@@ -8,8 +8,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::git::{
-    self, CommitDetail, FileDiff, GraphCache, GraphMeta, GraphPage, RefInfo, RepoInfo, RepoStores,
-    RepoWatcher, SearchResult,
+    self, ActivityEntry, Area, CommitDetail, CommitResult, DiscardResult, FileDiff, GitError,
+    GraphCache, GraphMeta, GraphPage, RefInfo, RepoInfo, RepoStores, RepoWatcher, SearchResult,
+    Snapshot, WorkingStatus,
 };
 
 struct OpenRepo {
@@ -18,8 +19,10 @@ struct OpenRepo {
     graph: Option<Arc<GraphCache>>,
     /// Commits already read, so a rebuild only reads the new ones.
     stores: Arc<RepoStores>,
-    /// Reports changes of the refs for as long as the repository is open.
-    _watcher: Option<RepoWatcher>,
+    /// Report changes of the refs and of the working tree for as long as the repository is open.
+    _watchers: Vec<RepoWatcher>,
+    /// Root of the working tree (`None` for a bare repository).
+    workdir: Option<PathBuf>,
 }
 
 /// Payload of the `repo-changed` event: the refs of a repository moved.
@@ -47,16 +50,40 @@ impl RepoRegistry {
         &self,
         id: String,
         repo: ThreadSafeRepository,
-        watcher: Option<RepoWatcher>,
+        watchers: Vec<RepoWatcher>,
+        workdir: Option<PathBuf>,
     ) -> Result<(), String> {
         let mut repos = self.repos.lock().map_err(|_| POISONED.to_string())?;
         repos.entry(id).or_insert(OpenRepo {
             repo,
             graph: None,
             stores: Arc::new(RepoStores::default()),
-            _watcher: watcher,
+            _watchers: watchers,
+            workdir,
         });
         Ok(())
+    }
+
+    /// The working tree of a repository and what is kept for it, for the operations that
+    /// read or write the working tree.
+    fn context(&self, id: &str) -> Result<(PathBuf, Arc<RepoStores>), GitError> {
+        let repos = self.repos.lock().map_err(|_| GitError::other(POISONED))?;
+        let open = repos
+            .get(id)
+            .ok_or_else(|| GitError::other(format!("repository not open: {id}")))?;
+        let workdir = open
+            .workdir
+            .clone()
+            .ok_or_else(|| GitError::other("This repository has no working tree."))?;
+        Ok((workdir, open.stores.clone()))
+    }
+
+    fn stores(&self, id: &str) -> Result<Arc<RepoStores>, GitError> {
+        let repos = self.repos.lock().map_err(|_| GitError::other(POISONED))?;
+        repos
+            .get(id)
+            .map(|open| open.stores.clone())
+            .ok_or_else(|| GitError::other(format!("repository not open: {id}")))
     }
 
     fn is_open(&self, id: &str) -> bool {
@@ -120,23 +147,48 @@ pub fn open_repo(
     registry: State<RepoRegistry>,
 ) -> Result<RepoInfo, String> {
     let (repo, info) = git::open_repository(&PathBuf::from(path))?;
-    let watcher = if registry.is_open(&info.id) {
-        None
-    } else {
-        let repo_id = info.id.clone();
+    let already_open = registry.is_open(&info.id);
+    let mut watchers = Vec::new();
+    if !already_open {
         // Without a watcher the repository still works, it just does not refresh by itself.
-        git::watch_refs(&repo, REFRESH_DEBOUNCE, move || {
-            let _ = app.emit(
-                "repo-changed",
+        let announce = |event: &'static str, app: AppHandle, repo_id: String| {
+            move || {
+                let _ = app.emit(
+                    event,
+                    RepoChanged {
+                        repo_id: repo_id.clone(),
+                    },
+                );
+            }
+        };
+        let refs = git::watch_refs(
+            &repo,
+            REFRESH_DEBOUNCE,
+            announce("repo-changed", app.clone(), info.id.clone()),
+        );
+        watchers.extend(refs.map_err(|error| eprintln!("{error}")).ok());
+        if !info.is_bare {
+            let tree = git::watch_worktree(
+                &repo,
+                REFRESH_DEBOUNCE,
+                announce("worktree-changed", app.clone(), info.id.clone()),
+            );
+            watchers.extend(tree.map_err(|error| eprintln!("{error}")).ok());
+        }
+    }
+    let workdir = (!info.is_bare).then(|| PathBuf::from(&info.path));
+    registry.insert(info.id.clone(), repo, watchers, workdir)?;
+    if !already_open && let Ok(stores) = registry.stores(&info.id) {
+        let (handle, repo_id) = (app, info.id.clone());
+        stores.activity.set_notifier(move || {
+            let _ = handle.emit(
+                "activity-changed",
                 RepoChanged {
                     repo_id: repo_id.clone(),
                 },
             );
-        })
-        .map_err(|error| eprintln!("{error}"))
-        .ok()
-    };
-    registry.insert(info.id.clone(), repo, watcher)?;
+        });
+    }
     Ok(info)
 }
 
@@ -229,4 +281,191 @@ pub async fn locate_commits(
 ) -> Result<Vec<Option<usize>>, String> {
     let (_, graph) = registry.graph(&repo_id, None)?;
     Ok(git::locate_commits(&graph, &ids))
+}
+
+// ---------- working tree: status, staging, commits ----------
+
+/// Runs an operation of the working tree of an open repository.
+fn with_ctx<T>(
+    registry: &RepoRegistry,
+    repo_id: &str,
+    operation: impl FnOnce(&git::OpCtx) -> Result<T, GitError>,
+) -> Result<T, GitError> {
+    let (workdir, stores) = registry.context(repo_id)?;
+    operation(&git::OpCtx {
+        workdir: &workdir,
+        stores: &stores,
+    })
+}
+
+/// The changes in the index and in the working tree.
+#[tauri::command]
+pub async fn get_status(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| ctx.status())
+}
+
+/// Diff of a file of the working tree: the staged side (index against the last commit) or
+/// the unstaged side (working tree against the index).
+#[tauri::command]
+pub async fn get_working_diff(
+    repo_id: String,
+    path: String,
+    old_path: Option<String>,
+    area: Area,
+    force: bool,
+    registry: State<'_, RepoRegistry>,
+) -> Result<FileDiff, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::working_diff(ctx, &path, old_path.as_deref(), area, force)
+    })
+}
+
+#[tauri::command]
+pub async fn stage_paths(
+    repo_id: String,
+    paths: Vec<String>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::stage_paths(ctx, &paths))
+}
+
+#[tauri::command]
+pub async fn unstage_paths(
+    repo_id: String,
+    paths: Vec<String>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::unstage_paths(ctx, &paths))
+}
+
+#[tauri::command]
+pub async fn stage_hunk(
+    repo_id: String,
+    path: String,
+    hunk_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::stage_hunk(ctx, &path, &hunk_id)
+    })
+}
+
+#[tauri::command]
+pub async fn unstage_hunk(
+    repo_id: String,
+    path: String,
+    hunk_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::unstage_hunk(ctx, &path, &hunk_id)
+    })
+}
+
+/// Throws away the unstaged changes of files, after saving a snapshot that brings them back.
+#[tauri::command]
+pub async fn discard_paths(
+    repo_id: String,
+    paths: Vec<String>,
+    registry: State<'_, RepoRegistry>,
+) -> Result<DiscardResult, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| git::discard_paths(ctx, &paths))
+}
+
+#[tauri::command]
+pub async fn list_snapshots(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<Snapshot>, GitError> {
+    with_ctx(&registry, &repo_id, git::list_snapshots)
+}
+
+#[tauri::command]
+pub async fn restore_snapshot(
+    repo_id: String,
+    reference: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<DiscardResult, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::restore_snapshot(ctx, &reference)
+    })
+}
+
+/// Commits the index, or amends the last commit.
+#[tauri::command]
+pub async fn commit_changes(
+    repo_id: String,
+    summary: String,
+    body: String,
+    amend: bool,
+    registry: State<'_, RepoRegistry>,
+) -> Result<CommitResult, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::commit(ctx, &summary, &body, amend)
+    })
+}
+
+/// Moves HEAD back to where it was before a commit made by `commit_changes`.
+#[tauri::command]
+pub async fn undo_commit(
+    repo_id: String,
+    before: Option<String>,
+    after: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<WorkingStatus, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::undo_commit(ctx, before.as_deref(), &after)
+    })
+}
+
+#[tauri::command]
+pub async fn get_identity(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<git::Identity, GitError> {
+    with_ctx(&registry, &repo_id, git::identity)
+}
+
+#[tauri::command]
+pub async fn set_identity(
+    repo_id: String,
+    name: String,
+    email: String,
+    global: bool,
+    registry: State<'_, RepoRegistry>,
+) -> Result<git::Identity, GitError> {
+    with_ctx(&registry, &repo_id, |ctx| {
+        git::set_identity(ctx, &name, &email, global)
+    })
+}
+
+// ---------- safety and transparency ----------
+
+/// Turns the read-only mode of a repository on or off (every write is refused while on).
+#[tauri::command]
+pub fn set_read_only(
+    repo_id: String,
+    read_only: bool,
+    registry: State<RepoRegistry>,
+) -> Result<(), GitError> {
+    registry.stores(&repo_id)?.set_read_only(read_only);
+    Ok(())
+}
+
+/// The git commands the app ran for a repository, oldest first.
+#[tauri::command]
+pub fn get_activity(
+    repo_id: String,
+    registry: State<RepoRegistry>,
+) -> Result<Vec<ActivityEntry>, GitError> {
+    Ok(registry.stores(&repo_id)?.activity.list())
+}
+
+#[tauri::command]
+pub fn clear_activity(repo_id: String, registry: State<RepoRegistry>) -> Result<(), GitError> {
+    registry.stores(&repo_id)?.activity.clear();
+    Ok(())
 }

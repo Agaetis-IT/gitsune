@@ -190,7 +190,7 @@ Known ceilings: a diff is a plain table, so about 5,000 lines is the practical l
 
 ## 9. Plan
 
-Status: M0 to M9 are done (see the sections above for what each one settled).
+Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 is done (section 12.8); M11 to M16 are planned (section 12.4).
 
 Each milestone ends with lint and tests passing and a short demo.
 
@@ -342,4 +342,36 @@ Each milestone is a branch from `main`, ends with lint and tests passing, a demo
 - **Special setups** not designed for yet: sparse checkout, Git LFS filters, submodules, linked worktrees.
 - **Undo snapshots** add refs to the user's repository (`refs/git-hydra/undo/`); the app lists them, purges old ones, and says so in the documentation.
 - **Postponed**: GitHub and GitLab, Windows and Linux, line-level staging, drag-and-drop, sign-off and co-author helpers, resizable panes and other ideas of section 10.
+
+### 12.8 M10 as built (staging and commits)
+
+What exists, and where it differs from the plan above.
+
+**Runner and safety** (`src-tauri/src/git/cli.rs`, `activity.rs`, `store.rs`)
+- Every write starts `git` through one runner: `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `GIT_EDITOR=true`, standard input closed unless a payload is given (a hook that waits for input fails instead of hanging). Background reads set `GIT_OPTIONAL_LOCKS=0`.
+- Failures are typed: `readOnly`, `locked`, `needsIdentity`, `hookFailed`, `signingFailed`, `nothingToCommit`, `staleHunk`, `other`. The frontend maps them: hook, signing and nothing-to-commit are shown in the commit box with git's output; a missing identity opens a dialog; the others are notices.
+- A repository's writes are serialised by a lock taken before git starts; read-only mode is checked before and after waiting for it, so a write queued behind another cannot slip through when the mode is switched on. Read-only mode is remembered per repository in the webview storage and sent to the backend when the repository opens.
+- A lock held by another git process (`index.lock`) is reported as `locked` and the file is never touched (tested).
+- **Activity log**: at most 500 entries per repository (command, start, duration, exit code, output up to 16 KiB), shown in a side panel. The status reads the app does in the background are deliberately **not** logged, otherwise every file save would fill it; every command that changes something is.
+
+**Status** (`status.rs`): `git status --porcelain=v2 --branch -z --untracked-files=normal`, parsed into staged, unstaged (untracked files included, an untracked folder is one entry) and conflicted lists, plus branch, HEAD, upstream and ahead/behind. Conflicts are listed but cannot be resolved yet (M14).
+
+**Staging** (`ops.rs`, `text_diff.rs`)
+- Files: `git add -A -- paths` and `git restore --staged -- paths` (`git rm --cached` before the first commit), in chunks of 400 paths.
+- Hunks: every diff hunk now has an `id` (a hash of its position and exact bytes). Staging a hunk recomputes the diff in Rust, finds the hunk with that id (otherwise the error is `staleHunk` and nothing is staged), builds its patch **from the raw bytes** (so CRLF files, missing final newlines and non-UTF-8 content survive, and odd paths are C-quoted) and runs `git apply --cached --recount -` (with `--reverse` to unstage). Hunks of untracked, deleted and binary files are refused with a reason; those are staged as a whole.
+- Working tree diffs (`working_diff`) reuse the commit diff limits (1 MiB, 8 MiB forced, 5,000 lines).
+
+**Commits**: `git commit -F -` with the summary, a blank line and the description; `--amend` for amending (the box is pre-filled with the last message, and the previous draft is put back when "amend" is unchecked). Hooks and signing are git's own; the test for signing pins `gpg.format=openpgp` because a global configuration may use SSH signing. Identity: `identity` / `set_identity` (`--global` or `--local`); the commit is retried after the dialog. Undo of a commit moves HEAD back with `git reset --soft` (or `update-ref -d HEAD` for a first commit) and is refused when HEAD is no longer the commit that was made.
+
+**Discarding and recovering**: before changes are discarded, their working tree content (untracked files and deletions included) is saved as a commit under `refs/git-hydra/undo/<millis>-<counter>`, built with a throwaway index file so the real index, HEAD and working tree are untouched, using a fixed `git-hydra` identity so it works without configuration. The 20 newest are kept. Restoring a snapshot first snapshots what it overwrites, so a restore can itself be undone. Tracked changes go back with `git restore`, untracked files and folders are deleted with `git clean -f -d`; staged changes are kept.
+
+**Working tree watcher** (`worktree_watch.rs`): a recursive watch of the working tree with a 300 ms debounce. Events inside `.git` count only for `index` and `HEAD`; events for other paths are filtered by a single `git check-ignore -z --stdin` per burst (so a build writing into `target/` or `node_modules/` triggers nothing, and `.gitignore` edits take effect at once, since no ignore cache is kept). It sends `worktree-changed`; the existing refs watcher still sends `repo-changed`. Activity sends `activity-changed`.
+
+**Interface**: a working tree row pinned above the graph (a dashed station on the lane of HEAD, "n changes"); selecting it, or opening a repository without commits, replaces the commit details with the working panel (unstaged and staged lists, per-file stage, unstage and discard, "recently discarded", the commit box with a summary counter at 72 characters, a soft convention, and Cmd/Ctrl+Enter). Diffs of working tree files open in place of the graph with a *Stage hunk* / *Unstage hunk* button per hunk and reload quietly when the status changes. Notices with an *Undo* button follow commits and discards. The activity panel and the read-only switch are in the toolbar.
+
+**Demo backend**: `src/dev/demoWorktree.ts` simulates all of this in memory for browser development (magic words in a summary trigger the failures: `hook`, `sign`, `ident`); a commit made there adds a commit to the demo graph. `window.__simulateWorktreeChange()` adds a file as if saved from an editor.
+
+**Not done in M10 (left for later milestones or ideas)**: discarding a single hunk; `Signed-off-by` and co-author helpers (declined for this milestone); per-file Undo of a stage (the file can simply be unstaged); resolving conflicts (M14); measuring `git status` on a 100,000-file working tree (M16); progress and cancellation of long operations (M12, there is no long operation yet).
+
+**Tests**: 132 Rust tests (status parsing on sample output and on real repositories; staging by file and by hunk including CRLF, no final newline, latin-1 bytes, spaces, quotes and accents in paths, stale hunks, binary and untracked refusals; commits, amend, undo, hooks that reject or wait for input, missing identity, failing signature, lock, read-only; discard, snapshot, restore, purge, restore of a restore; ordering of writes; the working tree watcher with ignored folders, `.gitignore` changes, staging, commits and git internals) and 114 front tests (status refresh and coalescing, selection exclusion, stage and hunk flows, read-only persistence, commit success and each failure, identity retry, amend, discard Undo, activity reload, notices). A mutation of the patch builder (dropping the "no newline" marker) is caught by the tests.
 

@@ -1,6 +1,30 @@
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  type ActivityEntry,
+  type Area,
+  type CommitResult,
+  type DiscardResult,
+  type Identity,
+  type Snapshot,
+  type StatusEntry,
+  type WorkingStatus,
+  clearActivity,
+  commitChanges,
+  discardPaths,
+  getActivity,
+  getIdentity,
+  getStatus,
+  getWorkingDiff,
+  listSnapshots,
+  restoreSnapshot,
+  setIdentity,
+  setReadOnly,
+  stageHunk,
+  stagePaths,
+  undoCommit,
+  unstageHunk,
+  unstagePaths,
   getCommitDetail,
   getFileDiff,
   getGraphMeta,
@@ -45,6 +69,30 @@ export interface RepoBackend {
    * in a terminal...). Returns a function that stops listening.
    */
   onRepoChanged(handler: (repoId: string) => void): Promise<() => void>;
+  /** The changes in the index and in the working tree. */
+  status(repoId: string): Promise<WorkingStatus>;
+  /** Diff of a changed file, for the staged or the unstaged side. */
+  workingDiff(repoId: string, entry: StatusEntry, area: Area, force: boolean): Promise<FileDiff>;
+  stage(repoId: string, paths: string[]): Promise<WorkingStatus>;
+  unstage(repoId: string, paths: string[]): Promise<WorkingStatus>;
+  stageHunk(repoId: string, path: string, hunkId: string): Promise<WorkingStatus>;
+  unstageHunk(repoId: string, path: string, hunkId: string): Promise<WorkingStatus>;
+  /** Throws away unstaged changes after saving a snapshot that brings them back. */
+  discard(repoId: string, paths: string[]): Promise<DiscardResult>;
+  snapshots(repoId: string): Promise<Snapshot[]>;
+  restoreSnapshot(repoId: string, reference: string): Promise<DiscardResult>;
+  commit(repoId: string, summary: string, body: string, amend: boolean): Promise<CommitResult>;
+  undoCommit(repoId: string, before: string | null, after: string): Promise<WorkingStatus>;
+  identity(repoId: string): Promise<Identity>;
+  setIdentity(repoId: string, name: string, email: string, global: boolean): Promise<Identity>;
+  setReadOnly(repoId: string, readOnly: boolean): Promise<void>;
+  /** The git commands the app ran for a repository, oldest first. */
+  activity(repoId: string): Promise<ActivityEntry[]>;
+  clearActivity(repoId: string): Promise<void>;
+  /** Calls `handler` when a file of the working tree (or the index) changed. */
+  onWorktreeChanged(handler: (repoId: string) => void): Promise<() => void>;
+  /** Calls `handler` when a git command was added to the activity log. */
+  onActivityChanged(handler: (repoId: string) => void): Promise<() => void>;
   /** Rows of the current graph matching `query` (see `searchCommits`). */
   search(repoId: string, query: string, limit: number): Promise<SearchResult>;
   /** Diff of one file of a commit; `force` allows files over the automatic size limit. */
@@ -67,6 +115,27 @@ export const tauriBackend: RepoBackend = {
     const meta = await getGraphMeta(repoId, hiddenRefs);
     return { meta, fetchPage: (cursor, limit) => getGraphPage(repoId, cursor, limit) };
   },
+  status: getStatus,
+  workingDiff: (repoId, entry, area, force) =>
+    getWorkingDiff(repoId, entry.path, entry.oldPath, area, force),
+  stage: stagePaths,
+  unstage: unstagePaths,
+  stageHunk,
+  unstageHunk,
+  discard: discardPaths,
+  snapshots: listSnapshots,
+  restoreSnapshot,
+  commit: commitChanges,
+  undoCommit,
+  identity: getIdentity,
+  setIdentity,
+  setReadOnly,
+  activity: getActivity,
+  clearActivity,
+  onWorktreeChanged: (handler) =>
+    listen<{ repoId: string }>("worktree-changed", (event) => handler(event.payload.repoId)),
+  onActivityChanged: (handler) =>
+    listen<{ repoId: string }>("activity-changed", (event) => handler(event.payload.repoId)),
   commitDetail: getCommitDetail,
   search: searchCommits,
   refs: listRefs,
