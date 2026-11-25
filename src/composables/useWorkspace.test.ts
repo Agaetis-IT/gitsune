@@ -1420,7 +1420,7 @@ describe("committing", () => {
 describe("discarding", () => {
   it("offers to restore what was discarded", async () => {
     const snapshot = {
-      reference: "refs/git-hydra/undo/1",
+      reference: "refs/gitsune/undo/1",
       id: "d".repeat(40),
       time: 1,
       description: "before discarding changes",
@@ -1436,7 +1436,7 @@ describe("discarding", () => {
     expect(notice?.text).toBe("Discarded 2 files.");
 
     await notice?.action?.run();
-    expect(restoreSnapshot).toHaveBeenCalledWith("/fake/a", "refs/git-hydra/undo/1");
+    expect(restoreSnapshot).toHaveBeenCalledWith("/fake/a", "refs/gitsune/undo/1");
     expect(tab.status?.unstaged).toHaveLength(3);
   });
 
@@ -1451,7 +1451,7 @@ describe("discarding", () => {
     const { workspace, tab } = await openWorktree(dirty(), {
       snapshots: async () => [
         {
-          reference: "refs/git-hydra/undo/2",
+          reference: "refs/gitsune/undo/2",
           id: "e".repeat(40),
           time: 2,
           description: "d",
@@ -1578,7 +1578,7 @@ describe("checkout", () => {
 
   it("offers to undo a discard that came with the switch", async () => {
     const snapshot = {
-      reference: "refs/git-hydra/undo/9",
+      reference: "refs/gitsune/undo/9",
       id: "s".repeat(40),
       time: 1,
       description: "d",
@@ -1593,7 +1593,7 @@ describe("checkout", () => {
     const notice = lastOf(workspace.notices.value);
     expect(notice?.text).toContain("discarded");
     await notice?.action?.run();
-    expect(restoreSnapshot).toHaveBeenCalledWith("/fake/a", "refs/git-hydra/undo/9");
+    expect(restoreSnapshot).toHaveBeenCalledWith("/fake/a", "refs/gitsune/undo/9");
   });
 
   it("other failures are notices and leave no dialog", async () => {
@@ -2130,7 +2130,7 @@ describe("stash, cherry-pick, revert and reset", () => {
       before: "b".repeat(40),
       after: to,
       snapshot: {
-        reference: "refs/git-hydra/undo/1",
+        reference: "refs/gitsune/undo/1",
         id: "s".repeat(40),
         time: 1,
         description: "reset --hard",
@@ -2154,7 +2154,7 @@ describe("stash, cherry-pick, revert and reset", () => {
       "/fake/a",
       "b".repeat(40),
       target.id,
-      "refs/git-hydra/undo/1",
+      "refs/gitsune/undo/1",
     );
   });
 

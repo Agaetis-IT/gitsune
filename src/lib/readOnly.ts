@@ -1,6 +1,6 @@
 type Storage = Pick<globalThis.Storage, "getItem" | "setItem">;
 
-const KEY = "git-hydra:read-only-repos";
+const KEY = "gitsune:read-only-repos";
 
 /** Which repositories are in read-only mode, kept in `storage` (best effort). */
 export function createReadOnlyStore(storage: Storage | null) {

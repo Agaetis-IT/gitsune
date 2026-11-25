@@ -167,7 +167,7 @@ fn helper_dir(ctx: &OpCtx) -> Result<PathBuf, GitError> {
         &["rev-parse", "--absolute-git-dir"],
         RunOptions::background(),
     )?;
-    Ok(PathBuf::from(output.stdout_text().trim()).join("git-hydra-rebase"))
+    Ok(PathBuf::from(output.stdout_text().trim()).join("gitsune-rebase"))
 }
 
 fn shell_quote(path: &std::path::Path) -> String {
@@ -280,7 +280,7 @@ fn prepare_todo(
     write_file("messages", &messages, false)?;
     let sequence_editor = write_file(
         "sequence-editor.sh",
-        "#!/bin/sh\ncat \"$GIT_HYDRA_TODO\" > \"$1\"\n",
+        "#!/bin/sh\ncat \"$GITSUNE_TODO\" > \"$1\"\n",
         true,
     )?;
     write_file("message-editor.sh", MESSAGE_EDITOR, true)?;
@@ -290,7 +290,7 @@ fn prepare_todo(
             shell_quote(&sequence_editor),
         ),
         (
-            "GIT_HYDRA_TODO".to_string(),
+            "GITSUNE_TODO".to_string(),
             todo_file.to_string_lossy().into_owned(),
         ),
     ];
@@ -302,7 +302,7 @@ fn prepare_todo(
 /// told by the command git is running (the last line of `rebase-merge/done`), so a second try
 /// after a failure (a hook, a signing tool waiting for approval) gets the same message.
 const MESSAGE_EDITOR: &str = r#"#!/bin/sh
-dir="${GIT_HYDRA_DIR:?}"
+dir="${GITSUNE_DIR:?}"
 gitdir=$(dirname "$dir")
 id=$(tail -n 1 "$gitdir/rebase-merge/done" 2>/dev/null | awk '{print $2}')
 [ -n "$id" ] || exit 0
@@ -401,7 +401,7 @@ pub(super) fn rebase_env(ctx: &OpCtx) -> Result<Vec<(String, String)>, GitError>
     Ok(vec![
         ("GIT_EDITOR".to_string(), shell_quote(&editor)),
         (
-            "GIT_HYDRA_DIR".to_string(),
+            "GITSUNE_DIR".to_string(),
             dir.to_string_lossy().into_owned(),
         ),
     ])

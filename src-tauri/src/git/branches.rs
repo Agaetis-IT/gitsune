@@ -263,7 +263,7 @@ pub fn checkout(
         Some(DirtyStrategy::Stash) => {
             let dirty = is_dirty(&ctx.status()?);
             if dirty {
-                let message = format!("git-hydra: before switching to {}", target.label());
+                let message = format!("gitsune: before switching to {}", target.label());
                 let options = RunOptions::with_env(fallback_identity(ctx));
                 ctx.runner().run(
                     ctx.workdir,

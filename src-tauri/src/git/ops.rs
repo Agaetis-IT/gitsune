@@ -506,7 +506,10 @@ pub fn set_identity(
 // ---------- discarding and recovering changes ----------
 
 /// Where snapshots of discarded changes are kept (as commits no branch points at).
-pub const SNAPSHOT_PREFIX: &str = "refs/git-hydra/undo/";
+pub const SNAPSHOT_PREFIX: &str = "refs/gitsune/undo/";
+/// Where the application kept them before it was called Gitsune: still listed and restored (and
+/// purged with the others), never written.
+pub const LEGACY_SNAPSHOT_PREFIX: &str = "refs/git-hydra/undo/";
 /// Snapshots kept; older ones are removed when a new one is made.
 pub const MAX_SNAPSHOTS: usize = 20;
 
@@ -534,10 +537,10 @@ pub struct DiscardResult {
 static SNAPSHOT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 const SNAPSHOT_IDENTITY: [(&str, &str); 4] = [
-    ("GIT_AUTHOR_NAME", "git-hydra"),
-    ("GIT_AUTHOR_EMAIL", "git-hydra@localhost"),
-    ("GIT_COMMITTER_NAME", "git-hydra"),
-    ("GIT_COMMITTER_EMAIL", "git-hydra@localhost"),
+    ("GIT_AUTHOR_NAME", "gitsune"),
+    ("GIT_AUTHOR_EMAIL", "gitsune@localhost"),
+    ("GIT_COMMITTER_NAME", "gitsune"),
+    ("GIT_COMMITTER_EMAIL", "gitsune@localhost"),
 ];
 
 /// The identity used for the commits the app makes for its own bookkeeping.
@@ -582,7 +585,7 @@ pub(super) fn take_snapshot(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
     let index_file =
-        Path::new(&git_dir).join(format!("git-hydra-snapshot-{stamp}-{}", std::process::id()));
+        Path::new(&git_dir).join(format!("gitsune-snapshot-{stamp}-{}", std::process::id()));
     let index_env = || {
         let mut env = env_of(&SNAPSHOT_IDENTITY);
         env.push((
@@ -625,7 +628,7 @@ pub(super) fn take_snapshot(
             .trim()
             .to_string();
 
-        let mut message = format!("git-hydra: before {what} ({} file(s))\n", paths.len());
+        let mut message = format!("gitsune: before {what} ({} file(s))\n", paths.len());
         message.push('\n');
         for path in paths {
             message.push_str(path);
@@ -689,6 +692,7 @@ fn list_snapshots_inner(ctx: &OpCtx) -> Result<Vec<Snapshot>, GitError> {
             "--sort=-refname",
             "--format=%(refname)%1f%(objectname)%1f%(creatordate:unix)%1f%(contents)%1e",
             SNAPSHOT_PREFIX,
+            LEGACY_SNAPSHOT_PREFIX,
         ],
         RunOptions::background(),
     )?;
@@ -709,6 +713,7 @@ fn list_snapshots_inner(ctx: &OpCtx) -> Result<Vec<Snapshot>, GitError> {
         let description = lines
             .next()
             .unwrap_or_default()
+            .trim_start_matches("gitsune: ")
             .trim_start_matches("git-hydra: ")
             .to_string();
         let paths = lines
@@ -777,7 +782,9 @@ pub fn discard_paths(ctx: &OpCtx, paths: &[String]) -> Result<DiscardResult, Git
 /// Puts the files of a snapshot back in the working tree (files that did not exist in it are
 /// removed). What is overwritten is itself saved first, so this can be undone too.
 pub fn restore_snapshot(ctx: &OpCtx, reference: &str) -> Result<DiscardResult, GitError> {
-    if !reference.starts_with(SNAPSHOT_PREFIX) || reference.contains("..") {
+    let ours =
+        reference.starts_with(SNAPSHOT_PREFIX) || reference.starts_with(LEGACY_SNAPSHOT_PREFIX);
+    if !ours || reference.contains("..") {
         return Err(GitError::other("not a snapshot of this application"));
     }
     let _write = ctx.stores.begin_write()?;

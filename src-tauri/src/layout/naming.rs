@@ -75,13 +75,12 @@ pub fn merge_branch_name(subject: &str) -> Option<String> {
         strip_remote(source.trim())
     } else if let Some(rest) = subject.strip_prefix("Merge remote-tracking branch ") {
         strip_remote(first_quoted(rest)?)
-    } else if let Some(rest) = subject
-        .strip_prefix("Merge branch ")
-        .or_else(|| subject.strip_prefix("Merge branches "))
-    {
-        first_quoted(rest)?
     } else {
-        return None;
+        // Anything else is not a merge subject the application knows.
+        let rest = subject
+            .strip_prefix("Merge branch ")
+            .or_else(|| subject.strip_prefix("Merge branches "))?;
+        first_quoted(rest)?
     };
     (!name.is_empty()).then(|| name.to_string())
 }

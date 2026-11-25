@@ -1,8 +1,8 @@
 import { computed, ref, watch } from "vue";
 import { usePlatform } from "./usePlatform";
 
-const EDITOR_KEY = "git-hydra:editor";
-const TERMINAL_KEY = "git-hydra:terminal";
+const EDITOR_KEY = "gitsune:editor";
+const TERMINAL_KEY = "gitsune:terminal";
 
 function read(key: string, allowed: ReadonlyArray<{ id: string }>): string {
   try {

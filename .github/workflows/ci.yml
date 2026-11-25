@@ -24,8 +24,11 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
+      # The version is pinned: a newer clippy adds lints, which turn the CI red without any change
+      # of ours. Raise it on purpose, after running clippy with it.
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
@@ -77,6 +80,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri

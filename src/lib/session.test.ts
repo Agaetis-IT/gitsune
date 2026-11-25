@@ -3,7 +3,7 @@ import { createSessionStore } from "./session";
 
 function memoryStorage(initial?: string) {
   const data = new Map<string, string>();
-  if (initial !== undefined) data.set("git-hydra:session", initial);
+  if (initial !== undefined) data.set("gitsune:session", initial);
   return {
     getItem: (key: string) => data.get(key) ?? null,
     setItem: (key: string, value: string) => void data.set(key, value),

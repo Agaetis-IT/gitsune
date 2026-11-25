@@ -1,9 +1,9 @@
 import { ref } from "vue";
 import { isAutoFetchChoice } from "@/lib/autoFetch";
 
-const RESTORE_KEY = "git-hydra:restore-tabs";
-const TICKET_KEY = "git-hydra:ticket-prefill";
-const FETCH_KEY = "git-hydra:auto-fetch";
+const RESTORE_KEY = "gitsune:restore-tabs";
+const TICKET_KEY = "gitsune:ticket-prefill";
+const FETCH_KEY = "gitsune:auto-fetch";
 
 function readFlag(key: string): boolean {
   try {

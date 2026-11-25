@@ -3,7 +3,7 @@ import { createRecentStore, type RecentRepo } from "./recents";
 
 function memoryStorage(initial?: string) {
   const data = new Map<string, string>();
-  if (initial !== undefined) data.set("git-hydra:recent-repos", initial);
+  if (initial !== undefined) data.set("gitsune:recent-repos", initial);
   return {
     getItem: (key: string) => data.get(key) ?? null,
     setItem: (key: string, value: string) => void data.set(key, value),

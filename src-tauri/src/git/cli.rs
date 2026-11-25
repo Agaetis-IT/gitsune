@@ -279,7 +279,7 @@ pub struct LongIo<'a> {
 /// The helper git and ssh start when they need a secret. It writes the question to a file and
 /// waits for the app to write the answer next to it, so no extra program has to be shipped.
 const ASKPASS_SCRIPT: &str = r#"#!/bin/sh
-dir="${GIT_HYDRA_ASKPASS_DIR:?}"
+dir="${GITSUNE_ASKPASS_DIR:?}"
 id="$$"
 printf '%s' "$1" > "$dir/$id.prompt.tmp" && mv "$dir/$id.prompt.tmp" "$dir/$id.prompt"
 while [ ! -f "$dir/$id.answer" ] && [ ! -f "$dir/$id.cancel" ]; do
@@ -310,7 +310,7 @@ fn askpass_env(dir: &Path) -> Result<Vec<(String, String)>, GitError> {
     let mut env = vec![
         ("GIT_ASKPASS".to_string(), script.clone()),
         (
-            "GIT_HYDRA_ASKPASS_DIR".to_string(),
+            "GITSUNE_ASKPASS_DIR".to_string(),
             crate::platform::shell_path(os, &dir.to_string_lossy()),
         ),
     ];

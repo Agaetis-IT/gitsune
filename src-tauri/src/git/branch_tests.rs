@@ -580,7 +580,7 @@ fn an_annotated_tag_works_without_a_configured_identity() {
     ]);
     create_tag(&ctx(&tmp, &stores), "v1", None, Some("A release")).unwrap();
     assert_eq!(text(dir, &["cat-file", "-t", "v1"]), "tag");
-    assert!(text(dir, &["cat-file", "-p", "v1"]).contains("tagger git-hydra"));
+    assert!(text(dir, &["cat-file", "-p", "v1"]).contains("tagger gitsune"));
 }
 
 #[test]

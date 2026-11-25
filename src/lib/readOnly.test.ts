@@ -3,7 +3,7 @@ import { createReadOnlyStore } from "./readOnly";
 
 function memoryStorage(initial?: string) {
   const data = new Map<string, string>();
-  if (initial !== undefined) data.set("git-hydra:read-only-repos", initial);
+  if (initial !== undefined) data.set("gitsune:read-only-repos", initial);
   return {
     getItem: (key: string) => data.get(key) ?? null,
     setItem: (key: string, value: string) => void data.set(key, value),
@@ -25,7 +25,7 @@ describe("read-only repositories", () => {
     const store = createReadOnlyStore(storage);
     store.set("/a", true);
     store.set("/a", true);
-    expect(JSON.parse(storage.getItem("git-hydra:read-only-repos") ?? "[]")).toEqual(["/a"]);
+    expect(JSON.parse(storage.getItem("gitsune:read-only-repos") ?? "[]")).toEqual(["/a"]);
   });
 
   it("ignores corrupt data and missing storage", () => {

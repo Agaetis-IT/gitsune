@@ -127,7 +127,7 @@ export function createDemoStash(hooks: Hooks) {
       const snapshot =
         mode === "hard" && dirty
           ? {
-              reference: "refs/git-hydra/undo/demo-1",
+              reference: "refs/gitsune/undo/demo-1",
               id: id("5b"),
               time: Math.floor(Date.now() / 1000),
               description: "reset --hard",

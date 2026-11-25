@@ -369,7 +369,7 @@ fn leftovers(dir: &Path) -> Vec<String> {
         .unwrap()
         .filter_map(Result::ok)
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.starts_with("git-hydra-snapshot"))
+        .filter(|name| name.starts_with("gitsune-snapshot"))
         .collect()
 }
 
@@ -414,6 +414,39 @@ fn discarding_restores_the_staged_content_and_keeps_a_snapshot() {
     assert!(snapshot.reference.starts_with(SNAPSHOT_PREFIX));
     assert!(leftovers(dir).is_empty(), "the temporary index is removed");
     assert_eq!(list_snapshots(&ctx).unwrap().len(), 1);
+}
+
+#[test]
+fn a_snapshot_kept_under_the_old_name_of_the_application_is_still_listed_and_restored() {
+    use super::ops::LEGACY_SNAPSHOT_PREFIX;
+    let tmp = repo_with(&[("a.txt", "one\n")]);
+    let dir = tmp.path();
+    write(dir, "a.txt", "edited\n");
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+    let result = discard_paths(&ctx, &paths(&["a.txt"])).unwrap();
+    let new_ref = result.snapshot.unwrap().reference;
+    assert!(new_ref.starts_with(SNAPSHOT_PREFIX));
+
+    // The same snapshot, as a version of the application before the rename would have left it.
+    let legacy_ref = new_ref.replace(SNAPSHOT_PREFIX, LEGACY_SNAPSHOT_PREFIX);
+    let id = String::from_utf8_lossy(&git_out(dir, &["rev-parse", &new_ref]))
+        .trim()
+        .to_string();
+    git(dir, &["update-ref", &legacy_ref, &id]);
+    git(dir, &["update-ref", "-d", &new_ref]);
+
+    let listed = list_snapshots(&ctx).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].reference, legacy_ref);
+    assert!(
+        listed[0].description.starts_with("before"),
+        "{}",
+        listed[0].description
+    );
+
+    restore_snapshot(&ctx, &legacy_ref).unwrap();
+    assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "edited\n");
 }
 
 #[test]
@@ -518,8 +551,8 @@ fn only_snapshots_of_this_application_can_be_restored() {
     let stores = RepoStores::default();
     let ctx = ctx(&tmp, &stores);
     assert!(restore_snapshot(&ctx, "refs/heads/main").is_err());
-    assert!(restore_snapshot(&ctx, "refs/git-hydra/undo/../../heads/main").is_err());
-    assert!(restore_snapshot(&ctx, "refs/git-hydra/undo/0000000000000-000000").is_err());
+    assert!(restore_snapshot(&ctx, "refs/gitsune/undo/../../heads/main").is_err());
+    assert!(restore_snapshot(&ctx, "refs/gitsune/undo/0000000000000-000000").is_err());
 }
 
 #[test]

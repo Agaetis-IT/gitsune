@@ -703,10 +703,8 @@ async fn run_remote(
     }
     let running = Arc::new(RunningOp {
         cancel: AtomicBool::new(false),
-        askpass_dir: std::env::temp_dir().join(format!(
-            "git-hydra-askpass-{}-{safe_id}",
-            std::process::id()
-        )),
+        askpass_dir: std::env::temp_dir()
+            .join(format!("gitsune-askpass-{}-{safe_id}", std::process::id())),
     });
     ops.running
         .lock()

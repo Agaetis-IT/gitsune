@@ -13,11 +13,11 @@ import {
 
 export type { ThemeMode } from "@/lib/theme/types";
 
-const MODE_KEY = "git-hydra:theme";
-const THEME_KEY = "git-hydra:theme-id";
-const CUSTOM_KEY = "git-hydra:themes";
-const LIGHT_KEY = "git-hydra:theme-id-light";
-const DARK_KEY = "git-hydra:theme-id-dark";
+const MODE_KEY = "gitsune:theme";
+const THEME_KEY = "gitsune:theme-id";
+const CUSTOM_KEY = "gitsune:themes";
+const LIGHT_KEY = "gitsune:theme-id-light";
+const DARK_KEY = "gitsune:theme-id-dark";
 
 function read(key: string): string | null {
   try {

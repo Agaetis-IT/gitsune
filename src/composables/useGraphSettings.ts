@@ -2,12 +2,12 @@ import { ref } from "vue";
 import { defaultRemoteIcon, type IconName, isIconName } from "@/lib/metro/icons";
 import type { Density } from "@/lib/metro/metrics";
 
-const INITIALS_KEY = "git-hydra:graph-initials";
-const DENSITY_KEY = "git-hydra:graph-density";
-const COLUMNS_KEY = "git-hydra:graph-columns";
-const REFS_WIDTH_KEY = "git-hydra:graph-refs-width";
-const GRAPH_WIDTH_KEY = "git-hydra:graph-width";
-const REMOTE_ICONS_KEY = "git-hydra:remote-icons";
+const INITIALS_KEY = "gitsune:graph-initials";
+const DENSITY_KEY = "gitsune:graph-density";
+const COLUMNS_KEY = "gitsune:graph-columns";
+const REFS_WIDTH_KEY = "gitsune:graph-refs-width";
+const GRAPH_WIDTH_KEY = "gitsune:graph-width";
+const REMOTE_ICONS_KEY = "gitsune:remote-icons";
 
 /** Width limits of the column of branch labels, in pixels. */
 export const REFS_WIDTH = { min: 120, max: 480, initial: 220 } as const;

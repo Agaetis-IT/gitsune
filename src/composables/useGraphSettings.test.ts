@@ -21,12 +21,12 @@ describe("graph settings", () => {
     s = (await import("./useGraphSettings")).useGraphSettings();
     expect(s.density.value).toBe("detailed");
     expect(s.showInitials.value).toBe(false);
-    expect(localStorage.getItem("git-hydra:graph-density")).toBe("detailed");
-    expect(localStorage.getItem("git-hydra:graph-initials")).toBe("off");
+    expect(localStorage.getItem("gitsune:graph-density")).toBe("detailed");
+    expect(localStorage.getItem("gitsune:graph-initials")).toBe("off");
   });
 
   it("ignores a stored value it does not know", async () => {
-    localStorage.setItem("git-hydra:graph-density", "huge");
+    localStorage.setItem("gitsune:graph-density", "huge");
     const { useGraphSettings } = await import("./useGraphSettings");
     expect(useGraphSettings().density.value).toBe("compact");
   });
@@ -56,10 +56,10 @@ describe("graph layout settings", () => {
     s.setRefsWidth(10);
     expect(s.refsWidth.value).toBe(REFS_WIDTH.min);
     s.setGraphWidth(300);
-    expect(localStorage.getItem("git-hydra:graph-width")).toBe("300");
+    expect(localStorage.getItem("gitsune:graph-width")).toBe("300");
     s.setGraphWidth(null);
     expect(s.graphWidth.value).toBeNull();
-    expect(localStorage.getItem("git-hydra:graph-width")).toBeNull();
+    expect(localStorage.getItem("gitsune:graph-width")).toBeNull();
   });
 
   it("gives each remote an icon: its choice, or a default", async () => {
@@ -76,7 +76,7 @@ describe("graph layout settings", () => {
   });
 
   it("ignores stored icons it does not know", async () => {
-    localStorage.setItem("git-hydra:remote-icons", JSON.stringify({ origin: "nope", up: "cloud" }));
+    localStorage.setItem("gitsune:remote-icons", JSON.stringify({ origin: "nope", up: "cloud" }));
     const s = (await import("./useGraphSettings")).useGraphSettings();
     expect(s.remoteIcon("origin")).toBe("users");
     expect(s.remoteIcon("up")).toBe("cloud");
