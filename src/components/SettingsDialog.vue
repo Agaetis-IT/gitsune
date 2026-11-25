@@ -18,7 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useSettings } from "@/composables/useSettings";
 import { useDiagnostics } from "@/composables/useDiagnostics";
 import { useGeneralSettings } from "@/composables/useGeneralSettings";
-import { APP_VERSION } from "@/lib/appVersion";
+import { APP_VERSION_LABEL } from "@/lib/appVersion";
 import { AUTO_FETCH_CHOICES } from "@/lib/autoFetch";
 import { ensureNotificationPermission } from "@/lib/desktopNotify";
 import { useGraphSettings } from "@/composables/useGraphSettings";
@@ -211,7 +211,7 @@ function onOpenChange(value: boolean) {
             {{ s.label }}
           </button>
           <p class="text-muted-foreground px-2 pt-4 text-xs" data-testid="app-version">
-            Gitsune {{ APP_VERSION === "dev" ? "(development)" : `v${APP_VERSION}` }}
+            Gitsune {{ APP_VERSION_LABEL }}
           </p>
         </nav>
 
