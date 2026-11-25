@@ -29,6 +29,21 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
     pickFolder: async () => info.path,
     open: async () => ({ info, refs }),
     close: async () => {},
+    search: async (_repoId, query, limit) => {
+      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      if (terms.length === 0) return { rows: [], total: 0 };
+      const rows = data.rows
+        .filter((r) =>
+          terms.every(
+            (t) =>
+              r.summary.toLowerCase().includes(t) ||
+              r.author.toLowerCase().includes(t) ||
+              r.id.startsWith(t),
+          ),
+        )
+        .map((r) => r.row);
+      return { rows: rows.slice(0, limit), total: rows.length };
+    },
     commitDetail: async (_repoId, commitId) => demoCommitDetail(commitId),
     fileDiff: async (_repoId, _commitId, file, force) => demoFileDiff(file, force),
     graph: async () => ({

@@ -5,6 +5,7 @@
 //! every page comes from the same layout, lanes and columns are consistent across pages.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use gix::ObjectId;
@@ -13,6 +14,7 @@ use serde::Serialize;
 
 use super::graph::{CommitGraph, first_line, load_graph};
 use super::refs::{RefInfo, list_refs};
+use super::search::{SearchIndex, SearchResult, build_index, search};
 use crate::layout::{self, Edge, Lane, Layout};
 
 /// Largest page the backend will return, whatever the caller asks.
@@ -27,6 +29,8 @@ pub struct GraphCache {
     refs: Vec<GraphRef>,
     load_ms: u128,
     layout_ms: u128,
+    /// Built the first time a search is made.
+    search_index: OnceLock<SearchIndex>,
 }
 
 /// A visible ref and the row of the commit it points at.
@@ -36,6 +40,8 @@ pub struct GraphRef {
     #[serde(flatten)]
     pub info: RefInfo,
     pub row: usize,
+    /// Lane of that commit, to highlight the branch.
+    pub lane: u32,
 }
 
 /// What the frontend needs once, before asking for pages.
@@ -115,9 +121,11 @@ pub fn build_graph_cache(
         };
         if let Some(&row) = row_of.get(&id) {
             refs_by_row.entry(row).or_default().push(reference.clone());
+            let lane = layout.rows[row].lane;
             graph_refs.push(GraphRef {
                 info: reference,
                 row,
+                lane,
             });
         }
     }
@@ -129,6 +137,7 @@ pub fn build_graph_cache(
         refs: graph_refs,
         load_ms,
         layout_ms,
+        search_index: OnceLock::new(),
     })
 }
 
@@ -191,4 +200,18 @@ pub fn graph_page(
         next_cursor: (end < total).then_some(end),
         total,
     })
+}
+
+/// Finds commits of the graph matching `query` (see [`search`]). The search index is
+/// built from the commits on the first call and kept for the following ones.
+pub fn graph_search(
+    repo: &ThreadSafeRepository,
+    cache: &GraphCache,
+    query: &str,
+    limit: usize,
+) -> SearchResult {
+    let index = cache
+        .search_index
+        .get_or_init(|| build_index(repo, &cache.graph.ids));
+    search(index, query, limit)
 }

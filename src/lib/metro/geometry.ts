@@ -72,3 +72,17 @@ export function isOnStation(px: number, py: number, row: number, col: number, m:
   const reach = m.stationR + 4;
   return dx * dx + dy * dy <= reach * reach;
 }
+
+/**
+ * The lane whose straight vertical line passes under a point of the graph area (content
+ * coordinates), or `null`. Connectors and stations are not considered.
+ */
+export function laneAt(x: number, y: number, lanes: readonly Lane[], m: Metrics): Lane | null {
+  const reach = m.lineW / 2 + 3;
+  for (const lane of lanes) {
+    const range = laneVerticalRange(lane);
+    if (!range || Math.abs(x - colX(lane.col, m)) > reach) continue;
+    if (y >= rowCenterY(range.from, m) && y <= rowCenterY(range.to, m)) return lane;
+  }
+  return null;
+}

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Edge, Lane } from "@/lib/api";
-import { connectorPath, isOnStation, laneVerticalRange, rowAtY, visibleRows } from "./geometry";
+import {
+  connectorPath,
+  isOnStation,
+  laneAt,
+  laneVerticalRange,
+  rowAtY,
+  visibleRows,
+} from "./geometry";
 import { colX, graphContentWidth, METRICS, rowCenterY } from "./metrics";
 
 const m = METRICS.compact; // rowH 28, colW 18, graphPad 14, cornerR 9
@@ -90,5 +97,26 @@ describe("viewport helpers", () => {
     expect(graphContentWidth(0, m)).toBe(28);
     expect(graphContentWidth(1, m)).toBe(28);
     expect(graphContentWidth(4, m)).toBe(28 + 3 * 18);
+  });
+});
+
+describe("laneAt", () => {
+  const lanes = [
+    lane({ id: 0, col: 0, firstRow: 0, lastRow: 40 }),
+    lane({ id: 1, col: 2, firstRow: 5, lastRow: 30, forked: true, joins: true }),
+  ];
+
+  it("finds the lane under a point on its line", () => {
+    expect(laneAt(colX(0, m), rowCenterY(10, m), lanes, m)?.id).toBe(0);
+    expect(laneAt(colX(2, m) + 3, rowCenterY(12, m), lanes, m)?.id).toBe(1);
+  });
+
+  it("misses between lanes, outside the vertical range and beside the line", () => {
+    expect(laneAt(colX(1, m), rowCenterY(10, m), lanes, m)).toBeNull();
+    expect(laneAt(colX(0, m), rowCenterY(41, m), lanes, m)).toBeNull();
+    // Lane 1 forks at row 5 and joins at row 30: its line only spans rows 6 to 29.
+    expect(laneAt(colX(2, m), rowCenterY(5, m), lanes, m)).toBeNull();
+    expect(laneAt(colX(2, m), rowCenterY(30, m), lanes, m)).toBeNull();
+    expect(laneAt(colX(0, m) + 8, rowCenterY(10, m), lanes, m)).toBeNull();
   });
 });

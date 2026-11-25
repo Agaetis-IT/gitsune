@@ -6,7 +6,7 @@ use gix::ThreadSafeRepository;
 use tauri::State;
 
 use crate::git::{
-    self, CommitDetail, FileDiff, GraphCache, GraphMeta, GraphPage, RefInfo, RepoInfo,
+    self, CommitDetail, FileDiff, GraphCache, GraphMeta, GraphPage, RefInfo, RepoInfo, SearchResult,
 };
 
 struct OpenRepo {
@@ -151,4 +151,17 @@ pub async fn get_file_diff(
         old_path.as_deref(),
         force,
     )
+}
+
+/// Commits of the current graph whose message or author contains every word of `query`,
+/// or whose id starts with it. Rows are returned newest first, at most `limit` (2000).
+#[tauri::command]
+pub async fn search_commits(
+    repo_id: String,
+    query: String,
+    limit: usize,
+    registry: State<'_, RepoRegistry>,
+) -> Result<SearchResult, String> {
+    let (repo, graph) = registry.graph(&repo_id, None)?;
+    Ok(git::graph_search(&repo, &graph, &query, limit))
 }

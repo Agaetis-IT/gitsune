@@ -28,7 +28,16 @@ export interface DrawInput {
   getRow: (row: number) => GraphRow | undefined;
   selectedRow: number | null;
   hoverRow: number | null;
+  /** Lane drawn in full while the others fade; `null` for no highlight. */
+  highlightLane: number | null;
+  /** Rows matching the current search, tinted. */
+  matchRows: ReadonlySet<number>;
 }
+
+/** Opacity of what is not highlighted. */
+const FADED_LANE = 0.18;
+const FADED_TEXT = 0.35;
+const MATCH_TINT = "#facc15";
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif";
 const dateFormat = new Intl.DateTimeFormat(undefined, {
@@ -64,6 +73,13 @@ function drawBands(input: DrawInput, range: Range): void {
     ctx.fillRect(0, rowTop(row, m) - scrollTop, width, m.rowH);
     ctx.globalAlpha = 1;
   };
+  for (let row = range.first; row <= range.last; row++) {
+    if (!input.matchRows.has(row)) continue;
+    ctx.globalAlpha = 0.16;
+    ctx.fillStyle = MATCH_TINT;
+    ctx.fillRect(0, rowTop(row, m) - scrollTop, width, m.rowH);
+    ctx.globalAlpha = 1;
+  }
   band(input.hoverRow, 0.05);
   band(input.selectedRow, 0.1);
 
@@ -93,37 +109,49 @@ function drawLanes(input: DrawInput, range: Range): void {
   const minX = input.graphScrollX - m.colW;
   const maxX = input.graphScrollX + input.graphViewportW + m.colW;
 
-  // Straight vertical parts of the lanes.
-  for (const lane of meta.lanes) {
-    const vertical = laneVerticalRange(lane);
-    if (!vertical || vertical.to < range.first - 1 || vertical.from > range.last + 1) continue;
-    const x = colX(lane.col, m);
-    if (x < minX || x > maxX) continue;
-    ctx.strokeStyle = laneColor(theme.palette, lane.color);
-    ctx.beginPath();
-    ctx.moveTo(x, rowCenterY(Math.max(vertical.from, range.first - 1), m));
-    ctx.lineTo(x, rowCenterY(Math.min(vertical.to, range.last + 1), m));
-    ctx.stroke();
-  }
+  const highlight = input.highlightLane;
+  // With a highlight, faded lanes are drawn first so the highlighted one is on top.
+  const passes = highlight === null ? [true] : [false, true];
+  const inPass = (laneId: number, focusedPass: boolean) =>
+    highlight === null || (laneId === highlight) === focusedPass;
+  const alphaOf = (laneId: number) => (highlight === null || laneId === highlight ? 1 : FADED_LANE);
 
-  // Connectors where lanes fork away or join.
-  for (let row = Math.max(0, range.first - 1); row <= range.last; row++) {
-    const data = input.getRow(row);
-    if (!data) continue;
-    for (const edge of data.edges) {
-      const lane = meta.lanes[edge.lane];
-      if (!lane) continue;
-      const left = Math.min(colX(edge.fromCol, m), colX(edge.toCol, m));
-      const right = Math.max(colX(edge.fromCol, m), colX(edge.toCol, m));
-      if (right < minX || left > maxX) continue;
+  for (const focusedPass of passes) {
+    // Straight vertical parts of the lanes.
+    for (const lane of meta.lanes) {
+      if (!inPass(lane.id, focusedPass)) continue;
+      const vertical = laneVerticalRange(lane);
+      if (!vertical || vertical.to < range.first - 1 || vertical.from > range.last + 1) continue;
+      const x = colX(lane.col, m);
+      if (x < minX || x > maxX) continue;
+      ctx.globalAlpha = alphaOf(lane.id);
       ctx.strokeStyle = laneColor(theme.palette, lane.color);
       ctx.beginPath();
-      for (const command of connectorPath(edge, rowCenterY(row, m), m)) {
-        if (command[0] === "M") ctx.moveTo(command[1], command[2]);
-        else if (command[0] === "L") ctx.lineTo(command[1], command[2]);
-        else ctx.quadraticCurveTo(command[1], command[2], command[3], command[4]);
-      }
+      ctx.moveTo(x, rowCenterY(Math.max(vertical.from, range.first - 1), m));
+      ctx.lineTo(x, rowCenterY(Math.min(vertical.to, range.last + 1), m));
       ctx.stroke();
+    }
+
+    // Connectors where lanes fork away or join.
+    for (let row = Math.max(0, range.first - 1); row <= range.last; row++) {
+      const data = input.getRow(row);
+      if (!data) continue;
+      for (const edge of data.edges) {
+        const lane = meta.lanes[edge.lane];
+        if (!lane || !inPass(lane.id, focusedPass)) continue;
+        const left = Math.min(colX(edge.fromCol, m), colX(edge.toCol, m));
+        const right = Math.max(colX(edge.fromCol, m), colX(edge.toCol, m));
+        if (right < minX || left > maxX) continue;
+        ctx.globalAlpha = alphaOf(lane.id);
+        ctx.strokeStyle = laneColor(theme.palette, lane.color);
+        ctx.beginPath();
+        for (const command of connectorPath(edge, rowCenterY(row, m), m)) {
+          if (command[0] === "M") ctx.moveTo(command[1], command[2]);
+          else if (command[0] === "L") ctx.lineTo(command[1], command[2]);
+          else ctx.quadraticCurveTo(command[1], command[2], command[3], command[4]);
+        }
+        ctx.stroke();
+      }
     }
   }
 
@@ -134,6 +162,7 @@ function drawLanes(input: DrawInput, range: Range): void {
     const x = colX(data.col, m);
     if (x < minX || x > maxX) continue;
     const lane = meta.lanes[data.lane];
+    ctx.globalAlpha = alphaOf(data.lane);
     drawStation(
       ctx,
       x,
@@ -143,6 +172,7 @@ function drawLanes(input: DrawInput, range: Range): void {
       input,
     );
   }
+  ctx.globalAlpha = 1;
   ctx.restore();
 }
 
@@ -202,6 +232,8 @@ function drawText(input: DrawInput, range: Range): void {
     }
     const lane = input.meta.lanes[data.lane];
     const color = laneColor(theme.palette, lane?.color ?? null);
+    ctx.globalAlpha =
+      input.highlightLane === null || data.lane === input.highlightLane ? 1 : FADED_TEXT;
     const summaryY = detailed ? centerY - 8 : centerY;
 
     // Right-aligned author and date in compact mode.
