@@ -2,6 +2,11 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   type ActivityEntry,
+  type AskpassEvent,
+  type PullStrategy,
+  type PushOptions,
+  type RemoteProgressEvent,
+  type RemoteResult,
   type CheckoutResult,
   type CheckoutTarget,
   type DeletedBranch,
@@ -9,6 +14,13 @@ import {
   type DirtyStrategy,
   checkoutTarget,
   createBranch,
+  fetchRemote,
+  pullBranch,
+  pushBranch,
+  deleteRemoteBranch,
+  listRemotes,
+  cancelOperation,
+  answerAskpass,
   createTag,
   deleteBranch,
   deleteTag,
@@ -134,6 +146,27 @@ export interface RepoBackend {
   ): Promise<WorkingStatus>;
   deleteTag(repoId: string, name: string): Promise<DeletedTag>;
   restoreTag(repoId: string, name: string, target: string): Promise<WorkingStatus>;
+  /** The names of the remotes. */
+  remotes(repoId: string): Promise<string[]>;
+  /** Downloads new commits and refs (`remote` null: every remote). */
+  fetch(repoId: string, opId: string, remote: string | null, prune: boolean): Promise<RemoteResult>;
+  /** Fetches and integrates the upstream; `divergedBranches` means a strategy is needed. */
+  pull(repoId: string, opId: string, strategy: PullStrategy | null): Promise<RemoteResult>;
+  push(repoId: string, opId: string, options: PushOptions): Promise<RemoteResult>;
+  deleteRemoteBranch(
+    repoId: string,
+    opId: string,
+    remote: string,
+    branch: string,
+  ): Promise<RemoteResult>;
+  /** Stops a running fetch, pull or push. */
+  cancelOperation(opId: string): Promise<void>;
+  /** Answers a question git asked (`null` refuses). */
+  answerAskpass(opId: string, promptId: string, answer: string | null): Promise<void>;
+  /** Calls `handler` with each line of progress of the running operations. */
+  onRemoteProgress(handler: (event: RemoteProgressEvent) => void): Promise<() => void>;
+  /** Calls `handler` when git or ssh asks for a secret or a confirmation. */
+  onAskpass(handler: (event: AskpassEvent) => void): Promise<() => void>;
   /** Calls `handler` when a file of the working tree (or the index) changed. */
   onWorktreeChanged(handler: (repoId: string) => void): Promise<() => void>;
   /** Calls `handler` when a git command was added to the activity log. */
@@ -182,6 +215,17 @@ export const tauriBackend: RepoBackend = {
   onActivityChanged: (handler) =>
     listen<{ repoId: string }>("activity-changed", (event) => handler(event.payload.repoId)),
   createBranch,
+  remotes: listRemotes,
+  fetch: fetchRemote,
+  pull: pullBranch,
+  push: pushBranch,
+  deleteRemoteBranch,
+  cancelOperation,
+  answerAskpass,
+  onRemoteProgress: (handler) =>
+    listen<RemoteProgressEvent>("remote-progress", (event) => handler(event.payload)),
+  onAskpass: (handler) =>
+    listen<AskpassEvent>("askpass-request", (event) => handler(event.payload)),
   checkout: checkoutTarget,
   renameBranch,
   deleteBranch,

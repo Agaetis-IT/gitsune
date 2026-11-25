@@ -53,6 +53,7 @@ describe("ref menu", () => {
       "checkout",
       "rename",
       "upstream",
+      "push",
       "delete",
       "highlight",
       "hide",
@@ -70,8 +71,13 @@ describe("ref menu", () => {
 
   it("a remote branch is checked out as a local one and can be hidden", () => {
     const items = refMenu(ref("origin/topic", "remote"), ctx());
-    expect(ids(items)).toEqual(["checkout", "hide", "copyName"]);
+    expect(ids(items)).toEqual(["checkout", "deleteRemote", "hide", "copyName"]);
     expect(find(items, "checkout")?.label).toContain("local branch");
+    expect(find(items, "deleteRemote")?.danger).toBe(true);
+    expect(
+      find(refMenu(ref("origin/topic", "remote"), ctx({ readOnly: true })), "deleteRemote")
+        ?.disabled,
+    ).toBeTruthy();
   });
 
   it("a tag can be checked out (detached) and deleted", () => {
@@ -93,7 +99,7 @@ describe("ref menu", () => {
   it("read-only mode greys out every write of a branch menu but not the view actions", () => {
     const items = refMenu(ref("topic", "local"), ctx({ readOnly: true, canHighlight: true }));
     const disabled = items.filter((i) => i.disabled).map((i) => i.id);
-    expect(disabled).toEqual(["checkout", "rename", "upstream", "delete"]);
+    expect(disabled).toEqual(["checkout", "rename", "upstream", "push", "delete"]);
     expect(find(items, "hide")?.disabled).toBeUndefined();
   });
 });

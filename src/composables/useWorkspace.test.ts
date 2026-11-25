@@ -171,6 +171,15 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
     createTag: async () => cleanStatus(),
     deleteTag: async (_repoId, name) => ({ name, target: "g".repeat(40), status: cleanStatus() }),
     restoreTag: async () => cleanStatus(),
+    remotes: async () => ["origin"],
+    fetch: async () => ({ status: cleanStatus(), summary: "" }),
+    pull: async () => ({ status: cleanStatus(), summary: "Already up to date." }),
+    push: async () => ({ status: cleanStatus(), summary: "" }),
+    deleteRemoteBranch: async () => ({ status: cleanStatus(), summary: "" }),
+    cancelOperation: async () => {},
+    answerAskpass: async () => {},
+    onRemoteProgress: async () => () => {},
+    onAskpass: async () => () => {},
     commitDetail: async (_repoId, id) => detailFor(id),
     refs: async () => REFS,
     locate: async (_repoId, ids) => ids.map(() => null),
@@ -1628,5 +1637,259 @@ describe("deleting branches and tags", () => {
     workspace.closeDialog(tab);
     expect(tab.dialog).toBeNull();
     expect(tab.writeError).toBeNull();
+  });
+});
+
+describe("fetch, pull and push", () => {
+  const result = (summary = "") => ({ status: cleanStatus(), summary });
+
+  it("shows progress while fetching and says what happened afterwards", async () => {
+    let progress: ((event: { repoId: string; opId: string; line: string }) => void) | undefined;
+    let release: (() => void) | undefined;
+    const fetch = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof result>>((resolve) => {
+          release = () => resolve(result("From origin\n   a..b  main -> origin/main"));
+        }),
+    );
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      fetch,
+      onRemoteProgress: async (handler) => {
+        progress = handler;
+        return () => {};
+      },
+    });
+
+    const running = workspace.fetchRemote(tab);
+    expect(tab.remote?.kind).toBe("fetch");
+    expect(tab.busy).toBe(false);
+    const opId = tab.remote?.id ?? "";
+    progress?.({ repoId: "/fake/a", opId, line: "Receiving objects:  45% (45/100)" });
+    expect(tab.remote?.percent).toBe(45);
+    expect(tab.remote?.line).toContain("Receiving objects");
+    progress?.({ repoId: "/fake/a", opId: "someone-else", line: "Receiving objects: 99%" });
+    expect(tab.remote?.percent).toBe(45);
+
+    release?.();
+    await running;
+    expect(tab.remote).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toBe("Fetched the remotes.");
+  });
+
+  it("does nothing new on the remotes: it says so", async () => {
+    const { workspace, tab } = await openWorktree();
+    await workspace.fetchRemote(tab);
+    expect(lastOf(workspace.notices.value)?.text).toBe("Nothing new on the remotes.");
+  });
+
+  it("runs one operation at a time per repository", async () => {
+    let release: (() => void) | undefined;
+    const fetch = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof result>>((resolve) => {
+          release = () => resolve(result());
+        }),
+    );
+    const push = vi.fn(async () => result());
+    const { workspace, tab } = await openWorktree(cleanStatus(), { fetch, push });
+    const first = workspace.fetchRemote(tab);
+    await workspace.push(tab);
+    expect(push).not.toHaveBeenCalled();
+    release?.();
+    await first;
+  });
+
+  it("read-only mode allows a fetch but refuses a pull and a push", async () => {
+    const pull = vi.fn(async () => result());
+    const push = vi.fn(async () => result());
+    const fetch = vi.fn(async () => result());
+    const { workspace, tab } = await openWorktree(cleanStatus(), { pull, push, fetch });
+    await workspace.setReadOnly(tab, true);
+    await workspace.fetchRemote(tab);
+    await workspace.pull(tab);
+    await workspace.push(tab);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(pull).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
+    expect(tab.writeError?.kind).toBe("readOnly");
+  });
+
+  it("a pull that needs a strategy asks for one, then tries again with the answer", async () => {
+    const pull = vi.fn(async (_id: string, _op: string, strategy: string | null) => {
+      if (strategy === null) {
+        throw new GitCommandError("divergedBranches", "Need to specify how to reconcile.");
+      }
+      return result("Merge made by the 'ort' strategy.");
+    });
+    const { workspace, tab } = await openWorktree(cleanStatus(), { pull });
+    await workspace.pull(tab);
+    expect(tab.dialog).toEqual({
+      type: "pullStrategy",
+      message: "Need to specify how to reconcile.",
+    });
+    expect(tab.busy).toBe(false);
+
+    await workspace.pull(tab, "rebase");
+    expect(pull).toHaveBeenLastCalledWith("/fake/a", expect.any(String), "rebase");
+    expect(tab.dialog).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toBe("Pulled the latest changes.");
+  });
+
+  it("explains a pull that conflicts or would overwrite local changes with a notice", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      pull: async () => {
+        throw new GitCommandError("conflict", "CONFLICT (content): Merge conflict in a.txt");
+      },
+    });
+    await workspace.pull(tab);
+    expect(lastOf(workspace.notices.value)?.text).toContain("conflicts");
+
+    const second = await openWorktree(cleanStatus(), {
+      pull: async () => {
+        throw new GitCommandError("wouldOverwriteChanges", "local changes would be overwritten", [
+          "a.txt",
+        ]);
+      },
+    });
+    await second.workspace.pull(second.tab);
+    expect(lastOf(second.workspace.notices.value)?.text).toContain("would be overwritten");
+  });
+
+  it("pushing a branch with no upstream asks for the remote and offers to track it", async () => {
+    const push = vi.fn(async (_id: string, _op: string, options: { remote: string | null }) => {
+      if (!options.remote) throw new GitCommandError("noUpstream", "no upstream branch");
+      return result();
+    });
+    const { workspace, tab } = await openWorktree(cleanStatus(), { push });
+    await workspace.push(tab);
+    expect(tab.dialog).toMatchObject({
+      type: "push",
+      remotes: ["origin"],
+      remote: "origin",
+      branch: "main",
+      setUpstream: true,
+      canForce: false,
+    });
+
+    await workspace.push(tab, { remote: "origin", branch: "main", setUpstream: true });
+    expect(push).toHaveBeenLastCalledWith("/fake/a", expect.any(String), {
+      remote: "origin",
+      branch: "main",
+      setUpstream: true,
+      forceWithLease: false,
+    });
+    expect(tab.dialog).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toBe("Pushed main.");
+  });
+
+  it("a push refused because the remote is ahead offers to pull or to force with a lease", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      push: async () => {
+        throw new GitCommandError("pushRejected", " ! [rejected] main -> main (non-fast-forward)");
+      },
+    });
+    await workspace.push(tab, { remote: "origin" });
+    expect(tab.dialog).toMatchObject({ type: "push", canForce: true, setUpstream: false });
+  });
+
+  it("a push refused for another reason is only reported", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      push: async () => {
+        throw new GitCommandError(
+          "pushRejected",
+          " ! [remote rejected] main (pre-receive hook declined)",
+        );
+      },
+    });
+    await workspace.push(tab, { remote: "origin" });
+    expect(tab.dialog).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toContain("hook declined");
+  });
+
+  it("the remote branch deletion confirms, runs and reports", async () => {
+    const deleteRemoteBranch = vi.fn(async () => result());
+    const { workspace, tab } = await openWorktree(cleanStatus(), { deleteRemoteBranch });
+    workspace.askDeleteRemoteBranch(tab, "origin", "feature/x");
+    expect(tab.dialog).toEqual({
+      type: "deleteRemoteBranch",
+      remote: "origin",
+      branch: "feature/x",
+    });
+    await workspace.deleteRemoteBranch(tab, "origin", "feature/x");
+    expect(deleteRemoteBranch).toHaveBeenCalledWith(
+      "/fake/a",
+      expect.any(String),
+      "origin",
+      "feature/x",
+    );
+    expect(tab.dialog).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toBe("Deleted feature/x on origin.");
+  });
+
+  it("cancelling stops the operation without an error", async () => {
+    let fail: ((error: unknown) => void) | undefined;
+    const cancelOperation = vi.fn(async () => {
+      fail?.(new GitCommandError("cancelled", "Cancelled."));
+    });
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      cancelOperation,
+      push: () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    });
+    const running = workspace.push(tab, { remote: "origin" });
+    const opId = tab.remote?.id;
+    await workspace.cancelRemote(tab);
+    await running;
+    expect(cancelOperation).toHaveBeenCalledWith(opId);
+    expect(tab.remote).toBeNull();
+    expect(tab.writeError).toBeNull();
+    expect(lastOf(workspace.notices.value)).toMatchObject({ kind: "info" });
+    expect(lastOf(workspace.notices.value)?.text).toContain("cancelled");
+  });
+
+  it("passes the user's answer to the question git asked, and never keeps it", async () => {
+    let ask:
+      | ((event: { repoId: string; opId: string; promptId: string; prompt: string }) => void)
+      | undefined;
+    let release: (() => void) | undefined;
+    const answerAskpass = vi.fn(async () => {});
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      answerAskpass,
+      onAskpass: async (handler) => {
+        ask = handler;
+        return () => {};
+      },
+      push: () =>
+        new Promise((resolve) => {
+          release = () => resolve(result());
+        }),
+    });
+    const running = workspace.push(tab, { remote: "origin" });
+    const opId = tab.remote?.id ?? "";
+    ask?.({ repoId: "/fake/a", opId, promptId: "4242", prompt: "Password for 'https://x': " });
+    expect(tab.remote?.prompt).toEqual({ promptId: "4242", text: "Password for 'https://x': " });
+
+    await workspace.answerPrompt(tab, "s3cret");
+    expect(answerAskpass).toHaveBeenCalledWith(opId, "4242", "s3cret");
+    expect(tab.remote?.prompt).toBeNull();
+    expect(JSON.stringify(tab.remote)).not.toContain("s3cret");
+    release?.();
+    await running;
+  });
+
+  it("an authentication failure is a notice", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      fetch: async () => {
+        throw new GitCommandError("authFailed", "Authentication failed");
+      },
+    });
+    await workspace.fetchRemote(tab);
+    expect(lastOf(workspace.notices.value)).toMatchObject({
+      kind: "error",
+      text: "Authentication failed",
+    });
+    expect(tab.remote).toBeNull();
   });
 });

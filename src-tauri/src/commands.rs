@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,8 +11,8 @@ use tauri::{AppHandle, Emitter, State};
 use crate::git::{
     self, ActivityEntry, Area, CheckoutResult, CheckoutTarget, CommitDetail, CommitResult,
     DeletedBranch, DeletedTag, DirtyStrategy, DiscardResult, FileDiff, GitError, GraphCache,
-    GraphMeta, GraphPage, RefInfo, RepoInfo, RepoStores, RepoWatcher, SearchResult, Snapshot,
-    WorkingStatus,
+    GraphMeta, GraphPage, PullStrategy, PushOptions, RefInfo, RemoteResult, RepoInfo, RepoStores,
+    RepoWatcher, SearchResult, Snapshot, WorkingStatus,
 };
 
 struct OpenRepo {
@@ -584,4 +585,222 @@ pub async fn restore_tag(
     with_ctx(&registry, &repo_id, |ctx| {
         git::restore_tag(ctx, &name, &target)
     })
+}
+
+// ---------- fetch, pull and push ----------
+
+/// A fetch, pull or push that is running: what is needed to cancel it and to answer its questions.
+struct RunningOp {
+    cancel: AtomicBool,
+    /// Where the askpass helper of this operation leaves its questions.
+    askpass_dir: PathBuf,
+}
+
+/// The long operations in progress, by operation id (chosen by the interface).
+#[derive(Default)]
+pub struct RemoteOps {
+    running: Mutex<HashMap<String, Arc<RunningOp>>>,
+}
+
+/// Payload of `remote-progress`: a line git printed while the operation runs.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteProgress {
+    repo_id: String,
+    op_id: String,
+    line: String,
+}
+
+/// Payload of `askpass-request`: git or ssh needs a secret or a confirmation.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AskpassRequest {
+    repo_id: String,
+    op_id: String,
+    prompt_id: String,
+    prompt: String,
+}
+
+/// Runs a long operation off the async runtime, streaming its progress and questions as events.
+async fn run_remote(
+    app: AppHandle,
+    registry: &RepoRegistry,
+    ops: &RemoteOps,
+    repo_id: String,
+    op_id: String,
+    operation: impl FnOnce(&git::OpCtx, &git::LongIo) -> Result<RemoteResult, GitError> + Send + 'static,
+) -> Result<RemoteResult, GitError> {
+    let (workdir, stores) = registry.context(&repo_id)?;
+    let safe_id: String = op_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    if safe_id.is_empty() || safe_id != op_id {
+        return Err(GitError::other("invalid operation id"));
+    }
+    let running = Arc::new(RunningOp {
+        cancel: AtomicBool::new(false),
+        askpass_dir: std::env::temp_dir().join(format!(
+            "git-hydra-askpass-{}-{safe_id}",
+            std::process::id()
+        )),
+    });
+    ops.running
+        .lock()
+        .map_err(|_| GitError::other(POISONED))?
+        .insert(op_id.clone(), running.clone());
+
+    let job = {
+        let running = running.clone();
+        let (repo_id, op_id) = (repo_id.clone(), op_id.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            let progress = {
+                let (app, repo_id, op_id) = (app.clone(), repo_id.clone(), op_id.clone());
+                move |line: &str| {
+                    let _ = app.emit(
+                        "remote-progress",
+                        RemoteProgress {
+                            repo_id: repo_id.clone(),
+                            op_id: op_id.clone(),
+                            line: line.to_string(),
+                        },
+                    );
+                }
+            };
+            let prompt = {
+                let (app, repo_id, op_id) = (app.clone(), repo_id.clone(), op_id.clone());
+                move |prompt_id: &str, text: &str| {
+                    let _ = app.emit(
+                        "askpass-request",
+                        AskpassRequest {
+                            repo_id: repo_id.clone(),
+                            op_id: op_id.clone(),
+                            prompt_id: prompt_id.to_string(),
+                            prompt: text.to_string(),
+                        },
+                    );
+                }
+            };
+            let io = git::LongIo {
+                cancel: &running.cancel,
+                askpass_dir: &running.askpass_dir,
+                on_progress: &progress,
+                on_prompt: &prompt,
+            };
+            let result = operation(
+                &git::OpCtx {
+                    workdir: &workdir,
+                    stores: &stores,
+                },
+                &io,
+            );
+            let _ = std::fs::remove_dir_all(&running.askpass_dir);
+            result
+        })
+    };
+    let result = job
+        .await
+        .map_err(|e| GitError::other(format!("the operation stopped unexpectedly: {e}")))?;
+    if let Ok(mut running) = ops.running.lock() {
+        running.remove(&op_id);
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn fetch_remote(
+    repo_id: String,
+    op_id: String,
+    remote: Option<String>,
+    prune: bool,
+    app: AppHandle,
+    registry: State<'_, RepoRegistry>,
+    ops: State<'_, RemoteOps>,
+) -> Result<RemoteResult, GitError> {
+    run_remote(app, &registry, &ops, repo_id, op_id, move |ctx, io| {
+        git::fetch(ctx, io, remote.as_deref(), prune)
+    })
+    .await
+}
+
+/// Fetches and integrates the upstream. Without a strategy git applies the user's
+/// configuration; `divergedBranches` means it needs one.
+#[tauri::command]
+pub async fn pull_branch(
+    repo_id: String,
+    op_id: String,
+    strategy: Option<PullStrategy>,
+    app: AppHandle,
+    registry: State<'_, RepoRegistry>,
+    ops: State<'_, RemoteOps>,
+) -> Result<RemoteResult, GitError> {
+    run_remote(app, &registry, &ops, repo_id, op_id, move |ctx, io| {
+        git::pull(ctx, io, strategy)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn push_branch(
+    repo_id: String,
+    op_id: String,
+    options: PushOptions,
+    app: AppHandle,
+    registry: State<'_, RepoRegistry>,
+    ops: State<'_, RemoteOps>,
+) -> Result<RemoteResult, GitError> {
+    run_remote(app, &registry, &ops, repo_id, op_id, move |ctx, io| {
+        git::push(ctx, io, &options)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_remote_branch(
+    repo_id: String,
+    op_id: String,
+    remote: String,
+    branch: String,
+    app: AppHandle,
+    registry: State<'_, RepoRegistry>,
+    ops: State<'_, RemoteOps>,
+) -> Result<RemoteResult, GitError> {
+    run_remote(app, &registry, &ops, repo_id, op_id, move |ctx, io| {
+        git::delete_remote_branch(ctx, io, &remote, &branch)
+    })
+    .await
+}
+
+/// The names of the remotes of the repository.
+#[tauri::command]
+pub async fn list_remotes(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<Vec<String>, GitError> {
+    with_ctx(&registry, &repo_id, git::list_remotes)
+}
+
+/// Stops a running fetch, pull or push.
+#[tauri::command]
+pub async fn cancel_operation(op_id: String, ops: State<'_, RemoteOps>) -> Result<(), GitError> {
+    let running = ops.running.lock().map_err(|_| GitError::other(POISONED))?;
+    if let Some(op) = running.get(&op_id) {
+        op.cancel.store(true, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+/// Gives git or ssh the answer to a question it asked (`None` refuses to answer).
+#[tauri::command]
+pub async fn answer_askpass(
+    op_id: String,
+    prompt_id: String,
+    answer: Option<String>,
+    ops: State<'_, RemoteOps>,
+) -> Result<(), GitError> {
+    let running = ops.running.lock().map_err(|_| GitError::other(POISONED))?;
+    let op = running
+        .get(&op_id)
+        .ok_or_else(|| GitError::other("This operation is not running any more."))?;
+    git::answer_prompt(&op.askpass_dir, &prompt_id, answer.as_deref())
 }

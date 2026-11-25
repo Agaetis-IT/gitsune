@@ -7,6 +7,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::RepoRegistry::default())
+        .manage(commands::RemoteOps::default())
         .invoke_handler(tauri::generate_handler![
             commands::open_repo,
             commands::close_repo,
@@ -41,7 +42,14 @@ pub fn run() {
             commands::set_upstream,
             commands::create_tag,
             commands::delete_tag,
-            commands::restore_tag
+            commands::restore_tag,
+            commands::fetch_remote,
+            commands::pull_branch,
+            commands::push_branch,
+            commands::delete_remote_branch,
+            commands::list_remotes,
+            commands::cancel_operation,
+            commands::answer_askpass
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -190,7 +190,7 @@ Known ceilings: a diff is a plain table, so about 5,000 lines is the practical l
 
 ## 9. Plan
 
-Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 (section 12.8) and M11 (section 12.9) are done; M12 to M16 are planned (section 12.4).
+Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 (section 12.8), M11 (section 12.9) and M12 (section 12.10) are done; M13 to M16 are planned (section 12.4).
 
 Each milestone ends with lint and tests passing and a short demo.
 
@@ -392,3 +392,22 @@ What exists, and where it differs from the plan above.
 **Not done in M11**: deleting a remote branch (needs M12), a "delete branch and its remote" option, checkout of a branch checked out in another worktree (reported as an error).
 
 **Tests**: 153 Rust tests (21 new: error classification, creation, each checkout target, dirty trees with stash and discard, rename, delete and restore, upstream against a local bare remote, tags with and without identity, read-only mode, lock) and 139 front tests (checkout flows and notices, dialogs' errors, delete with unmerged warning, Undo, menu builders).
+
+### 12.10 M12 as built (fetch, pull, push)
+
+**Backend** (`src-tauri/src/git/remote.rs`, runner additions in `cli.rs`).
+- `Runner::run_long` runs git with its stderr streamed line by line (git's `\r` progress updates go to the interface, only the lines git ended with `\n` are kept for the log), can be cancelled, and relays questions. It starts git in its own process group: cancelling sends `SIGTERM` to the group (git removes its lock files, `ssh` and hooks stop too) and `SIGKILL` after 3 seconds.
+- **Askpass**: a small shell script written to a per-operation temp directory is set as `GIT_ASKPASS` and `SSH_ASKPASS` (`SSH_ASKPASS_REQUIRE=force`). It writes the question to `<pid>.prompt` and waits for `<pid>.answer` (or `<pid>.cancel`); the runner reports new questions through a callback and `answer_prompt` writes the answer. No extra binary is shipped; the answer only passes through a file that lives for the duration of the operation and is deleted with the directory. Nothing is stored.
+- Operations: `fetch` (all remotes or one, optional `--prune`), `pull` (git's own configuration, or `--ff-only`, `--no-rebase`, `--rebase`), `push` (upstream, or remote and branch; `-u`; `--force-with-lease` as a separate option, never `--force`), `delete_remote_branch` (`push <remote> --delete <branch>`), `list_remotes`. Names that look like options are refused before git runs.
+- **Fetch is allowed in read-only mode** and does not take the write lock (it only moves remote-tracking refs); pull, push and remote deletion are writes.
+- New error kinds: `authFailed`, `unreachable`, `pushRejected`, `noUpstream`, `divergedBranches`, `conflict`, `cancelled` (and `would be overwritten by merge` is a `wouldOverwriteChanges` with its files).
+- Commands: `fetch_remote`, `pull_branch`, `push_branch`, `delete_remote_branch`, `list_remotes`, `cancel_operation`, `answer_askpass`; events `remote-progress` and `askpass-request`. The interface chooses the operation id. The operation runs off the async runtime.
+
+**Interface.** Fetch, Pull and Push buttons in the toolbar; a progress panel (percentage when git gives one, last line, Cancel); an askpass dialog (password or passphrase hidden, host-key questions in clear). Failures lead to the right question instead of an error: no upstream opens the push dialog with "track it" ticked; a push refused because the remote is ahead opens it with "Pull first" and the lease option; a pull on diverged branches asks Merge or Rebase; a pull that conflicts or would overwrite local changes is explained in a notice. Context menus: "Push…" on a local branch, "Delete on the remote…" on a remote branch.
+
+**Demo backend** (`src/dev/demoRemote.ts`) plays progress, asks one password the first time something is pushed, needs an upstream for a first push and a strategy for the first pull.
+
+**Not done in M12**: ahead/behind counters on branches, tags push (`--tags`), adding or removing remotes, a "pull" that stashes local changes automatically, conflict resolution after a pull (M14: the merge is left in progress and explained), reading the credential helper's result for HTTPS (git does it itself). The askpass flow was tested with `git credential fill`; no test reaches a real SSH or HTTPS server, and the Tauri window itself was not run.
+
+**Tests**: 173 Rust (20 new: classification, fetch with progress and prune, read-only, pull fast-forward/merge/rebase/conflict/overwrite, push with upstream, lease, deletion, option-looking names, cancelling a hung fetch, askpass answers and refusal) and 152 front.
+
