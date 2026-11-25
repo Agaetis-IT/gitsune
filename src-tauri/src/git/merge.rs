@@ -191,11 +191,14 @@ pub fn continue_operation(ctx: &OpCtx) -> Result<WorkingStatus, GitError> {
         Some(OperationKind::Revert) => vec!["revert", "--continue"],
         Some(OperationKind::Rebase) => vec!["rebase", "--continue"],
     };
-    let output = ctx.runner().run_raw(
-        ctx.workdir,
-        &args,
-        RunOptions::with_env(fallback_identity(ctx)),
-    )?;
+    let mut env = fallback_identity(ctx);
+    env.extend(super::rebase::rebase_env(ctx)?);
+    if status.operation.as_ref().map(|op| op.kind) == Some(OperationKind::Rebase) {
+        super::rebase::commit_chosen_reword(ctx)?;
+    }
+    let output = ctx
+        .runner()
+        .run_raw(ctx.workdir, &args, RunOptions::with_env(env))?;
     let after = ctx.status()?;
     if output.code != 0 {
         // A rebase or a cherry-pick of several commits stops again at the next conflict: that
@@ -222,11 +225,11 @@ pub fn skip_operation(ctx: &OpCtx) -> Result<WorkingStatus, GitError> {
             ));
         }
     };
-    let output = ctx.runner().run_raw(
-        ctx.workdir,
-        &args,
-        RunOptions::with_env(fallback_identity(ctx)),
-    )?;
+    let mut env = fallback_identity(ctx);
+    env.extend(super::rebase::rebase_env(ctx)?);
+    let output = ctx
+        .runner()
+        .run_raw(ctx.workdir, &args, RunOptions::with_env(env))?;
     let after = ctx.status()?;
     if output.code != 0 && (after.operation.is_none() || after.conflicted.is_empty()) {
         return Err(error_from(&output));

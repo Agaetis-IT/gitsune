@@ -612,3 +612,137 @@ fn a_branch_whose_upstream_was_deleted_on_the_remote_can_still_be_rebased() {
     let result = rebase(&ctx, "main", None, false).unwrap();
     assert_eq!(result.outcome, RebaseOutcome::Done);
 }
+
+// ---------- messages, and stops that are not conflicts ----------
+
+#[test]
+fn a_reword_survives_a_path_with_spaces_and_several_lines() {
+    let tmp = TempDir::new_in(std::env::temp_dir()).unwrap();
+    let dir = tmp.path().join("a repo with spaces");
+    fs::create_dir_all(&dir).unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["config", "user.name", "Alice Fakename"]);
+    git(&dir, &["config", "user.email", "alice@example.invalid"]);
+    git(&dir, &["config", "commit.gpgsign", "false"]);
+    commit_file(&dir, "a.txt", "base\n", "base");
+    git(&dir, &["switch", "-q", "-c", "topic"]);
+    let one = commit_file(&dir, "one.txt", "1\n", "topic one");
+    git(&dir, &["switch", "-q", "main"]);
+    commit_file(&dir, "m.txt", "m\n", "main work");
+    git(&dir, &["switch", "-q", "topic"]);
+    let stores = RepoStores::default();
+    let ctx = OpCtx {
+        workdir: &dir,
+        stores: &stores,
+    };
+    let items = vec![item(
+        TodoAction::Reword,
+        &one,
+        Some("New subject\n\nA body line\nand another"),
+    )];
+    let result = rebase(&ctx, "main", Some(&items), false).unwrap();
+    assert_eq!(result.outcome, RebaseOutcome::Done);
+    assert_eq!(
+        text(&dir, &["log", "-1", "--format=%B"]),
+        "New subject\n\nA body line\nand another"
+    );
+}
+
+#[test]
+fn two_commits_with_the_same_first_line_each_get_their_own_message() {
+    let tmp = repo_with(&[("a.txt", "base\n")]);
+    let dir = tmp.path();
+    git(dir, &["switch", "-q", "-c", "topic"]);
+    let first = commit_file(dir, "one.txt", "1\n", "wip");
+    let second = commit_file(dir, "two.txt", "2\n", "wip");
+    git(dir, &["switch", "-q", "main"]);
+    commit_file(dir, "m.txt", "m\n", "main work");
+    git(dir, &["switch", "-q", "topic"]);
+    let stores = RepoStores::default();
+    let items = vec![
+        item(TodoAction::Reword, &first, Some("first, named")),
+        item(TodoAction::Reword, &second, Some("second, named")),
+    ];
+    rebase(&ctx(&tmp, &stores), "main", Some(&items), false).unwrap();
+    assert_eq!(
+        subjects(dir, "main..HEAD"),
+        vec!["first, named", "second, named"]
+    );
+}
+
+#[test]
+fn a_hook_that_refuses_the_reworded_commit_is_reported_and_continue_tries_again() {
+    let (tmp, _ids) = diverged();
+    let dir = tmp.path();
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+    let ids = plan_items(&tmp, &stores, "main");
+    // A commit-msg hook that refuses until a file exists.
+    let hook = dir.join(".git/hooks/commit-msg");
+    fs::create_dir_all(dir.join(".git/hooks")).unwrap();
+    fs::write(
+        &hook,
+        "#!/bin/sh\nif [ ! -f \"$(dirname \"$0\")/allow\" ]; then echo 'hook: not yet' >&2; exit 1; fi\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let items = vec![
+        item(TodoAction::Reword, &ids[0], Some("Reworded one")),
+        item(TodoAction::Pick, &ids[1], None),
+        item(TodoAction::Pick, &ids[2], None),
+    ];
+
+    // The hook refuses: the app says what git said, not "conflicts", and the rebase waits.
+    let error = rebase(&ctx, "main", Some(&items), false).unwrap_err();
+    assert!(error.message.contains("not yet"), "{}", error.message);
+    let status = ctx.status().unwrap();
+    assert_eq!(
+        status.operation.as_ref().unwrap().kind,
+        OperationKind::Rebase
+    );
+    assert!(status.conflicted.is_empty());
+
+    // The cause is fixed; Continue goes on and the chosen message is still used.
+    fs::write(dir.join(".git/hooks/allow"), "").unwrap();
+    let status = continue_operation(&ctx).unwrap();
+    assert!(status.operation.is_none(), "{:?}", status.operation);
+    assert_eq!(
+        subjects(dir, "main..HEAD"),
+        vec!["Reworded one", "topic two", "topic three"]
+    );
+}
+
+#[test]
+fn a_squash_message_survives_a_stop_on_a_conflict_in_the_group() {
+    let tmp = repo_with(&[("a.txt", "base\n")]);
+    let dir = tmp.path();
+    git(dir, &["switch", "-q", "-c", "topic"]);
+    let first = commit_file(dir, "b.txt", "b\n", "topic adds b");
+    let second = commit_file(dir, "a.txt", "topic version\n", "topic edits a");
+    git(dir, &["switch", "-q", "main"]);
+    commit_file(dir, "a.txt", "main version\n", "main edits a");
+    git(dir, &["switch", "-q", "topic"]);
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+    let items = vec![
+        item(TodoAction::Pick, &first, None),
+        item(
+            TodoAction::Squash,
+            &second,
+            Some("Both changes, one commit"),
+        ),
+    ];
+    let result = rebase(&ctx, "main", Some(&items), false).unwrap();
+    assert_eq!(result.outcome, RebaseOutcome::Conflicts);
+    resolve_file(&ctx, "a.txt", "resolved\n").unwrap();
+    let status = continue_operation(&ctx).unwrap();
+    assert!(status.operation.is_none());
+    assert_eq!(
+        subjects(dir, "main..HEAD"),
+        vec!["Both changes, one commit"]
+    );
+}
