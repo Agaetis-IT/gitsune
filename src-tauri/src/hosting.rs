@@ -676,6 +676,7 @@ mod tests {
         format!("{}:/bin:/usr/bin", dir.path().display())
     }
 
+    #[cfg(unix)]
     /// Only this folder: no tool of the machine (a CI runner has `az` and `gh`) can be found.
     fn only(dir: &tempfile::TempDir) -> String {
         dir.path().display().to_string()

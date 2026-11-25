@@ -446,7 +446,7 @@ fn names_that_look_like_options_are_refused_before_git_runs() {
 fn a_running_fetch_can_be_cancelled() {
     let (tmp, _remote) = with_remote();
     // A remote that never answers: the "upload-pack" is a script that sleeps.
-    let slow = tmp.path().join(".git/slow-upload-pack.sh");
+    let slow = tmp.path().join(".git").join("slow-upload-pack.sh");
     fs::write(&slow, "#!/bin/sh\nsleep 30\n").unwrap();
     #[cfg(unix)]
     {
@@ -458,7 +458,8 @@ fn a_running_fetch_can_be_cancelled() {
         &[
             "config",
             "remote.origin.uploadpack",
-            &slow.to_string_lossy(),
+            // Run through `sh` with slashes, so it works wherever git runs its shell.
+            &format!("sh '{}'", slow.to_string_lossy().replace('\\', "/")),
         ],
     );
 
