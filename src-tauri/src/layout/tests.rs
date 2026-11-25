@@ -638,3 +638,57 @@ fn the_layout_gives_overlapping_branches_different_colors() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------- colors do not depend on the checked-out branch ----------
+
+#[test]
+fn switching_branches_does_not_repaint_a_lane() {
+    // One lane carries `feature/x` and `develop`: the checked-out one names the lane, but
+    // `develop` colors it, whichever branch is checked out.
+    let commits = graph(&[("c", &["b"]), ("b", &["a"]), ("a", &[])]);
+    let refs = |head: &str| {
+        vec![
+            label(0, "feature/x", RefKind::Local, head == "feature/x"),
+            label(1, "develop", RefKind::Local, head == "develop"),
+        ]
+    };
+    let on_feature = layout(&commits, &refs("feature/x"));
+    let on_develop = layout(&commits, &refs("develop"));
+    assert_eq!(on_feature.lanes[0].name.as_deref(), Some("feature/x"));
+    assert_eq!(on_develop.lanes[0].name.as_deref(), Some("develop"));
+    assert_eq!(on_feature.lanes[0].color, Some(color_for("develop")));
+    assert_eq!(on_develop.lanes[0].color, on_feature.lanes[0].color);
+}
+
+#[test]
+fn two_ordinary_branches_on_a_lane_keep_their_color_when_the_head_moves() {
+    let commits = graph(&[("c", &["b"]), ("b", &["a"]), ("a", &[])]);
+    let refs = |head: &str| {
+        vec![
+            label(0, "feature/x", RefKind::Local, head == "feature/x"),
+            label(1, "feature/y", RefKind::Local, head == "feature/y"),
+        ]
+    };
+    let on_x = layout(&commits, &refs("feature/x"));
+    let on_y = layout(&commits, &refs("feature/y"));
+    assert_eq!(on_x.lanes[0].color, on_y.lanes[0].color);
+}
+
+#[test]
+fn the_main_branches_keep_their_own_color_among_any_crowd() {
+    use super::naming::fixed_color;
+    let crowd = colliding_names(12);
+    let mut entries: Vec<(&str, usize, usize)> =
+        crowd.iter().map(|n| (n.as_str(), 0, 50)).collect();
+    entries.extend([("main", 0, 50), ("master", 0, 50), ("develop", 0, 50)]);
+    let colors = assign_colors(&entries);
+    for name in ["main", "master", "develop"] {
+        assert_eq!(colors[name], fixed_color(name).unwrap(), "{name}");
+        assert_eq!(colors[name], color_for(name));
+    }
+    let own: std::collections::HashSet<u32> = ["main", "master", "develop"]
+        .iter()
+        .map(|n| colors[*n])
+        .collect();
+    assert_eq!(own.len(), 3, "the main branches are told apart");
+}

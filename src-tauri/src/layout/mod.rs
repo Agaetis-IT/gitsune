@@ -12,7 +12,9 @@
 //! - A lane keeps its column for its whole life. When several lanes point at the same
 //!   commit they all run down to it and converge there; the leftmost one carries the commit.
 //! - A lane is named after the best ref found on it, else after the merge commit message
-//!   that started it, else it is anonymous. Its color only depends on that name.
+//!   that started it, else it is anonymous. Its color only depends on the ref it is named
+//!   after for that purpose: the checked-out branch is not preferred there, so switching
+//!   branches never repaints the graph, and the main branches always win.
 
 mod naming;
 mod topo;
@@ -126,8 +128,16 @@ struct Candidate {
     rank: u8,
     row: usize,
     name: String,
+}
+
+/// The ref that gives a lane its color. Unlike the name, it does not depend on the checked-out
+/// branch: switching branches must not change a color.
+struct ColorCandidate {
+    rank: u8,
+    row: usize,
+    name: String,
     /// Name used for coloring (remote prefix removed so `main` and `origin/main` match).
-    color_key: String,
+    key: String,
 }
 
 struct LaneBuilder {
@@ -139,6 +149,7 @@ struct LaneBuilder {
     /// Branch name parsed from the merge commit that started the lane.
     merge_hint: Option<String>,
     best: Option<Candidate>,
+    best_color: Option<ColorCandidate>,
 }
 
 impl LaneBuilder {
@@ -151,6 +162,7 @@ impl LaneBuilder {
             joins: false,
             merge_hint,
             best: None,
+            best_color: None,
         }
     }
 
@@ -165,15 +177,35 @@ impl LaneBuilder {
             (rank, reference.row, &reference.name) < (best.rank, best.row, &best.name)
         });
         if better {
-            let color_key = match reference.kind {
-                RefKind::Remote => naming::strip_remote(&reference.name).to_string(),
-                _ => reference.name.clone(),
-            };
             self.best = Some(Candidate {
                 rank,
                 row: reference.row,
                 name: reference.name.clone(),
-                color_key,
+            });
+        }
+
+        let key = match reference.kind {
+            RefKind::Remote => naming::strip_remote(&reference.name).to_string(),
+            _ => reference.name.clone(),
+        };
+        let color_rank = if naming::fixed_color(&key).is_some() {
+            0
+        } else {
+            match reference.kind {
+                RefKind::Local => 1,
+                RefKind::Remote => 2,
+                RefKind::Tag => 3,
+            }
+        };
+        let better_color = self.best_color.as_ref().is_none_or(|best| {
+            (color_rank, reference.row, &reference.name) < (best.rank, best.row, &best.name)
+        });
+        if better_color {
+            self.best_color = Some(ColorCandidate {
+                rank: color_rank,
+                row: reference.row,
+                name: reference.name.clone(),
+                key,
             });
         }
     }
@@ -181,10 +213,10 @@ impl LaneBuilder {
     /// The lane, without its color yet (colors are chosen for all lanes together), and the
     /// name its color is chosen by.
     fn finish(self, id: usize) -> (Lane, Option<String>) {
-        let (name, kind, color_key) = match (self.best, self.merge_hint) {
-            (Some(best), _) => (Some(best.name), LaneKind::Branch, Some(best.color_key)),
-            (None, Some(hint)) => (Some(hint.clone()), LaneKind::Merged, Some(hint)),
-            (None, None) => (None, LaneKind::Anonymous, None),
+        let (name, kind, color_key) = match (self.best, self.best_color, self.merge_hint) {
+            (Some(best), Some(color), _) => (Some(best.name), LaneKind::Branch, Some(color.key)),
+            (_, _, Some(hint)) => (Some(hint.clone()), LaneKind::Merged, Some(hint)),
+            _ => (None, LaneKind::Anonymous, None),
         };
         let lane = Lane {
             id: to_u32(id),
