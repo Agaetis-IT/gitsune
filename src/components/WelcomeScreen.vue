@@ -70,6 +70,36 @@ function submit() {
         <h1 class="text-2xl font-semibold tracking-tight">Gitsune</h1>
         <p class="text-muted-foreground mt-1 text-sm">Browse the history of a git repository.</p>
 
+        <section v-if="recents.length" class="mt-6">
+          <h2 class="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
+            Recent
+          </h2>
+          <ul class="divide-y rounded-md border">
+            <li
+              v-for="repo in recents"
+              :key="repo.path"
+              class="hover:bg-accent group flex items-center"
+            >
+              <button
+                class="min-w-0 flex-1 px-3 py-2 text-left"
+                :disabled="busy || cloning"
+                @click="emit('openRecent', repo.path)"
+              >
+                <span class="block truncate text-sm font-medium">{{ repo.name }}</span>
+                <span class="text-muted-foreground block truncate text-xs">{{ repo.path }}</span>
+              </button>
+              <button
+                class="text-muted-foreground hover:text-foreground mr-2 rounded p-1 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                :aria-label="`Remove ${repo.name} from recent repositories`"
+                title="Remove from recent"
+                @click="emit('forget', repo.path)"
+              >
+                <X class="size-3.5" />
+              </button>
+            </li>
+          </ul>
+        </section>
+
         <Button class="mt-6" :disabled="busy || cloning" @click="emit('open')">
           <FolderOpen class="size-4" />
           Browse for a repository
@@ -132,36 +162,6 @@ function submit() {
               {{ cloning ? "Cloning…" : "Clone" }}
             </Button>
           </form>
-        </section>
-
-        <section v-if="recents.length" class="mt-8">
-          <h2 class="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
-            Recent
-          </h2>
-          <ul class="divide-y rounded-md border">
-            <li
-              v-for="repo in recents"
-              :key="repo.path"
-              class="hover:bg-accent group flex items-center"
-            >
-              <button
-                class="min-w-0 flex-1 px-3 py-2 text-left"
-                :disabled="busy || cloning"
-                @click="emit('openRecent', repo.path)"
-              >
-                <span class="block truncate text-sm font-medium">{{ repo.name }}</span>
-                <span class="text-muted-foreground block truncate text-xs">{{ repo.path }}</span>
-              </button>
-              <button
-                class="text-muted-foreground hover:text-foreground mr-2 rounded p-1 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                :aria-label="`Remove ${repo.name} from recent repositories`"
-                title="Remove from recent"
-                @click="emit('forget', repo.path)"
-              >
-                <X class="size-3.5" />
-              </button>
-            </li>
-          </ul>
         </section>
       </div>
     </div>
