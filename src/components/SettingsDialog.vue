@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useSettings } from "@/composables/useSettings";
 import { useDiagnostics } from "@/composables/useDiagnostics";
 import { useGeneralSettings } from "@/composables/useGeneralSettings";
+import { APP_VERSION } from "@/lib/appVersion";
 import { AUTO_FETCH_CHOICES } from "@/lib/autoFetch";
 import { ensureNotificationPermission } from "@/lib/desktopNotify";
 import { useGraphSettings } from "@/composables/useGraphSettings";
@@ -209,6 +210,9 @@ function onOpenChange(value: boolean) {
             <component :is="s.icon" class="size-4" />
             {{ s.label }}
           </button>
+          <p class="text-muted-foreground px-2 pt-4 text-xs" data-testid="app-version">
+            Gitsune {{ APP_VERSION === "dev" ? "(development)" : `v${APP_VERSION}` }}
+          </p>
         </nav>
 
         <div class="min-h-0 flex-1 overflow-y-auto p-5">
