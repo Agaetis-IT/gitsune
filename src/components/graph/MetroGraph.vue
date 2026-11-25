@@ -1,11 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { GraphMeta, GraphRow, Lane } from "@/lib/api";
-import { draw, type Theme, type WipRow } from "@/lib/metro/draw";
+import type { GraphMeta, GraphRow, Lane, RefInfo } from "@/lib/api";
+import { draw, type PillRect, type Theme, type WipRow } from "@/lib/metro/draw";
 import { isOnStation, laneAt, rowAtY } from "@/lib/metro/geometry";
 import { type Density, graphContentWidth, METRICS, rowTop } from "@/lib/metro/metrics";
 import { DARK_PALETTE, LIGHT_PALETTE } from "@/lib/metro/palette";
 import { type FetchPage, RowCache } from "@/lib/metro/rowCache";
+
+/** What was right-clicked in the graph. */
+export type GraphContextTarget =
+  | { kind: "ref"; ref: RefInfo; commit: GraphRow | undefined; clientX: number; clientY: number }
+  | { kind: "commit"; commit: GraphRow; clientX: number; clientY: number }
+  | { kind: "lane"; lane: Lane; clientX: number; clientY: number };
 
 const props = withDefaults(
   defineProps<{
@@ -46,6 +52,8 @@ const emit = defineEmits<{
   "update:topCommit": [top: { id: string; offset: number } | null];
   /** The pinned working tree row was clicked. */
   wipClick: [];
+  /** Right click on a ref label, a commit row or a lane line (positions are window coordinates). */
+  contextMenu: [target: GraphContextTarget];
   select: [row: GraphRow];
   /** A lane line was clicked (position relative to this component); `null` for any other click. */
   laneClick: [target: { lane: Lane; x: number; y: number } | null];
@@ -82,6 +90,8 @@ let pendingSelect: number | null = null;
 let reloading = false;
 let reloadTimer: ReturnType<typeof setTimeout> | undefined;
 let reportedTop: { id: string; offset: number } | null = null;
+/** Ref labels as last drawn, for right-click hit testing. */
+let lastPills: PillRect[] = [];
 
 const cache = new RowCache({
   fetchPage: (cursor, limit) => props.fetchPage(cursor, limit),
@@ -168,6 +178,7 @@ function render() {
     el.style.width = `${viewW.value}px`;
     el.style.height = `${viewH.value}px`;
   }
+  const pills: PillRect[] = [];
   draw({
     ctx,
     width: viewW.value,
@@ -188,7 +199,9 @@ function render() {
     matchRows: matchSet.value,
     topInset: inset.value,
     wip: props.wip,
+    pills,
   });
+  lastPills = pills;
 }
 
 function onScroll() {
@@ -290,6 +303,41 @@ function onClick(event: MouseEvent) {
   }
   emit("laneClick", null);
   if (row !== null) select(row);
+}
+
+function onContextMenu(event: MouseEvent) {
+  const point = pointerPosition(event);
+  if (!point || point.y < inset.value) return;
+  const m = metrics.value;
+  const contentY = point.y - inset.value + scrollTop;
+  const row = rowAtY(contentY, props.meta.total, m);
+  const where = { clientX: event.clientX, clientY: event.clientY };
+  emit("laneClick", null);
+
+  // A ref label first: its menu is about the branch or tag.
+  const pill = lastPills.find(
+    (p) => point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h,
+  );
+  if (pill) {
+    emit("contextMenu", { kind: "ref", ref: pill.ref, commit: cache.getRow(pill.row), ...where });
+    return;
+  }
+  const data = row === null ? undefined : cache.getRow(row);
+  if (point.x < graphViewportW.value) {
+    const onStation =
+      row !== null &&
+      data !== undefined &&
+      isOnStation(point.x + scrollLeft, contentY, row, data.col, m);
+    const lane = onStation ? null : laneAt(point.x + scrollLeft, contentY, props.meta.lanes, m);
+    if (lane) {
+      emit("contextMenu", { kind: "lane", lane, ...where });
+      return;
+    }
+  }
+  if (row !== null && data) {
+    select(row);
+    emit("contextMenu", { kind: "commit", commit: data, ...where });
+  }
 }
 
 function scrollToRow(row: number) {
@@ -452,6 +500,7 @@ const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", tim
       @pointermove="onPointerMove"
       @pointerleave="onPointerLeave"
       @click="onClick"
+      @contextmenu.prevent="onContextMenu"
       @keydown="onKeydown"
       @wheel="onWheel"
     >

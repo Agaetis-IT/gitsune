@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { Lock, LockOpen, ScrollText } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import BranchDialogs from "@/components/BranchDialogs.vue";
+import ContextMenu from "@/components/ContextMenu.vue";
 import ActivityPanel from "@/components/ActivityPanel.vue";
 import CommitPanel from "@/components/CommitPanel.vue";
 import DiffView from "@/components/DiffView.vue";
 import IdentityDialog from "@/components/IdentityDialog.vue";
 import LanePopover from "@/components/LanePopover.vue";
 import NoticeHost from "@/components/NoticeHost.vue";
-import MetroGraph from "@/components/graph/MetroGraph.vue";
+import MetroGraph, { type GraphContextTarget } from "@/components/graph/MetroGraph.vue";
 import RepoSidebar from "@/components/RepoSidebar.vue";
 import SearchBar from "@/components/SearchBar.vue";
 import TabBar from "@/components/TabBar.vue";
@@ -15,7 +17,8 @@ import { Button } from "@/components/ui/button";
 import WelcomeScreen from "@/components/WelcomeScreen.vue";
 import WorkingPanel from "@/components/WorkingPanel.vue";
 import { useWorkspace } from "@/composables/useWorkspace";
-import type { FileChange, Lane, StatusEntry } from "@/lib/api";
+import type { FileChange, Lane, RefInfo, StatusEntry } from "@/lib/api";
+import { commitMenu, laneMenu, type MenuItem, refMenu } from "@/lib/menus";
 import { refsOfBranch } from "@/lib/branchRefs";
 import type { Density } from "@/lib/metro/metrics";
 import type { WipRow } from "@/lib/metro/draw";
@@ -69,6 +72,116 @@ const canHideLane = computed(() => {
   const name = lanePopover.value?.lane.name;
   return !!tab && !!name && refsOfBranch(tab.refs, name).length > 0;
 });
+
+type MenuTarget =
+  | { kind: "ref"; ref: RefInfo; commitId: string | null }
+  | { kind: "commit"; id: string }
+  | { kind: "lane"; lane: Lane };
+const menu = ref<{ target: MenuTarget; items: MenuItem[]; x: number; y: number } | null>(null);
+
+function menuContext(canHighlight: boolean, highlighted: boolean, hidden: boolean) {
+  const tab = active.value;
+  const head = tab?.source?.meta.refs.find((ref) => ref.isHead);
+  return {
+    readOnly: tab?.readOnly ?? false,
+    headId: head?.target ?? null,
+    detached: !!tab && tab.headBranch === null,
+    canHighlight,
+    highlighted,
+    hidden,
+  };
+}
+
+/** Lane of a ref in the graph, if it is drawn. */
+function laneOfRef(ref: RefInfo): number | null {
+  const found = active.value?.source?.meta.refs.find((r) => r.fullName === ref.fullName);
+  return found ? found.lane : null;
+}
+
+function openRefMenu(ref: RefInfo, x: number, y: number, commitId: string | null) {
+  const tab = active.value;
+  if (!tab) return;
+  const lane = laneOfRef(ref);
+  menu.value = {
+    target: { kind: "ref", ref, commitId },
+    items: refMenu(
+      ref,
+      menuContext(
+        lane !== null,
+        lane !== null && tab.highlightLane === lane,
+        tab.hidden.has(ref.fullName),
+      ),
+    ),
+    x,
+    y,
+  };
+}
+
+function onGraphMenu(target: GraphContextTarget) {
+  const tab = active.value;
+  if (!tab) return;
+  const { clientX: x, clientY: y } = target;
+  if (target.kind === "ref") {
+    openRefMenu(target.ref, x, y, target.commit?.id ?? null);
+  } else if (target.kind === "commit") {
+    menu.value = {
+      target: { kind: "commit", id: target.commit.id },
+      items: commitMenu(target.commit, menuContext(false, false, false)),
+      x,
+      y,
+    };
+  } else {
+    const name = target.lane.name;
+    const canHide = name !== null && refsOfBranch(tab.refs, name).length > 0;
+    menu.value = {
+      target: { kind: "lane", lane: target.lane },
+      items: laneMenu({
+        ...menuContext(true, tab.highlightLane === target.lane.id, false),
+        canHide,
+      }),
+      x,
+      y,
+    };
+  }
+}
+
+function copy(text: string) {
+  void navigator.clipboard?.writeText(text).catch(() => {});
+}
+
+function onMenuSelect(id: string) {
+  const tab = active.value;
+  const current = menu.value;
+  menu.value = null;
+  if (!tab || !current) return;
+  const t = current.target;
+  if (t.kind === "commit") {
+    const short = t.id.slice(0, 7);
+    if (id === "checkoutCommit") void workspace.checkout(tab, { kind: "commit", id: t.id }, null);
+    else if (id === "createBranch") workspace.askCreateBranch(tab, { id: t.id, label: short });
+    else if (id === "createTag") workspace.askCreateTag(tab, { id: t.id, label: short });
+    else if (id === "copyId") copy(t.id);
+  } else if (t.kind === "lane") {
+    if (id === "highlight") workspace.toggleHighlight(tab, t.lane.id);
+    else if (id === "hide" && t.lane.name) void workspace.hideBranch(tab, t.lane.name);
+  } else {
+    const { ref } = t;
+    const target = { kind: ref.kind === "local" ? "branch" : ref.kind, name: ref.name } as const;
+    if (id === "checkout") void workspace.checkout(tab, target, null);
+    else if (id === "rename") workspace.askRenameBranch(tab, ref.name);
+    else if (id === "upstream") workspace.askUpstream(tab, ref.name);
+    else if (id === "delete") workspace.askDeleteBranch(tab, ref.name);
+    else if (id === "deleteTag") workspace.askDeleteTag(tab, ref.name);
+    else if (id === "highlight") {
+      const lane = laneOfRef(ref);
+      if (lane !== null) workspace.toggleHighlight(tab, lane);
+    } else if (id === "hide") workspace.toggleRef(tab, ref.fullName);
+    else if (id === "copyName") copy(ref.name);
+  }
+}
+
+// A menu belongs to one repository.
+watch(activeId, () => (menu.value = null));
 
 /** The working tree row pinned above the graph. */
 const wipRow = computed<WipRow | null>(() => {
@@ -153,6 +266,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
           @toggle-kind="workspace.toggleKind(active, $event)"
           @toggle-highlight="workspace.toggleHighlight(active, $event)"
           @jump="graph?.focusRow($event)"
+          @ref-menu="(ref, x, y) => openRefMenu(ref, x, y, null)"
         />
       </div>
 
@@ -247,6 +361,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
             :wip="wipRow"
             @wip-click="workspace.selectWip(active)"
             @lane-click="lanePopover = $event"
+            @context-menu="onGraphMenu"
             @update:selected="workspace.select(active, $event)"
             @update:scroll-top="active.scrollTop = $event"
             @update:top-commit="active.topAnchor = $event"
@@ -335,6 +450,15 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
         @close="workspace.activityOpen.value = false"
       />
       <IdentityDialog :tab="active" />
+      <BranchDialogs :tab="active" />
+      <ContextMenu
+        v-if="menu"
+        :items="menu.items"
+        :x="menu.x"
+        :y="menu.y"
+        @select="onMenuSelect"
+        @close="menu = null"
+      />
     </div>
 
     <WelcomeScreen

@@ -11,7 +11,7 @@ import type {
   StatusEntry,
   WorkingStatus,
 } from "@/lib/api";
-import { GitCommandError } from "@/lib/api";
+import { type CheckoutResult, GitCommandError } from "@/lib/api";
 import type { GraphSource, RepoBackend } from "@/lib/backend";
 import { createReadOnlyStore } from "@/lib/readOnly";
 import { createRecentStore } from "@/lib/recents";
@@ -152,6 +152,25 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
     clearActivity: async () => {},
     onWorktreeChanged: async () => () => {},
     onActivityChanged: async () => () => {},
+    createBranch: async () => cleanStatus(),
+    checkout: async () => ({
+      status: cleanStatus(),
+      snapshot: null,
+      stashed: false,
+      stashConflict: false,
+    }),
+    renameBranch: async () => cleanStatus(),
+    deleteBranch: async (_repoId, name) => ({
+      name,
+      tip: "t".repeat(40),
+      upstream: null,
+      status: cleanStatus(),
+    }),
+    restoreBranch: async () => cleanStatus(),
+    setUpstream: async () => cleanStatus(),
+    createTag: async () => cleanStatus(),
+    deleteTag: async (_repoId, name) => ({ name, target: "g".repeat(40), status: cleanStatus() }),
+    restoreTag: async () => cleanStatus(),
     commitDetail: async (_repoId, id) => detailFor(id),
     refs: async () => REFS,
     locate: async (_repoId, ids) => ids.map(() => null),
@@ -1192,6 +1211,7 @@ describe("committing", () => {
     expect(tab.writeError).toEqual({
       kind: "hookFailed",
       message: "lint failed: trailing whitespace",
+      files: [],
     });
     expect(tab.draft.summary).toBe("Rejected");
     expect(workspace.notices.value).toHaveLength(noticesBefore);
@@ -1367,5 +1387,246 @@ describe("activity log and notices", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------- branches, checkout and tags ----------
+
+const checkedOut = (status = cleanStatus()): CheckoutResult => ({
+  status,
+  snapshot: null,
+  stashed: false,
+  stashConflict: false,
+});
+
+describe("checkout", () => {
+  it("switches and says so; a detached HEAD is called one", async () => {
+    const checkout = vi.fn(async () => checkedOut({ ...cleanStatus(), branch: "other" }));
+    const { workspace, tab } = await openWorktree(cleanStatus(), { checkout });
+
+    await workspace.checkout(tab, { kind: "branch", name: "other" });
+    expect(checkout).toHaveBeenCalledWith("/fake/a", { kind: "branch", name: "other" }, null);
+    expect(tab.status?.branch).toBe("other");
+    expect(lastOf(workspace.notices.value)?.text).toBe("Switched to other.");
+
+    checkout.mockResolvedValueOnce(checkedOut({ ...cleanStatus(), branch: null, detached: true }));
+    await workspace.checkout(tab, { kind: "commit", id: "abcdef0123456789" });
+    expect(lastOf(workspace.notices.value)?.text).toBe("Detached HEAD at abcdef0.");
+  });
+
+  it("asks what to do when local changes are in the way, and keeps them meanwhile", async () => {
+    const { workspace, tab } = await openWorktree(dirty(), {
+      checkout: async () => {
+        throw new GitCommandError("wouldOverwriteChanges", "local changes would be overwritten", [
+          "src/a.ts",
+          "src/b.ts",
+        ]);
+      },
+    });
+    const noticesBefore = workspace.notices.value.length;
+
+    await workspace.checkout(tab, { kind: "branch", name: "other" });
+    expect(tab.dialog).toEqual({
+      type: "dirtyCheckout",
+      target: { kind: "branch", name: "other" },
+      files: ["src/a.ts", "src/b.ts"],
+      message: "local changes would be overwritten",
+    });
+    expect(tab.status?.unstaged).toHaveLength(3); // nothing was touched
+    expect(workspace.notices.value).toHaveLength(noticesBefore); // the dialog explains, not a toast
+  });
+
+  it("passes the chosen strategy and reports each outcome", async () => {
+    const checkout = vi.fn(async () => checkedOut());
+    const { workspace, tab } = await openWorktree(dirty(), { checkout });
+    const target = { kind: "branch", name: "other" } as const;
+
+    tab.dialog = { type: "dirtyCheckout", target, files: ["a"], message: "m" };
+    checkout.mockResolvedValueOnce({ ...checkedOut(), stashed: true });
+    await workspace.checkout(tab, target, "stash");
+    expect(checkout).toHaveBeenLastCalledWith("/fake/a", target, "stash");
+    expect(tab.dialog).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toContain("stashed and applied again");
+
+    checkout.mockResolvedValueOnce({ ...checkedOut(), stashConflict: true });
+    await workspace.checkout(tab, target, "stash");
+    const conflict = lastOf(workspace.notices.value);
+    expect(conflict?.kind).toBe("error");
+    expect(conflict?.text).toContain("still in the stash");
+  });
+
+  it("offers to undo a discard that came with the switch", async () => {
+    const snapshot = {
+      reference: "refs/git-hydra/undo/9",
+      id: "s".repeat(40),
+      time: 1,
+      description: "d",
+      paths: ["a"],
+    };
+    const restoreSnapshot = vi.fn(async () => ({ snapshot: null, status: dirty() }));
+    const { workspace, tab } = await openWorktree(dirty(), {
+      checkout: async () => ({ ...checkedOut(), snapshot }),
+      restoreSnapshot,
+    });
+    await workspace.checkout(tab, { kind: "branch", name: "other" }, "discard");
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toContain("discarded");
+    await notice?.action?.run();
+    expect(restoreSnapshot).toHaveBeenCalledWith("/fake/a", "refs/git-hydra/undo/9");
+  });
+
+  it("other failures are notices and leave no dialog", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      checkout: async () => {
+        throw new GitCommandError("locked", "index.lock exists");
+      },
+    });
+    await workspace.checkout(tab, { kind: "branch", name: "other" });
+    expect(tab.dialog).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toBe("index.lock exists");
+  });
+
+  it("refuses in read-only mode without asking the backend", async () => {
+    const checkout = vi.fn(async () => checkedOut());
+    const { workspace, tab } = await openWorktree(cleanStatus(), { checkout });
+    await workspace.setReadOnly(tab, true);
+    await workspace.checkout(tab, { kind: "branch", name: "other" });
+    expect(checkout).not.toHaveBeenCalled();
+  });
+});
+
+describe("creating branches and tags", () => {
+  it("creates a branch, closes the dialog and says so", async () => {
+    const createBranch = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(cleanStatus(), { createBranch });
+    workspace.askCreateBranch(tab, { id: "c1", label: "c1" });
+    expect(tab.dialog?.type).toBe("createBranch");
+
+    expect(await workspace.createBranch(tab, "feature/x", "c1", true)).toBe(true);
+    expect(createBranch).toHaveBeenCalledWith("/fake/a", "feature/x", "c1", true);
+    expect(tab.dialog).toBeNull();
+    expect(lastOf(workspace.notices.value)?.text).toBe("Created and switched to feature/x.");
+  });
+
+  it("keeps the dialog open and shows the problem for a bad or taken name", async () => {
+    let kind: "invalidName" | "alreadyExists" = "invalidName";
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      createBranch: async () => {
+        throw new GitCommandError(kind, "'a b' is not a valid branch name.");
+      },
+    });
+    workspace.askCreateBranch(tab, null);
+    const noticesBefore = workspace.notices.value.length;
+
+    expect(await workspace.createBranch(tab, "a b", null, false)).toBe(false);
+    expect(tab.dialog?.type).toBe("createBranch");
+    expect(tab.writeError?.kind).toBe("invalidName");
+    kind = "alreadyExists";
+    expect(await workspace.createBranch(tab, "main", null, false)).toBe(false);
+    expect(tab.writeError?.kind).toBe("alreadyExists");
+    expect(workspace.notices.value).toHaveLength(noticesBefore);
+  });
+
+  it("creates tags (annotated when there is a message) and renames and re-tracks branches", async () => {
+    const createTag = vi.fn(async () => cleanStatus());
+    const renameBranch = vi.fn(async () => cleanStatus());
+    const setUpstream = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      createTag,
+      renameBranch,
+      setUpstream,
+    });
+
+    await workspace.createTag(tab, "v1", "c1", "Release one");
+    expect(createTag).toHaveBeenCalledWith("/fake/a", "v1", "c1", "Release one");
+    await workspace.renameBranch(tab, "old", "new");
+    expect(renameBranch).toHaveBeenCalledWith("/fake/a", "old", "new");
+    expect(lastOf(workspace.notices.value)?.text).toBe("Renamed old to new.");
+    await workspace.setUpstream(tab, "topic", "origin/topic");
+    expect(lastOf(workspace.notices.value)?.text).toBe("topic now tracks origin/topic.");
+    await workspace.setUpstream(tab, "topic", null);
+    expect(lastOf(workspace.notices.value)?.text).toBe("topic no longer tracks a branch.");
+  });
+});
+
+describe("deleting branches and tags", () => {
+  it("deletes a branch and offers to bring it back with its tip and upstream", async () => {
+    const restoreBranch = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      deleteBranch: async (_id, name) => ({
+        name,
+        tip: "t".repeat(40),
+        upstream: "origin/topic",
+        status: cleanStatus(),
+      }),
+      restoreBranch,
+    });
+    workspace.askDeleteBranch(tab, "topic");
+    expect(tab.dialog).toEqual({ type: "deleteBranch", name: "topic", unmerged: null });
+
+    await workspace.deleteBranch(tab, "topic");
+    expect(tab.dialog).toBeNull();
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toBe("Deleted branch topic.");
+    await notice?.action?.run();
+    expect(restoreBranch).toHaveBeenCalledWith("/fake/a", "topic", "t".repeat(40), "origin/topic");
+    expect(lastOf(workspace.notices.value)?.text).toBe("Branch topic is back.");
+  });
+
+  it("warns about unmerged commits first, and only deletes after being told to force", async () => {
+    const deleteBranch = vi.fn(async (_id: string, name: string, force: boolean) => {
+      if (!force) {
+        throw new GitCommandError("notFullyMerged", "the branch 'topic' is not fully merged.");
+      }
+      return { name, tip: "t".repeat(40), upstream: null, status: cleanStatus() };
+    });
+    const { workspace, tab } = await openWorktree(cleanStatus(), { deleteBranch });
+    workspace.askDeleteBranch(tab, "topic");
+
+    await workspace.deleteBranch(tab, "topic");
+    expect(tab.dialog).toEqual({
+      type: "deleteBranch",
+      name: "topic",
+      unmerged: "the branch 'topic' is not fully merged.",
+    });
+
+    await workspace.deleteBranch(tab, "topic", true);
+    expect(deleteBranch).toHaveBeenLastCalledWith("/fake/a", "topic", true);
+    expect(tab.dialog).toBeNull();
+  });
+
+  it("a branch that is checked out cannot be deleted: a notice, no dialog change", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      deleteBranch: async () => {
+        throw new GitCommandError("branchCheckedOut", "Cannot delete branch 'main' checked out");
+      },
+    });
+    await workspace.deleteBranch(tab, "main");
+    expect(lastOf(workspace.notices.value)?.kind).toBe("error");
+  });
+
+  it("deletes a tag with an undo", async () => {
+    const restoreTag = vi.fn(async () => cleanStatus());
+    const { workspace, tab } = await openWorktree(cleanStatus(), { restoreTag });
+    workspace.askDeleteTag(tab, "v1");
+    await workspace.deleteTag(tab, "v1");
+    const notice = lastOf(workspace.notices.value);
+    expect(notice?.text).toBe("Deleted tag v1.");
+    await notice?.action?.run();
+    expect(restoreTag).toHaveBeenCalledWith("/fake/a", "v1", "g".repeat(40));
+  });
+
+  it("closing a dialog forgets its error", async () => {
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      createBranch: async () => {
+        throw new GitCommandError("invalidName", "bad name");
+      },
+    });
+    workspace.askCreateBranch(tab, null);
+    await workspace.createBranch(tab, "a b", null, false);
+    expect(tab.writeError).not.toBeNull();
+    workspace.closeDialog(tab);
+    expect(tab.dialog).toBeNull();
+    expect(tab.writeError).toBeNull();
   });
 });

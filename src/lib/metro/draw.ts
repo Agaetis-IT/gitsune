@@ -36,6 +36,18 @@ export interface DrawInput {
   topInset: number;
   /** The working tree row (pinned at the top), `null` for none. */
   wip: WipRow | null;
+  /** Receives the position of every ref label drawn (for right-click hit testing). */
+  pills?: PillRect[];
+}
+
+/** Where a ref label was drawn (screen position), so it can be clicked. */
+export interface PillRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  ref: RefInfo;
+  row: number;
 }
 
 /** The pinned row that stands for the uncommitted changes. */
@@ -330,7 +342,7 @@ function drawText(input: DrawInput, range: Range): void {
 
     let x = input.textX;
     ctx.textAlign = "left";
-    x = drawRefPills(ctx, data.refs, x, summaryY, color, input, right);
+    x = drawRefPills(ctx, data.refs, x, summaryY, color, input, right, row);
     ctx.font = `${detailed ? 13 : 12}px ${FONT}`;
     ctx.fillStyle = theme.foreground;
     ctx.fillText(fitText(ctx, data.summary, right - x), x, summaryY);
@@ -354,6 +366,7 @@ function drawRefPills(
   color: string,
   input: DrawInput,
   limitX: number,
+  row: number,
 ): number {
   const { theme, metrics: m } = input;
   const height = Math.round(m.rowH * (input.density === "detailed" ? 0.4 : 0.64));
@@ -370,6 +383,7 @@ function drawRefPills(
     const w = ctx.measureText(label).width + 14;
     if (x + w > limitX - 40) break;
     const top = y - height / 2;
+    if (!extra) input.pills?.push({ x, y: top + input.topInset, w, h: height, ref, row });
     ctx.beginPath();
     ctx.roundRect(x, top, w, height, height / 2);
     if (extra) {

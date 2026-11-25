@@ -32,7 +32,16 @@ pub fn run() {
             commands::set_identity,
             commands::set_read_only,
             commands::get_activity,
-            commands::clear_activity
+            commands::clear_activity,
+            commands::create_branch,
+            commands::checkout_target,
+            commands::rename_branch,
+            commands::delete_branch,
+            commands::restore_branch,
+            commands::set_upstream,
+            commands::create_tag,
+            commands::delete_tag,
+            commands::restore_tag
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

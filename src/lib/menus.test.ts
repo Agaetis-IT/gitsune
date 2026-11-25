@@ -1,0 +1,109 @@
+import { describe, expect, it } from "vitest";
+import type { RefInfo } from "@/lib/api";
+import { commitMenu, laneMenu, type MenuContext, refMenu } from "./menus";
+
+const ctx = (overrides: Partial<MenuContext> = {}): MenuContext => ({
+  readOnly: false,
+  headId: "head",
+  detached: false,
+  ...overrides,
+});
+
+const ref = (name: string, kind: RefInfo["kind"], isHead = false): RefInfo => ({
+  name,
+  fullName: `refs/${name}`,
+  kind,
+  target: "t",
+  isHead,
+});
+
+const ids = (items: { id: string }[]) => items.map((i) => i.id);
+const find = (items: ReturnType<typeof refMenu>, id: string) => items.find((i) => i.id === id);
+
+describe("commit menu", () => {
+  it("offers to check out, branch, tag and copy", () => {
+    const items = commitMenu({ id: "c1" }, ctx());
+    expect(ids(items)).toEqual(["checkoutCommit", "createBranch", "createTag", "copyId"]);
+    expect(items.every((i) => !i.disabled)).toBe(true);
+  });
+
+  it("explains why a commit cannot be checked out when HEAD is already detached there", () => {
+    const items = commitMenu({ id: "head" }, ctx({ detached: true }));
+    expect(items[0].disabled).toContain("already");
+    // On a branch whose tip is that commit, detaching is allowed.
+    expect(commitMenu({ id: "head" }, ctx({ detached: false }))[0].disabled).toBeUndefined();
+  });
+
+  it("greys out the writes in read-only mode but still allows copying", () => {
+    const items = commitMenu({ id: "c1" }, ctx({ readOnly: true }));
+    expect(items.filter((i) => i.disabled).map((i) => i.id)).toEqual([
+      "checkoutCommit",
+      "createBranch",
+      "createTag",
+    ]);
+    expect(items.find((i) => i.id === "copyId")?.disabled).toBeUndefined();
+    expect(items[0].disabled).toBe("Read-only mode is on.");
+  });
+});
+
+describe("ref menu", () => {
+  it("a local branch can be switched to, renamed, re-tracked and deleted", () => {
+    const items = refMenu(ref("topic", "local"), ctx({ canHighlight: true }));
+    expect(ids(items)).toEqual([
+      "checkout",
+      "rename",
+      "upstream",
+      "delete",
+      "highlight",
+      "hide",
+      "copyName",
+    ]);
+    expect(find(items, "delete")?.danger).toBe(true);
+  });
+
+  it("the checked-out branch cannot be switched to or deleted, and says why", () => {
+    const items = refMenu(ref("main", "local", true), ctx());
+    expect(find(items, "checkout")?.disabled).toContain("already checked out");
+    expect(find(items, "delete")?.disabled).toContain("cannot be deleted");
+    expect(find(items, "rename")?.disabled).toBeUndefined();
+  });
+
+  it("a remote branch is checked out as a local one and can be hidden", () => {
+    const items = refMenu(ref("origin/topic", "remote"), ctx());
+    expect(ids(items)).toEqual(["checkout", "hide", "copyName"]);
+    expect(find(items, "checkout")?.label).toContain("local branch");
+  });
+
+  it("a tag can be checked out (detached) and deleted", () => {
+    const items = refMenu(ref("v1", "tag"), ctx());
+    expect(ids(items)).toEqual(["checkout", "deleteTag", "copyName"]);
+    expect(find(items, "deleteTag")?.danger).toBe(true);
+  });
+
+  it("the highlight and hide entries follow the current state", () => {
+    const on = refMenu(
+      ref("topic", "local"),
+      ctx({ canHighlight: true, highlighted: true, hidden: true }),
+    );
+    expect(find(on, "highlight")?.label).toBe("Remove the highlight");
+    expect(find(on, "hide")?.label).toBe("Show in the graph");
+    expect(find(refMenu(ref("topic", "local"), ctx()), "highlight")).toBeUndefined();
+  });
+
+  it("read-only mode greys out every write of a branch menu but not the view actions", () => {
+    const items = refMenu(ref("topic", "local"), ctx({ readOnly: true, canHighlight: true }));
+    const disabled = items.filter((i) => i.disabled).map((i) => i.id);
+    expect(disabled).toEqual(["checkout", "rename", "upstream", "delete"]);
+    expect(find(items, "hide")?.disabled).toBeUndefined();
+  });
+});
+
+describe("lane menu", () => {
+  it("highlights, and hides only a lane that has a ref", () => {
+    expect(ids(laneMenu({ ...ctx(), canHide: true }))).toEqual(["highlight", "hide"]);
+    expect(ids(laneMenu({ ...ctx(), canHide: false }))).toEqual(["highlight"]);
+    expect(laneMenu({ ...ctx(), canHide: false, highlighted: true })[0].label).toBe(
+      "Remove the highlight",
+    );
+  });
+});
