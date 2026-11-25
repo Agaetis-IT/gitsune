@@ -92,6 +92,7 @@ import {
   type RemoteUrl,
   cancelOperation,
   answerAskpass,
+  cloneRepository,
   createTag,
   deleteBranch,
   deleteTag,
@@ -152,8 +153,8 @@ export interface GraphSource {
 
 /** Everything the app needs from the machine; the Tauri backend, or a stand-in for dev and tests. */
 export interface RepoBackend {
-  /** Asks the user for a repository folder; `null` when cancelled. */
-  pickFolder(): Promise<string | null>;
+  /** Asks the user for a folder; `null` when cancelled. */
+  pickFolder(title?: string): Promise<string | null>;
   open(path: string): Promise<{ info: RepoInfo; refs: RefInfo[] }>;
   close(repoId: string): Promise<void>;
   /** Graph of the repository without the commits only reachable from `hiddenRefs`. */
@@ -368,7 +369,15 @@ export interface RepoBackend {
     remote: string,
     branch: string,
   ): Promise<RemoteResult>;
-  /** Stops a running fetch, pull or push. */
+  /** Clones a repository into `name` inside `parent`; gives the path of the new repository. */
+  cloneRepository(
+    ownerId: string,
+    opId: string,
+    url: string,
+    parent: string,
+    name: string,
+  ): Promise<string>;
+  /** Stops a running fetch, pull, push or clone. */
   cancelOperation(opId: string): Promise<void>;
   /** Answers a question git asked (`null` refuses). */
   answerAskpass(opId: string, promptId: string, answer: string | null): Promise<void>;
@@ -389,8 +398,8 @@ export interface RepoBackend {
 export const isTauri = (): boolean => "__TAURI_INTERNALS__" in window;
 
 export const tauriBackend: RepoBackend = {
-  async pickFolder() {
-    const selected = await open({ directory: true, multiple: false, title: "Open a repository" });
+  async pickFolder(title = "Open a repository") {
+    const selected = await open({ directory: true, multiple: false, title });
     return typeof selected === "string" ? selected : null;
   },
   async open(path) {
@@ -476,6 +485,7 @@ export const tauriBackend: RepoBackend = {
   pull: pullBranch,
   push: pushBranch,
   deleteRemoteBranch,
+  cloneRepository,
   cancelOperation,
   answerAskpass,
   onRemoteProgress: (handler) =>

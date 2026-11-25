@@ -10,12 +10,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { type RepoTab, useWorkspace } from "@/composables/useWorkspace";
+import { type BlankTab, type RepoTab, useWorkspace } from "@/composables/useWorkspace";
 
-const props = defineProps<{ tab: RepoTab }>();
+const props = defineProps<{ tab: RepoTab | BlankTab }>();
 const workspace = useWorkspace();
 
-const op = computed(() => props.tab.remote);
+/** A repository tab shows its fetch, pull or push; a blank tab shows its clone. */
+const op = computed(() => ("blank" in props.tab ? props.tab.clone : props.tab.remote));
 const prompt = computed(() => op.value?.prompt ?? null);
 
 /** Passwords and passphrases are hidden; a host key question ("yes/no") is plain text. */

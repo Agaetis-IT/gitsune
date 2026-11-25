@@ -4,11 +4,14 @@
 //! [`Runner::run_long`]: progress is streamed, secrets are asked through the askpass helper,
 //! and the user can cancel. Authentication is the system's own (credential helpers, ssh-agent).
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 use super::cli::{ErrorKind, GitError, LongIo, RunOptions, RunOutput};
 use super::ops::OpCtx;
 use super::status::WorkingStatus;
+use super::store::RepoStores;
 
 /// How a pull reconciles the remote branch with the local one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -163,6 +166,70 @@ pub fn resolve_ssh_host(alias: &str) -> String {
         .map(|host| host.trim().to_ascii_lowercase())
         .filter(|host| !host.is_empty())
         .unwrap_or_else(|| alias.to_string())
+}
+
+/// A folder name that stays inside the folder it is created in.
+fn valid_folder_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\'])
+        && !name.chars().any(char::is_control)
+}
+
+/// Clones `url` into the folder `name` of `parent` and returns the path of the new working tree.
+/// The folder may exist when it is empty. When the clone fails or is cancelled the folder this
+/// call created is removed, so no half-cloned repository is left behind.
+pub fn clone_repository(
+    io: &LongIo,
+    url: &str,
+    parent: &Path,
+    name: &str,
+) -> Result<PathBuf, GitError> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(GitError::other("Enter the address of the repository."));
+    }
+    // Read as an option otherwise; `--` below only protects the arguments after it.
+    if url.starts_with('-') || url.chars().any(char::is_control) {
+        return Err(GitError::other("This is not a valid repository address."));
+    }
+    if !valid_folder_name(name) {
+        return Err(GitError::other("This is not a valid folder name."));
+    }
+    if !parent.is_dir() {
+        return Err(GitError::other("The folder to clone into does not exist."));
+    }
+    let destination = parent.join(name);
+    let existed = destination.exists();
+    if existed && !is_empty_folder(&destination) {
+        return Err(GitError::other(format!(
+            "{name} already exists in that folder and is not empty."
+        )));
+    }
+    let stores = RepoStores::default();
+    let result = stores.runner().run_long_checked(
+        parent,
+        &["clone", "--progress", "--", url, name],
+        RunOptions::default(),
+        io,
+    );
+    match result {
+        Ok(_) => Ok(destination),
+        Err(error) => {
+            if !existed {
+                let _ = std::fs::remove_dir_all(&destination);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn is_empty_folder(path: &Path) -> bool {
+    path.is_dir()
+        && std::fs::read_dir(path)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false)
 }
 
 fn finish(ctx: &OpCtx, output: RunOutput) -> Result<RemoteResult, GitError> {

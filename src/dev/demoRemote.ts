@@ -39,8 +39,8 @@ export function createDemoRemote(hooks: Hooks) {
   let knowsPassword = false;
   let promptCount = 0;
 
-  const emit = (opId: string, line: string) =>
-    progressListeners.forEach((listener) => listener({ repoId: hooks.repoId, opId, line }));
+  const emit = (opId: string, line: string, owner = hooks.repoId) =>
+    progressListeners.forEach((listener) => listener({ repoId: owner, opId, line }));
 
   async function track<T>(opId: string, work: (op: Running) => Promise<T>): Promise<T> {
     const op: Running = { cancelled: false, answer: null };
@@ -54,10 +54,15 @@ export function createDemoRemote(hooks: Hooks) {
 
   const cancelled = () => new GitCommandError("cancelled", "Cancelled.");
 
-  async function play(opId: string, op: Running, lines: string[]): Promise<void> {
+  async function play(
+    opId: string,
+    op: Running,
+    lines: string[],
+    owner = hooks.repoId,
+  ): Promise<void> {
     for (const line of lines) {
       if (op.cancelled) throw cancelled();
-      emit(opId, line);
+      emit(opId, line, owner);
       await wait(180);
     }
     if (op.cancelled) throw cancelled();
@@ -218,6 +223,11 @@ export function createDemoRemote(hooks: Hooks) {
         ]);
         pushed.add(branch);
         return done(`To example.invalid:demo/repo.git\n   5d6e7f8..9a0b1c2  ${branch} -> ${branch}`);
+      }),
+    cloneRepository: (ownerId: string, opId: string, _url: string, parent: string, name: string) =>
+      track(opId, async (op) => {
+        await play(opId, op, [`Cloning into '${name}'...`, ...transfer("Receiving")], ownerId);
+        return `${parent}/${name}`;
       }),
     deleteRemoteBranch: (_repoId: string, opId: string, remote: string, branch: string) =>
       track(opId, async (op) => {

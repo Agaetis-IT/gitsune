@@ -608,6 +608,59 @@ fn parse_remote_urls_ignores_push_lines_and_noise() {
     );
 }
 
+// ---------- cloning ----------
+
+#[test]
+fn a_clone_creates_the_folder_with_the_files() {
+    let (_tmp, remote) = with_remote();
+    let parent = TempDir::new().unwrap();
+    let url = remote.path().to_string_lossy().into_owned();
+    let path = quiet(|io| clone_repository(io, &url, parent.path(), "copy")).unwrap();
+    assert_eq!(path, parent.path().join("copy"));
+    assert!(path.join("a.txt").exists());
+}
+
+#[test]
+fn a_clone_goes_into_an_existing_empty_folder_but_not_a_full_one() {
+    let (_tmp, remote) = with_remote();
+    let parent = TempDir::new().unwrap();
+    let url = remote.path().to_string_lossy().into_owned();
+    fs::create_dir(parent.path().join("empty")).unwrap();
+    quiet(|io| clone_repository(io, &url, parent.path(), "empty")).unwrap();
+    assert!(parent.path().join("empty").join("a.txt").exists());
+
+    fs::create_dir(parent.path().join("full")).unwrap();
+    fs::write(parent.path().join("full").join("x.txt"), "x").unwrap();
+    let refused = quiet(|io| clone_repository(io, &url, parent.path(), "full")).unwrap_err();
+    assert!(refused.to_string().contains("not empty"));
+    assert!(parent.path().join("full").join("x.txt").exists());
+}
+
+#[test]
+fn a_clone_refuses_what_could_leave_the_folder_or_be_read_as_an_option() {
+    let parent = TempDir::new().unwrap();
+    for name in ["", ".", "..", "a/b", "..\\x"] {
+        assert!(
+            quiet(|io| clone_repository(io, "https://x.invalid/r", parent.path(), name)).is_err()
+        );
+    }
+    for url in ["", "  ", "--upload-pack=touch evil"] {
+        assert!(quiet(|io| clone_repository(io, url, parent.path(), "copy")).is_err());
+    }
+    assert!(!parent.path().join("copy").exists());
+    let missing = parent.path().join("nowhere");
+    assert!(quiet(|io| clone_repository(io, "https://x.invalid/r", &missing, "copy")).is_err());
+}
+
+#[test]
+fn a_failed_clone_leaves_no_folder_behind() {
+    let parent = TempDir::new().unwrap();
+    let nothing = parent.path().join("no-such-repository");
+    let url = nothing.to_string_lossy().into_owned();
+    assert!(quiet(|io| clone_repository(io, &url, parent.path(), "copy")).is_err());
+    assert!(!parent.path().join("copy").exists());
+}
+
 // ---------- the fetch made in the background ----------
 
 #[test]

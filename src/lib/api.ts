@@ -734,6 +734,18 @@ export const deleteRemoteBranch = (repoId: string, opId: string, remote: string,
 
 export const listRemotes = (repoId: string) => gitInvoke<string[]>("list_remotes", { repoId });
 
+/**
+ * Clones `url` into the folder `name` of `parent` and gives the path of the new repository.
+ * `ownerId` is the tab it was started from: the progress events carry it.
+ */
+export const cloneRepository = (
+  ownerId: string,
+  opId: string,
+  url: string,
+  parent: string,
+  name: string,
+) => gitInvoke<string>("clone_repository", { ownerId, opId, url, parent, name });
+
 export const cancelOperation = (opId: string) => gitInvoke<void>("cancel_operation", { opId });
 
 /** Answers a question git asked; `null` refuses (the operation then fails). */

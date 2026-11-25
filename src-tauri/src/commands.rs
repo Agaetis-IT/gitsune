@@ -685,7 +685,8 @@ struct AskpassRequest {
     prompt: String,
 }
 
-/// Runs a long operation off the async runtime, streaming its progress and questions as events.
+/// Runs a long operation of a repository off the async runtime, streaming its progress and
+/// questions as events.
 async fn run_remote(
     app: AppHandle,
     registry: &RepoRegistry,
@@ -695,6 +696,27 @@ async fn run_remote(
     operation: impl FnOnce(&git::OpCtx, &git::LongIo) -> Result<RemoteResult, GitError> + Send + 'static,
 ) -> Result<RemoteResult, GitError> {
     let (workdir, stores) = registry.context(&repo_id)?;
+    run_long_job(app, ops, repo_id, op_id, move |io| {
+        operation(
+            &git::OpCtx {
+                workdir: &workdir,
+                stores: &stores,
+            },
+            io,
+        )
+    })
+    .await
+}
+
+/// Runs a long job off the async runtime. Its progress and questions are sent as events that
+/// carry `owner_id` (the repository, or the tab a clone started from) and the operation id.
+async fn run_long_job<T: Send + 'static>(
+    app: AppHandle,
+    ops: &RemoteOps,
+    owner_id: String,
+    op_id: String,
+    job: impl FnOnce(&git::LongIo) -> Result<T, GitError> + Send + 'static,
+) -> Result<T, GitError> {
     let safe_id: String = op_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
@@ -712,17 +734,17 @@ async fn run_remote(
         .map_err(|_| GitError::other(POISONED))?
         .insert(op_id.clone(), running.clone());
 
-    let job = {
+    let task = {
         let running = running.clone();
-        let (repo_id, op_id) = (repo_id.clone(), op_id.clone());
+        let (owner_id, op_id) = (owner_id.clone(), op_id.clone());
         tauri::async_runtime::spawn_blocking(move || {
             let progress = {
-                let (app, repo_id, op_id) = (app.clone(), repo_id.clone(), op_id.clone());
+                let (app, owner_id, op_id) = (app.clone(), owner_id.clone(), op_id.clone());
                 move |line: &str| {
                     let _ = app.emit(
                         "remote-progress",
                         RemoteProgress {
-                            repo_id: repo_id.clone(),
+                            repo_id: owner_id.clone(),
                             op_id: op_id.clone(),
                             line: line.to_string(),
                         },
@@ -730,12 +752,12 @@ async fn run_remote(
                 }
             };
             let prompt = {
-                let (app, repo_id, op_id) = (app.clone(), repo_id.clone(), op_id.clone());
+                let (app, owner_id, op_id) = (app.clone(), owner_id.clone(), op_id.clone());
                 move |prompt_id: &str, text: &str| {
                     let _ = app.emit(
                         "askpass-request",
                         AskpassRequest {
-                            repo_id: repo_id.clone(),
+                            repo_id: owner_id.clone(),
                             op_id: op_id.clone(),
                             prompt_id: prompt_id.to_string(),
                             prompt: text.to_string(),
@@ -749,24 +771,37 @@ async fn run_remote(
                 on_progress: &progress,
                 on_prompt: &prompt,
             };
-            let result = operation(
-                &git::OpCtx {
-                    workdir: &workdir,
-                    stores: &stores,
-                },
-                &io,
-            );
+            let result = job(&io);
             let _ = std::fs::remove_dir_all(&running.askpass_dir);
             result
         })
     };
-    let result = job
+    let result = task
         .await
         .map_err(|e| GitError::other(format!("the operation stopped unexpectedly: {e}")))?;
     if let Ok(mut running) = ops.running.lock() {
         running.remove(&op_id);
     }
     result
+}
+
+/// Clones a repository into `name` inside the folder `parent` and returns the new path.
+/// `owner_id` is the tab the clone was started from: the progress events carry it.
+#[tauri::command]
+pub async fn clone_repository(
+    owner_id: String,
+    op_id: String,
+    url: String,
+    parent: String,
+    name: String,
+    app: AppHandle,
+    ops: State<'_, RemoteOps>,
+) -> Result<String, GitError> {
+    run_long_job(app, &ops, owner_id, op_id, move |io| {
+        let path = git::clone_repository(io, &url, std::path::Path::new(&parent), &name)?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
 }
 
 #[tauri::command]

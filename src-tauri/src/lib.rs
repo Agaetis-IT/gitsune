@@ -75,6 +75,7 @@ pub fn run() {
             commands::delete_tag,
             commands::restore_tag,
             commands::fetch_remote,
+            commands::clone_repository,
             commands::pull_branch,
             commands::push_branch,
             commands::delete_remote_branch,

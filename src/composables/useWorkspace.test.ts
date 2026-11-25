@@ -143,6 +143,7 @@ function fakeBackend(overrides: Partial<RepoBackend> = {}) {
   const graphCalls: Array<{ id: string; hidden: string[] }> = [];
   const backend: RepoBackend = {
     pickFolder: async () => null,
+    cloneRepository: vi.fn(async (_owner, _op, _url, parent, name) => `${parent}/${name}`),
     open: async (path) => ({ info: infoFor(path), refs: REFS }),
     remoteUrls: async () => [{ name: "origin", url: "git@ssh.dev.azure.com:v3/acme/Demo/repo" }],
     openExternal: vi.fn(async () => {}),
@@ -412,6 +413,36 @@ describe("tabs", () => {
     expect(workspace.tabs.value).toHaveLength(0);
   });
 
+  it("moves a tab, and the order of the repositories follows", async () => {
+    const { workspace } = setup();
+    for (const name of ["a", "b", "c"]) await workspace.openPath(`/fake/${name}`);
+    workspace.reorderTab("/fake/c", 0);
+    expect(workspace.tabs.value.map((t) => t.name)).toEqual(["c", "a", "b"]);
+    workspace.shiftTabBy("/fake/c", 1);
+    expect(workspace.tabs.value.map((t) => t.name)).toEqual(["a", "c", "b"]);
+    workspace.shiftTabBy("/fake/a", -1);
+    workspace.reorderTab("/fake/zzz", 0);
+    expect(workspace.tabs.value.map((t) => t.name)).toEqual(["a", "c", "b"]);
+    expect(workspace.activeId.value).toBe("/fake/c");
+  });
+
+  it("keeps the new order for the next session", async () => {
+    const written: string[][] = [];
+    const store = {
+      read: () => ({ paths: [], active: null, hidden: {} }),
+      write: (session: { paths: string[] }) => void written.push(session.paths),
+    };
+    const fake = fakeBackend();
+    const workspace = createWorkspace(
+      fake.backend,
+      createRecentStore(memoryStorage()),
+      undefined,
+      store,
+    );
+    for (const name of ["a", "b"]) await workspace.openPath(`/fake/${name}`);
+    workspace.reorderTab("/fake/b", 0);
+    expect(written[written.length - 1]).toEqual(["/fake/b", "/fake/a"]);
+  });
   it("remembers selection and scroll per tab", async () => {
     const { workspace } = setup();
     await workspace.openPath("/fake/a");
@@ -424,6 +455,163 @@ describe("tabs", () => {
     expect(workspace.active.value?.selected).toBe(7);
     expect(workspace.active.value?.scrollTop).toBe(420);
     expect(b.selected).toBeNull();
+  });
+});
+
+describe("blank tabs", () => {
+  it("adds a blank tab at the end and shows it", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const blank = workspace.newTab();
+    expect(workspace.entries.value.map((e) => e.id)).toEqual(["/fake/a", blank.id]);
+    expect(workspace.activeId.value).toBe(blank.id);
+    expect(workspace.active.value).toBeNull();
+    expect(workspace.activeBlank.value).toBe(blank);
+  });
+
+  it("turns into the tab of the repository opened from it, in the same place", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    const first = workspace.newTab();
+    const second = workspace.newTab();
+    workspace.activate(first.id);
+    await workspace.openPath("/fake/c");
+    expect(workspace.blanks.value).toEqual([second]);
+    expect(workspace.entries.value.map((e) => e.id)).toEqual(["/fake/a", "/fake/c", second.id]);
+    expect(workspace.activeId.value).toBe("/fake/c");
+  });
+
+  it("closes itself when the repository opened from it is already open", async () => {
+    const { workspace } = setup();
+    await workspace.openPath("/fake/a");
+    workspace.newTab();
+    await workspace.openPath("/fake/a");
+    expect(workspace.blanks.value).toHaveLength(0);
+    expect(workspace.entries.value.map((e) => e.id)).toEqual(["/fake/a"]);
+    expect(workspace.activeId.value).toBe("/fake/a");
+  });
+
+  it("is closed without touching a repository, and is not kept for the next session", async () => {
+    const { workspace, backend } = setup();
+    await workspace.openPath("/fake/a");
+    const blank = workspace.newTab();
+    await workspace.closeTab(blank.id);
+    expect(backend.close).not.toHaveBeenCalled();
+    expect(workspace.activeId.value).toBe("/fake/a");
+    expect(workspace.entries.value).toHaveLength(1);
+  });
+
+  it("can be opened several times and moved like any tab", async () => {
+    const { workspace } = setup();
+    const first = workspace.newTab();
+    const second = workspace.newTab();
+    expect(first.id).not.toBe(second.id);
+    workspace.shiftTabBy(second.id, -1);
+    expect(workspace.entries.value.map((e) => e.id)).toEqual([second.id, first.id]);
+  });
+});
+
+describe("cloning", () => {
+  it("clones from the blank tab and opens the repository in its place", async () => {
+    const { workspace, backend } = setup();
+    const blank = workspace.newTab();
+    await workspace.cloneRepository("https://example.invalid/team/tool.git", "/fake", "tool");
+    expect(backend.cloneRepository).toHaveBeenCalledWith(
+      blank.id,
+      expect.any(String),
+      "https://example.invalid/team/tool.git",
+      "/fake",
+      "tool",
+    );
+    expect(workspace.blanks.value).toHaveLength(0);
+    expect(workspace.active.value?.path).toBe("/fake/tool");
+    expect(lastOf(workspace.notices.value)?.text).toBe("Cloned tool.");
+  });
+
+  it("adds a blank tab when there is none", async () => {
+    const { workspace } = setup();
+    await workspace.cloneRepository("https://example.invalid/r.git", "/fake", "r");
+    expect(workspace.entries.value.map((e) => e.id)).toEqual(["/fake/r"]);
+  });
+
+  it("keeps the failure on the blank tab", async () => {
+    const { workspace } = setup({
+      cloneRepository: async () => {
+        throw new GitCommandError("other", "fatal: repository not found");
+      },
+    });
+    const blank = workspace.newTab();
+    await workspace.cloneRepository("https://example.invalid/r.git", "/fake", "r");
+    expect(blank.cloneError).toContain("repository not found");
+    expect(blank.clone).toBeNull();
+    expect(workspace.activeBlank.value).toBe(blank);
+  });
+
+  it("tells when the clone was cancelled, without an error on the tab", async () => {
+    const { workspace } = setup({
+      cloneRepository: async () => {
+        throw new GitCommandError("cancelled", "Cancelled.");
+      },
+    });
+    const blank = workspace.newTab();
+    await workspace.cloneRepository("https://example.invalid/r.git", "/fake", "r");
+    expect(blank.cloneError).toBe("");
+    expect(lastOf(workspace.notices.value)?.text).toBe("Clone cancelled.");
+  });
+
+  it("cancels a running clone when its tab is closed", async () => {
+    let finish: (path: string) => void = () => {};
+    const { workspace, backend } = setup({
+      cloneRepository: () => new Promise<string>((resolve) => (finish = resolve)),
+      cancelOperation: vi.fn(async () => {}),
+    });
+    const blank = workspace.newTab();
+    const running = workspace.cloneRepository("https://example.invalid/r.git", "/fake", "r");
+    await Promise.resolve();
+    expect(blank.clone?.kind).toBe("clone");
+    await workspace.closeTab(blank.id);
+    expect(backend.cancelOperation).toHaveBeenCalledWith(expect.stringMatching(/^op-/));
+    finish("/fake/r");
+    await running;
+  });
+
+  it("shows the progress and answers the questions of a clone", async () => {
+    const asked: Array<[string, string, string | null]> = [];
+    let finish: (path: string) => void = () => {};
+    let progress: (event: { repoId: string; opId: string; line: string }) => void = () => {};
+    let ask: (event: {
+      repoId: string;
+      opId: string;
+      promptId: string;
+      prompt: string;
+    }) => void = () => {};
+    const { workspace } = setup({
+      cloneRepository: () => new Promise<string>((resolve) => (finish = resolve)),
+      onRemoteProgress: async (handler) => {
+        progress = handler;
+        return () => {};
+      },
+      onAskpass: async (handler) => {
+        ask = handler;
+        return () => {};
+      },
+      answerAskpass: async (opId, promptId, answer) => void asked.push([opId, promptId, answer]),
+    });
+    const stop = await workspace.watchRepos();
+    const blank = workspace.newTab();
+    const running = workspace.cloneRepository("https://example.invalid/r.git", "/fake", "r");
+    await Promise.resolve();
+    const opId = blank.clone!.id;
+    progress({ repoId: blank.id, opId, line: "Receiving objects:  40% (4/10)" });
+    expect(blank.clone).toMatchObject({ line: "Receiving objects:  40% (4/10)", percent: 40 });
+    ask({ repoId: blank.id, opId, promptId: "7", prompt: "Password: " });
+    expect(blank.clone?.prompt).toEqual({ promptId: "7", text: "Password: " });
+    await workspace.answerPrompt(blank, "secret");
+    expect(asked).toEqual([[opId, "7", "secret"]]);
+    expect(blank.clone?.prompt).toBeNull();
+    finish("/fake/r");
+    await running;
+    stop();
   });
 });
 

@@ -82,7 +82,8 @@ import { headSide as headSideOf, pickCheckoutRef } from "@/lib/navigation";
 import type { WipRow } from "@/lib/metro/draw";
 
 const workspace = useWorkspace();
-const { tabs, active, activeId, diffMode, recentRepos, openError, opening } = workspace;
+const { entries, active, activeBlank, activeId, diffMode, recentRepos, openError, opening } =
+  workspace;
 
 const graph = ref<InstanceType<typeof MetroGraph>>();
 const searchBar = ref<InstanceType<typeof SearchBar>>();
@@ -614,7 +615,7 @@ const menuState = computed<AppMenuState>(() => {
     readOnly: tab?.readOnly ?? false,
     detached: !!tab && tab.headBranch === null,
     hasHead: headRow.value !== null,
-    tabCount: tabs.value.length,
+    tabCount: entries.value.length,
     recents: recentRepos.value.map((r) => ({ path: r.path, name: r.name })),
     branches: (tab?.refs ?? [])
       .filter((ref) => ref.kind === "local")
@@ -629,7 +630,7 @@ const menuState = computed<AppMenuState>(() => {
 });
 
 function shiftTab(delta: 1 | -1) {
-  const list = tabs.value;
+  const list = entries.value;
   if (list.length < 2) return;
   const index = list.findIndex((tab) => tab.id === activeId.value);
   workspace.activate(list[(index + delta + list.length) % list.length].id);
@@ -796,11 +797,12 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       @close="paletteOpen = false"
     />
     <TabBar
-      :tabs="tabs"
+      :entries="entries"
       :active-id="activeId"
       @activate="workspace.activate"
       @close="workspace.closeTab"
-      @open="workspace.pickAndOpen"
+      @new="workspace.newTab"
+      @reorder="workspace.reorderTab"
     />
 
     <div v-if="active" class="relative flex min-h-0 flex-1">
@@ -1212,16 +1214,20 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
       />
     </div>
 
-    <WelcomeScreen
-      v-else
-      class="min-h-0 flex-1"
-      :recents="recentRepos"
-      :error="openError"
-      :busy="opening"
-      @open="workspace.pickAndOpen"
-      @open-recent="workspace.openPath"
-      @forget="workspace.forgetRecent"
-    />
+    <div v-else class="relative flex min-h-0 flex-1 flex-col">
+      <WelcomeScreen
+        :key="activeBlank?.id ?? 'welcome'"
+        class="min-h-0 flex-1"
+        :recents="recentRepos"
+        :error="openError"
+        :busy="opening"
+        :blank="activeBlank"
+        @open="workspace.pickAndOpen"
+        @open-recent="workspace.openPath"
+        @forget="workspace.forgetRecent"
+      />
+      <RemoteStatus v-if="activeBlank" :tab="activeBlank" />
+    </div>
 
     <p v-if="active && openError" class="text-destructive border-t px-3 py-1 text-xs" role="alert">
       {{ openError }}

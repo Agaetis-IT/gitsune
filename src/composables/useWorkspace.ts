@@ -50,6 +50,7 @@ import {
   pullRequestUrl,
 } from "@/lib/remoteUrl";
 import { pullRequestDescription, pullRequestTitle } from "@/lib/pullRequestText";
+import { moveId } from "@/lib/tabOrder";
 import { ticketFromBranch, ticketPrefix, ticketUrl } from "@/lib/tickets";
 import { createSessionStore, type Session, type SessionStore } from "@/lib/session";
 
@@ -162,10 +163,10 @@ export type BranchDialog =
   /** Rebase the current branch onto `onto`; `plan` lists what would be replayed (when known). */
   | { type: "rebase"; onto: string; plan: RebasePlan | null; interactive: boolean };
 
-/** A fetch, pull or push that is running. */
+/** A fetch, pull, push or clone that is running. */
 export interface RemoteOp {
   id: string;
-  kind: "fetch" | "pull" | "push" | "deleteRemote";
+  kind: "fetch" | "pull" | "push" | "deleteRemote" | "clone";
   /** What is happening, for the progress panel ("Pushing main…"). */
   label: string;
   /** The last line git printed. */
@@ -176,6 +177,23 @@ export interface RemoteOp {
   prompt: { promptId: string; text: string } | null;
   cancelling: boolean;
 }
+
+/**
+ * A tab with no repository yet: the place to open, clone or pick a recent repository. It becomes
+ * the tab of the repository that is opened from it. It is not kept for the next session.
+ */
+export interface BlankTab {
+  blank: true;
+  id: string;
+  name: string;
+  /** The clone that is running from this tab. */
+  clone: RemoteOp | null;
+  /** Why the last clone failed. */
+  cloneError: string;
+}
+
+/** What the tab bar shows. */
+export type TabEntry = RepoTab | BlankTab;
 
 /** A short message shown to the user, optionally with an action (Undo...). */
 export interface Notice {
@@ -301,7 +319,11 @@ export function createWorkspace(
   readOnlyStore: ReadOnlyStore = createReadOnlyStore(null),
   sessionStore: SessionStore = createSessionStore(null),
 ) {
+  /** The tabs of a repository, in the order they are shown. */
   const tabs = shallowRef<RepoTab[]>([]);
+  const blanks = shallowRef<BlankTab[]>([]);
+  /** The ids of every tab, repositories and blank ones, in the order they are shown. */
+  const order = shallowRef<string[]>([]);
   const activeId = ref<string | null>(null);
   const density = ref<Density>("compact");
   const diffMode = ref<DiffMode>("unified");
@@ -311,6 +333,15 @@ export function createWorkspace(
   const opening = ref(false);
 
   const active = computed(() => tabs.value.find((tab) => tab.id === activeId.value) ?? null);
+  const activeBlank = computed(() => blanks.value.find((tab) => tab.id === activeId.value) ?? null);
+  /** Every tab, in the order of the tab bar. */
+  const entries = computed<TabEntry[]>(() =>
+    order.value.flatMap((id) => {
+      const entry =
+        tabs.value.find((tab) => tab.id === id) ?? blanks.value.find((b) => b.id === id);
+      return entry ? [entry] : [];
+    }),
+  );
 
   // ---------- session: the tabs come back at the next start ----------
 
@@ -461,6 +492,16 @@ export function createWorkspace(
         if (tab && activityOpen.value && tab.id === activeId.value) void loadActivity(tab);
       }),
       backend.onRemoteProgress((event) => {
+        const blank = blanks.value.find((candidate) => candidate.id === event.repoId);
+        if (blank?.clone?.id === event.opId) {
+          const percent = /(\d{1,3})%/.exec(event.line);
+          blank.clone = {
+            ...blank.clone,
+            line: event.line,
+            percent: percent ? Math.min(100, Number(percent[1])) : blank.clone.percent,
+          };
+          return;
+        }
         const tab = tabOf(event.repoId);
         if (tab?.remote?.id !== event.opId) return;
         const percent = /(\d{1,3})%/.exec(event.line);
@@ -471,6 +512,14 @@ export function createWorkspace(
         };
       }),
       backend.onAskpass((event) => {
+        const blank = blanks.value.find((candidate) => candidate.id === event.repoId);
+        if (blank?.clone?.id === event.opId) {
+          blank.clone = {
+            ...blank.clone,
+            prompt: { promptId: event.promptId, text: event.prompt },
+          };
+          return;
+        }
         const tab = tabOf(event.repoId);
         if (tab?.remote?.id !== event.opId) return;
         tab.remote = { ...tab.remote, prompt: { promptId: event.promptId, text: event.prompt } };
@@ -1175,19 +1224,28 @@ export function createWorkspace(
   const askDeleteRemoteBranch = (tab: RepoTab, remote: string, branch: string) =>
     openDialog(tab, { type: "deleteRemoteBranch", remote, branch });
 
-  async function cancelRemote(tab: RepoTab): Promise<void> {
-    const op = tab.remote;
+  /** The operation a tab is running: a remote operation, or the clone of a blank tab. */
+  const operationOf = (tab: RepoTab | BlankTab): RemoteOp | null =>
+    "blank" in tab ? tab.clone : tab.remote;
+
+  function setOperation(tab: RepoTab | BlankTab, op: RemoteOp): void {
+    if ("blank" in tab) tab.clone = op;
+    else tab.remote = op;
+  }
+
+  async function cancelRemote(tab: RepoTab | BlankTab): Promise<void> {
+    const op = operationOf(tab);
     if (!op || op.cancelling) return;
-    tab.remote = { ...op, cancelling: true, prompt: null };
+    setOperation(tab, { ...op, cancelling: true, prompt: null });
     await backend.cancelOperation(op.id).catch(() => {});
   }
 
   /** Answers the question git is waiting for; `null` refuses, which ends the operation. */
-  async function answerPrompt(tab: RepoTab, answer: string | null): Promise<void> {
-    const op = tab.remote;
+  async function answerPrompt(tab: RepoTab | BlankTab, answer: string | null): Promise<void> {
+    const op = operationOf(tab);
     if (!op?.prompt) return;
     const { promptId } = op.prompt;
-    tab.remote = { ...op, prompt: null };
+    setOperation(tab, { ...op, prompt: null });
     await backend.answerAskpass(op.id, promptId, answer).catch(() => {});
   }
 
@@ -1674,7 +1732,39 @@ export function createWorkspace(
     tab.activity = [];
   }
 
-  async function openPath(path: string, hidden: readonly string[] = []): Promise<void> {
+  /** Removes a blank tab (the one that became a repository, or was closed). */
+  function removeBlank(blank: BlankTab): void {
+    blanks.value = blanks.value.filter((candidate) => candidate !== blank);
+    order.value = order.value.filter((id) => id !== blank.id);
+  }
+
+  /** Puts the repository tabs in the order of the tab bar. */
+  function syncRepoOrder(): void {
+    const rank = new Map(order.value.map((id, index) => [id, index]));
+    tabs.value = [...tabs.value].sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+  }
+
+  /** Shows a new repository tab: in the place of the blank tab it was opened from, else last. */
+  function placeTab(tab: RepoTab, from: BlankTab | null): void {
+    if (from && blanks.value.includes(from)) {
+      order.value = order.value.map((id) => (id === from.id ? tab.id : id));
+      blanks.value = blanks.value.filter((candidate) => candidate !== from);
+    } else {
+      order.value = [...order.value, tab.id];
+    }
+    tabs.value = [...tabs.value, tab];
+    syncRepoOrder();
+  }
+
+  /**
+   * Opens a repository in a tab. A blank tab it is opened from (the one that is shown by
+   * default) turns into the tab of the repository.
+   */
+  async function openPath(
+    path: string,
+    hidden: readonly string[] = [],
+    from: BlankTab | null = activeBlank.value,
+  ): Promise<void> {
     const trimmed = path.trim();
     if (!trimmed) return;
     opening.value = true;
@@ -1683,6 +1773,7 @@ export function createWorkspace(
       const { info, refs } = await backend.open(trimmed);
       const existing = tabs.value.find((tab) => tab.id === info.id);
       if (existing) {
+        if (from) removeBlank(from);
         activeId.value = existing.id;
         return;
       }
@@ -1745,7 +1836,7 @@ export function createWorkspace(
         rebaseBefore: null,
         speedChecks: 0,
       });
-      tabs.value = [...tabs.value, tab];
+      placeTab(tab, from);
       activeId.value = tab.id;
       recentRepos.value = recents.add({ path: info.path, name: info.name, openedAt: Date.now() });
       if (tab.readOnly) void backend.setReadOnly(tab.id, true).catch(() => {});
@@ -1799,13 +1890,22 @@ export function createWorkspace(
   }
 
   async function closeTab(id: string): Promise<void> {
-    const index = tabs.value.findIndex((tab) => tab.id === id);
+    const index = order.value.indexOf(id);
     if (index === -1) return;
-    const remaining = tabs.value.filter((tab) => tab.id !== id);
-    tabs.value = remaining;
-    if (activeId.value === id) {
-      activeId.value = (remaining[index] ?? remaining[index - 1] ?? null)?.id ?? null;
+    const remaining = order.value.filter((other) => other !== id);
+    order.value = remaining;
+    const blank = blanks.value.find((candidate) => candidate.id === id);
+    if (blank) {
+      blanks.value = blanks.value.filter((candidate) => candidate !== blank);
+      // A clone that is still running is stopped with its tab.
+      if (blank.clone) void backend.cancelOperation(blank.clone.id).catch(() => {});
+    } else {
+      tabs.value = tabs.value.filter((tab) => tab.id !== id);
     }
+    if (activeId.value === id) {
+      activeId.value = remaining[index] ?? remaining[index - 1] ?? null;
+    }
+    if (blank) return;
     try {
       await backend.close(id);
     } catch {
@@ -1814,7 +1914,68 @@ export function createWorkspace(
   }
 
   function activate(id: string): void {
-    if (tabs.value.some((tab) => tab.id === id)) activeId.value = id;
+    if (order.value.includes(id)) activeId.value = id;
+  }
+
+  let blankCount = 0;
+
+  /** Adds a blank tab, to open, clone or pick a recent repository in. */
+  function newTab(): BlankTab {
+    const blank = shallowReactive<BlankTab>({
+      blank: true,
+      id: `blank-${++blankCount}`,
+      name: "New tab",
+      clone: null,
+      cloneError: "",
+    });
+    blanks.value = [...blanks.value, blank];
+    order.value = [...order.value, blank.id];
+    activeId.value = blank.id;
+    return blank;
+  }
+
+  /** Moves a tab so that it ends up at index `to` of the tab bar. */
+  function reorderTab(id: string, to: number): void {
+    const next = moveId(order.value, order.value.indexOf(id), to);
+    if (next.every((other, index) => other === order.value[index])) return;
+    order.value = next;
+    syncRepoOrder();
+  }
+
+  /** Moves a tab one place to the left (-1) or to the right (1). */
+  const shiftTabBy = (id: string, delta: -1 | 1): void =>
+    reorderTab(id, order.value.indexOf(id) + delta);
+
+  /**
+   * Clones a repository into `name` inside `parent`, from the blank tab that is shown (one is
+   * added when there is none), and opens it in that tab. A failure stays on the tab.
+   */
+  async function cloneRepository(url: string, parent: string, name: string): Promise<void> {
+    const blank = activeBlank.value ?? newTab();
+    if (blank.clone) return;
+    const id = `op-${Date.now().toString(36)}-${++opCount}`;
+    blank.cloneError = "";
+    blank.clone = {
+      id,
+      kind: "clone",
+      label: "Cloning…",
+      line: "",
+      percent: null,
+      prompt: null,
+      cancelling: false,
+    };
+    try {
+      const path = await backend.cloneRepository(blank.id, id, url, parent, name);
+      blank.clone = null;
+      await openPath(path, [], blank);
+      if (!openError.value) notify("info", `Cloned ${name}.`);
+    } catch (error) {
+      const failure = toGitError(error);
+      if (failure.kind === "cancelled") notify("info", "Clone cancelled.");
+      else blank.cloneError = failure.message;
+    } finally {
+      blank.clone = null;
+    }
   }
 
   async function setHidden(tab: RepoTab, fullNames: string[], hide: boolean): Promise<void> {
@@ -2466,7 +2627,7 @@ export function createWorkspace(
     unstageLines,
     blame,
     locateCommit,
-    pickFolder: () => backend.pickFolder(),
+    pickFolder: (title?: string) => backend.pickFolder(title),
     loadWorktrees,
     openWorktree,
     openWorktreeIn,
@@ -2513,8 +2674,15 @@ export function createWorkspace(
     loadActivity,
     clearActivity,
     tabs,
+    blanks,
+    entries,
     activeId,
     active,
+    activeBlank,
+    newTab,
+    reorderTab,
+    shiftTabBy,
+    cloneRepository,
     density,
     diffMode,
     recentRepos,

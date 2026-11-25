@@ -55,8 +55,8 @@ pub use rebase::{RebasePlan, RebaseResult, TodoItem, rebase, rebase_plan};
 pub use reflog::{ReflogEntry, UndoResult, list_reflog, restore_head, undo_last};
 pub use refs::{RefInfo, list_refs};
 pub use remote::{
-    PullStrategy, PushOptions, RemoteResult, RemoteUrl, delete_remote_branch, fetch, list_remotes,
-    pull, push, remote_urls,
+    PullStrategy, PushOptions, RemoteResult, RemoteUrl, clone_repository, delete_remote_branch,
+    fetch, list_remotes, pull, push, remote_urls,
 };
 pub use repo::{RepoInfo, open_repository};
 pub use rewrite::{
