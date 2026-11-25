@@ -13,6 +13,6 @@ describe("general settings", () => {
     vi.resetModules();
     s = (await import("./useGeneralSettings")).useGeneralSettings();
     expect(s.restoreTabs.value).toBe(false);
-    expect(localStorage.getItem("git-hydra:restore-tabs")).toBe("off");
+    expect(localStorage.getItem("gitsune:restore-tabs")).toBe("off");
   });
 });

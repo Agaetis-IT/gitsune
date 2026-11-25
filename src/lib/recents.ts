@@ -7,7 +7,7 @@ export interface RecentRepo {
 
 type Storage = Pick<globalThis.Storage, "getItem" | "setItem">;
 
-const KEY = "git-hydra:recent-repos";
+const KEY = "gitsune:recent-repos";
 const MAX_RECENTS = 10;
 
 const isRecent = (value: unknown): value is RecentRepo =>

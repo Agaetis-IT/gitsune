@@ -10,7 +10,7 @@ export interface Session {
 
 type Storage = Pick<globalThis.Storage, "getItem" | "setItem">;
 
-const KEY = "git-hydra:session";
+const KEY = "gitsune:session";
 
 const isStrings = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === "string");

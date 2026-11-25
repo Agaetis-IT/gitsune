@@ -2,6 +2,13 @@
   "name": "gitsune",
   "private": true,
   "version": "0.1.0",
+  "description": "A git client built around a metro-style branch graph",
+  "license": "MIT",
+  "author": "Agaetis",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simondujardin/gitsune.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -336,7 +336,7 @@ export function createDemoWorktree(deps: DemoWorktreeDeps) {
       dropEmpty();
       log(`git restore -- ${paths.join(" ")}`);
       if (taken.length === 0) return { snapshot: null, status: status() };
-      const reference = `refs/git-hydra/undo/${Date.now()}-${snapshots.length}`;
+      const reference = `refs/gitsune/undo/${Date.now()}-${snapshots.length}`;
       const snapshot: Snapshot = {
         reference,
         id: reference.slice(-12).padEnd(40, "0"),

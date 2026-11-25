@@ -279,11 +279,16 @@ pub struct LongIo<'a> {
 /// The helper git and ssh start when they need a secret. It writes the question to a file and
 /// waits for the app to write the answer next to it, so no extra program has to be shipped.
 const ASKPASS_SCRIPT: &str = r#"#!/bin/sh
-dir="${GIT_HYDRA_ASKPASS_DIR:?}"
+dir="${GITSUNE_ASKPASS_DIR:?}"
 id="$$"
+# Under Git for Windows the parent is a native process that `kill -0` cannot see.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) parent_alive() { return 0; } ;;
+  *) parent_alive() { kill -0 "$PPID" 2>/dev/null; } ;;
+esac
 printf '%s' "$1" > "$dir/$id.prompt.tmp" && mv "$dir/$id.prompt.tmp" "$dir/$id.prompt"
 while [ ! -f "$dir/$id.answer" ] && [ ! -f "$dir/$id.cancel" ]; do
-  kill -0 "$PPID" 2>/dev/null || exit 1
+  parent_alive || exit 1
   sleep 0.1
 done
 if [ -f "$dir/$id.cancel" ]; then
@@ -310,7 +315,7 @@ fn askpass_env(dir: &Path) -> Result<Vec<(String, String)>, GitError> {
     let mut env = vec![
         ("GIT_ASKPASS".to_string(), script.clone()),
         (
-            "GIT_HYDRA_ASKPASS_DIR".to_string(),
+            "GITSUNE_ASKPASS_DIR".to_string(),
             crate::platform::shell_path(os, &dir.to_string_lossy()),
         ),
     ];
@@ -380,11 +385,23 @@ fn read_progress(mut stream: impl Read, on_progress: &(dyn Fn(&str) + Sync)) -> 
 /// Sends a signal to the whole process group of a long command (git and what it started, such
 /// as ssh or a hook): TERM first, so git cleans up its lock files, KILL if that is not enough.
 fn signal_group(pid: u32, signal: &str) {
+    #[cfg(unix)]
     let _ = Command::new("kill")
         .args([signal, "--", &format!("-{pid}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+    // Windows has no signals, and a polite `taskkill` cannot stop a console program: the
+    // whole tree is ended at once.
+    #[cfg(windows)]
+    {
+        let _ = signal;
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }
 
 fn report_new_prompts(io: &LongIo, seen: &mut HashSet<String>) {
@@ -432,56 +449,93 @@ impl Runner<'_> {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
-        let mut cancelled = false;
-        let mut waited: Result<i32, GitError> = Ok(-1);
-        let (out_bytes, err_text) = std::thread::scope(|scope| {
-            let out = scope.spawn(move || {
-                let mut buffer = Vec::new();
-                if let Some(mut stdout) = stdout {
-                    let _ = stdout.read_to_end(&mut buffer);
-                }
-                buffer
-            });
-            let err = scope.spawn(move || match stderr {
-                Some(stderr) => read_progress(stderr, io.on_progress),
-                None => String::new(),
-            });
-
-            let mut seen: HashSet<String> = HashSet::new();
-            let mut terminated_at: Option<Instant> = None;
-            waited = loop {
-                match child.try_wait() {
-                    Ok(Some(status)) => break Ok(status.code().unwrap_or(-1)),
-                    Ok(None) => {}
-                    Err(e) => break Err(GitError::other(format!("git did not finish: {e}"))),
-                }
-                if io.cancel.load(Ordering::SeqCst) {
-                    match terminated_at {
-                        None => {
-                            cancelled = true;
-                            terminated_at = Some(Instant::now());
-                            signal_group(child.id(), "-TERM");
-                            // Refuse any question that is waiting for an answer.
-                            for id in &seen {
-                                let _ = answer_prompt(io.askpass_dir, id, None);
-                            }
-                        }
-                        Some(at) if at.elapsed() > Duration::from_secs(3) => {
-                            signal_group(child.id(), "-KILL");
-                            let _ = child.kill();
-                        }
-                        Some(_) => {}
-                    }
-                } else {
-                    report_new_prompts(io, &mut seen);
-                }
-                std::thread::sleep(Duration::from_millis(40));
-            };
-            (
-                out.join().unwrap_or_default(),
-                err.join().unwrap_or_default(),
-            )
+        // The readers run on their own threads and hand over what they read: after a cancel,
+        // a process git started may still hold the pipes open (Windows cannot signal a
+        // group), and the command must not wait for it.
+        enum Piece {
+            Progress(String),
+            Out(Vec<u8>),
+            Err(String),
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<Piece>();
+        let out_tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            if let Some(mut stdout) = stdout {
+                let _ = stdout.read_to_end(&mut buffer);
+            }
+            let _ = out_tx.send(Piece::Out(buffer));
         });
+        std::thread::spawn(move || {
+            let text = match stderr {
+                Some(stderr) => {
+                    let lines = tx.clone();
+                    read_progress(stderr, &move |line| {
+                        let _ = lines.send(Piece::Progress(line.to_string()));
+                    })
+                }
+                None => String::new(),
+            };
+            let _ = tx.send(Piece::Err(text));
+        });
+        let mut got: (Option<Vec<u8>>, Option<String>) = (None, None);
+        let absorb = |got: &mut (Option<Vec<u8>>, Option<String>), piece: Piece| match piece {
+            Piece::Progress(line) => (io.on_progress)(&line),
+            Piece::Out(bytes) => got.0 = Some(bytes),
+            Piece::Err(text) => got.1 = Some(text),
+        };
+
+        let mut cancelled = false;
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut terminated_at: Option<Instant> = None;
+        let waited: Result<i32, GitError> = loop {
+            while let Ok(piece) = rx.try_recv() {
+                absorb(&mut got, piece);
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status.code().unwrap_or(-1)),
+                Ok(None) => {}
+                Err(e) => break Err(GitError::other(format!("git did not finish: {e}"))),
+            }
+            if io.cancel.load(Ordering::SeqCst) {
+                match terminated_at {
+                    None => {
+                        cancelled = true;
+                        terminated_at = Some(Instant::now());
+                        signal_group(child.id(), "-TERM");
+                        // Refuse any question that is waiting for an answer.
+                        for id in &seen {
+                            let _ = answer_prompt(io.askpass_dir, id, None);
+                        }
+                    }
+                    Some(at) if at.elapsed() > Duration::from_secs(3) => {
+                        signal_group(child.id(), "-KILL");
+                        let _ = child.kill();
+                    }
+                    Some(_) => {}
+                }
+            } else {
+                report_new_prompts(io, &mut seen);
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        };
+        // Everything the readers still have, until both are done (or, after a cancel, a
+        // moment is enough).
+        let give_up = Instant::now() + Duration::from_secs(1);
+        while got.0.is_none() || got.1.is_none() {
+            let piece = if cancelled {
+                rx.recv_timeout(give_up.saturating_duration_since(Instant::now()))
+                    .ok()
+            } else {
+                rx.recv().ok()
+            };
+            match piece {
+                Some(piece) => absorb(&mut got, piece),
+                None => break,
+            }
+        }
+        let out_bytes = got.0.unwrap_or_default();
+        let err_text = got.1.unwrap_or_default();
         let code = waited?;
 
         self.log.record(

@@ -80,7 +80,7 @@ const rowOf = computed(
 
 // ---------- folders ----------
 
-const FOLDERS_KEY = "git-hydra:sidebar-folders";
+const FOLDERS_KEY = "gitsune:sidebar-folders";
 
 function readClosed(): Set<string> {
   try {

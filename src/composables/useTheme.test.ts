@@ -31,7 +31,7 @@ describe("useTheme", () => {
     setMode("dark");
     await Promise.resolve();
     expect(document.documentElement.classList.contains("dark")).toBe(true);
-    expect(localStorage.getItem("git-hydra:theme")).toBe("dark");
+    expect(localStorage.getItem("gitsune:theme")).toBe("dark");
   });
 });
 
@@ -100,7 +100,7 @@ describe("themes", () => {
     const t = useTheme();
     t.setTheme("nope");
     expect(t.themeId.value).toBe("default");
-    localStorage.setItem("git-hydra:theme-id", "custom-gone");
+    localStorage.setItem("gitsune:theme-id", "custom-gone");
     vi.resetModules();
     const again = (await import("./useTheme")).useTheme();
     expect(again.theme.value.id).toBe("default");
@@ -126,7 +126,7 @@ describe("themes", () => {
       "#123456",
     );
     expect(t.saveCustom({ ...changed, id: "nord" })).toBe(false);
-    expect(JSON.parse(localStorage.getItem("git-hydra:themes") ?? "[]")).toHaveLength(2);
+    expect(JSON.parse(localStorage.getItem("gitsune:themes") ?? "[]")).toHaveLength(2);
   });
 
   it("deleting the selected custom theme goes back to the default; built-in ones cannot be deleted", async () => {
@@ -157,10 +157,10 @@ describe("themes", () => {
   });
 
   it("ignores broken stored themes", async () => {
-    localStorage.setItem("git-hydra:themes", '[{"name":"x"}, 5, null]');
+    localStorage.setItem("gitsune:themes", '[{"name":"x"}, 5, null]');
     const { useTheme } = await import("./useTheme");
     expect(useTheme().customThemes.value).toEqual([]);
-    localStorage.setItem("git-hydra:themes", "not json");
+    localStorage.setItem("gitsune:themes", "not json");
     vi.resetModules();
     expect((await import("./useTheme")).useTheme().customThemes.value).toEqual([]);
   });
@@ -204,8 +204,8 @@ describe("themes for a light and a dark system", () => {
     expect(t.theme.value.id).toBe("catppuccin-mocha");
     t.setSystemTheme("dark", null);
     expect(t.theme.value.id).toBe("nord");
-    expect(localStorage.getItem("git-hydra:theme-id-dark")).toBeNull();
-    expect(localStorage.getItem("git-hydra:theme-id-light")).toBe("catppuccin-latte");
+    expect(localStorage.getItem("gitsune:theme-id-dark")).toBeNull();
+    expect(localStorage.getItem("gitsune:theme-id-light")).toBe("catppuccin-latte");
   });
 
   it("ignores an unknown theme and forgets a deleted one", async () => {

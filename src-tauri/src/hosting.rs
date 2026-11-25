@@ -9,6 +9,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+
+use crate::diagnostics::find_tool;
+use crate::platform::Os;
 use serde_json::Value;
 
 /// The hosts that can be linked to.
@@ -42,8 +45,19 @@ struct Output {
 }
 
 /// Runs `program` with `PATH` set to `path`, waiting at most `limit`.
+///
+/// The program is looked for in `path` here, then started by its full name: the lookup the
+/// system does for a bare name depends on the system (and may see the `PATH` of the application
+/// instead of the one given), so a tool that is installed elsewhere would be found when it must
+/// count as missing.
 fn run_cli(path: &str, program: &str, args: &[&str], limit: Duration) -> Result<Output, CliError> {
-    let mut child = Command::new(program)
+    let dirs: Vec<String> = path
+        .split(Os::current().path_separator())
+        .filter(|dir| !dir.is_empty())
+        .map(str::to_string)
+        .collect();
+    let found = find_tool(program, &dirs).ok_or(CliError::Missing)?;
+    let mut child = Command::new(found)
         .args(args)
         .env("PATH", path)
         .stdin(Stdio::null())
@@ -662,6 +676,12 @@ mod tests {
         format!("{}:/bin:/usr/bin", dir.path().display())
     }
 
+    #[cfg(unix)]
+    /// Only this folder: no tool of the machine (a CI runner has `az` and `gh`) can be found.
+    fn only(dir: &tempfile::TempDir) -> String {
+        dir.path().display().to_string()
+    }
+
     #[test]
     fn the_azure_token_is_read_from_the_answer_of_az() {
         let future = std::time::SystemTime::now()
@@ -698,7 +718,7 @@ mod tests {
     #[test]
     fn a_missing_tool_and_a_signed_out_user_are_told_apart() {
         let empty = tempfile::TempDir::new().unwrap();
-        let path = path_of(&empty);
+        let path = only(&empty);
         assert_eq!(azure_token(&path).unwrap_err(), CliError::Missing);
         assert_eq!(github_token(&path).unwrap_err(), CliError::Missing);
 
@@ -738,6 +758,15 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_tool_installed_elsewhere_is_missing_when_it_is_not_in_the_given_path() {
+        // `sh` exists on every machine that runs this test, but not in this folder.
+        let empty = tempfile::TempDir::new().unwrap();
+        let error = run_cli(&only(&empty), "sh", &["-c", "true"], Duration::from_secs(5)).err();
+        assert_eq!(error, Some(CliError::Missing));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn the_state_of_each_host_is_told() {
         let dir = fake_tools(r#"echo "user@example.com""#, "exit 0");
         let status = host_status_with("dev.azure.com", &path_of(&dir));
@@ -755,7 +784,7 @@ mod tests {
         );
         let empty = tempfile::TempDir::new().unwrap();
         assert_eq!(
-            host_status_with("dev.azure.com", &path_of(&empty)).state,
+            host_status_with("dev.azure.com", &only(&empty)).state,
             "missing"
         );
     }
@@ -837,7 +866,7 @@ mod tests {
         );
         let empty = tempfile::TempDir::new().unwrap();
         assert_eq!(
-            gitlab_token(&path_of(&empty), "gitlab.com").unwrap_err(),
+            gitlab_token(&only(&empty), "gitlab.com").unwrap_err(),
             CliError::Missing
         );
     }
@@ -871,7 +900,7 @@ mod tests {
         );
         let empty = tempfile::TempDir::new().unwrap();
         assert_eq!(
-            host_status_with("gitlab.com", &path_of(&empty)).state,
+            host_status_with("gitlab.com", &only(&empty)).state,
             "missing"
         );
     }

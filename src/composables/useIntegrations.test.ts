@@ -20,7 +20,7 @@ describe("integrations settings", () => {
   });
 
   it("ignores an application it does not know", async () => {
-    localStorage.setItem("git-hydra:editor", "emacs");
+    localStorage.setItem("gitsune:editor", "emacs");
     const s = (await import("./useIntegrations")).useIntegrations();
     expect(s.editor.value).toBe("zed");
     s.setEditor("vim");
@@ -28,7 +28,7 @@ describe("integrations settings", () => {
   });
 
   it("offers the editors and terminals of the system, and chooses again when it answers", async () => {
-    localStorage.setItem("git-hydra:terminal", "kitty");
+    localStorage.setItem("gitsune:terminal", "kitty");
     const platform = (await import("./usePlatform")).usePlatform();
     const integrations = (await import("./useIntegrations")).useIntegrations();
     // Until the system answers, the Mac list is assumed and "kitty" is not in it.

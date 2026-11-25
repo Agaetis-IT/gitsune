@@ -67,7 +67,8 @@ fn classify(roots: &Roots, path: &Path) -> Event {
     }
     for workdir in &roots.workdirs {
         if let Ok(relative) = path.strip_prefix(workdir) {
-            let text = relative.to_string_lossy();
+            // Git speaks with slashes on every system.
+            let text = relative.to_string_lossy().replace('\\', "/");
             // Anything under .git (a linked worktree's, say) that is not ours.
             if text == ".git" || text.starts_with(".git/") {
                 return Event::Noise;
@@ -75,7 +76,7 @@ fn classify(roots: &Roots, path: &Path) -> Event {
             return if text.is_empty() {
                 Event::Noise
             } else {
-                Event::Worktree(text.into_owned())
+                Event::Worktree(text)
             };
         }
     }
@@ -118,6 +119,37 @@ fn ignored(workdir: &Path, candidates: &[String]) -> HashSet<String> {
         .collect()
 }
 
+/// Whether git would show an untracked file inside one of these folders (so not one it ignores).
+fn shows_untracked(workdir: &Path, folders: &[String]) -> bool {
+    // A burst this large is not worth a command line: read the status again.
+    if folders.len() > 200 {
+        return true;
+    }
+    let Ok(output) = Command::new("git")
+        .current_dir(workdir)
+        .args([
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--directory",
+            "--no-empty-directory",
+            "-z",
+            "--",
+        ])
+        .args(folders)
+        .env("LC_ALL", "C")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return true;
+    };
+    !output.status.success() || !output.stdout.is_empty()
+}
+
 /// Calls `on_change` (from another thread) after a file of the working tree that git does not
 /// ignore changed, or after the index or `HEAD` changed. Changes are grouped over `debounce`.
 pub fn watch_worktree(
@@ -148,13 +180,22 @@ pub fn watch_worktree(
                 Event::Noise => {}
             }
         }
-        candidates.sort();
-        candidates.dedup();
-        if candidates.is_empty() {
-            return;
+        // A folder is not something git tracks: on some systems writing a file also reports
+        // its parent folder, which must not hide that the file itself is ignored. A folder
+        // counts only when git shows an untracked file in it (a new folder can be reported
+        // without the file that was written into it, so the folder is all there is to see).
+        let (folders, mut files): (Vec<String>, Vec<String>) = candidates
+            .into_iter()
+            .partition(|path| check_dir.join(path).is_dir());
+        files.sort();
+        files.dedup();
+        if !files.is_empty() {
+            let skipped = ignored(&check_dir, &files);
+            if files.iter().any(|path| !skipped.contains(path)) {
+                return on_change();
+            }
         }
-        let skipped = ignored(&check_dir, &candidates);
-        if candidates.iter().any(|path| !skipped.contains(path)) {
+        if !folders.is_empty() && shows_untracked(&check_dir, &folders) {
             on_change();
         }
     })
@@ -238,6 +279,24 @@ mod tests {
         let n = calls.load(Ordering::SeqCst);
         fs::remove_file(dir.join("src/a.rs")).unwrap();
         assert!(wait_for(&calls, n + 1), "deletion not reported");
+    }
+
+    #[test]
+    fn a_folder_counts_only_when_git_shows_a_file_in_it() {
+        let tmp = repo(); // ignores `target/` and `*.log`
+        let dir = tmp.path();
+        let folders = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+
+        write(dir, "target/out.txt", "ignored folder\n");
+        write(dir, "src/trace.log", "ignored file\n");
+        assert!(!shows_untracked(dir, &folders(&["target", "src"])));
+
+        write(dir, "src/new.rs", "// visible\n");
+        assert!(shows_untracked(dir, &folders(&["target", "src"])));
+        assert!(!shows_untracked(dir, &folders(&["target"])));
+
+        fs::create_dir_all(dir.join("empty")).unwrap();
+        assert!(!shows_untracked(dir, &folders(&["empty"])));
     }
 
     #[test]

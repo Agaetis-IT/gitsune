@@ -314,7 +314,12 @@ fn bytes_that_are_not_utf8_survive_staging() {
 
 #[test]
 fn paths_with_spaces_quotes_and_accents_work() {
-    let name = "dir with space/é \"q\".txt";
+    // Windows does not allow quotes in a file name.
+    let name = if cfg!(windows) {
+        "dir with space/é q.txt"
+    } else {
+        "dir with space/é \"q\".txt"
+    };
     let original = numbered(30);
     let tmp = repo_with(&[(name, &original)]);
     write(tmp.path(), name, replace_line(&original, 15, "middle"));

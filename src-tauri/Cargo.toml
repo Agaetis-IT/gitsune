@@ -2,7 +2,9 @@
 name = "gitsune"
 version = "0.1.0"
 description = "A git client built around a metro-style branch graph"
-authors = []
+authors = ["Agaetis"]
+license = "MIT"
+repository = "https://github.com/simondujardin/gitsune"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
