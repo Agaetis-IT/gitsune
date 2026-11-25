@@ -70,7 +70,9 @@ pub fn run() {
             commands::abort_operation,
             commands::rebase_preview,
             commands::rebase_onto,
-            commands::skip_operation
+            commands::skip_operation,
+            commands::get_status_hint,
+            commands::speed_up_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

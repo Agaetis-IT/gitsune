@@ -190,7 +190,7 @@ Known ceilings: a diff is a plain table, so about 5,000 lines is the practical l
 
 ## 9. Plan
 
-Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 (section 12.8), M11 (section 12.9) and M12 (section 12.10) and M13 (section 12.11) and M14 (section 12.12) and M15 (section 12.13) are done; M16 is planned (section 12.4).
+Status: M0 to M9 are done (see the sections above for what each one settled). Version 2: M10 (section 12.8), M11 (section 12.9) and M12 (section 12.10) and M13 (section 12.11) and M14 (section 12.12) and M15 (section 12.13) and M16 (section 12.14) are done: version 2 is complete (section 12.4).
 
 Each milestone ends with lint and tests passing and a short demo.
 
@@ -457,4 +457,31 @@ What exists, and where it differs from the plan above.
 **Interface.** "Rebase the current branch onto…" in the menus of local and remote branches and of commits, and "Rebase interactively from this commit…" on commits (greyed on the current commit or branch). One dialog: how many commits are replayed, a red warning when some are already on the remote, a note when merge commits would be flattened, "Edit the list of commits first" (one row per commit with its action, up and down buttons, a message field for reword and squash, and a warning when the list is invalid or drops commits), and "Stash my changes while rebasing". A list that changes nothing is sent as a plain rebase. A rebase that stops goes to the banner of M14, which gains **Skip** (rebase and cherry-pick); conflicts open the resolver; continuing can stop again on the next conflict, and finishing offers Undo. The list logic (moves, validation, conversion) is plain functions with tests (`src/lib/rebaseTodo.ts`). Demo backend: rebasing onto a `feature/auth-*` branch conflicts, an `edit` stops, anything else finishes.
 
 **Not done in M15**: `--rebase-merges` (merge commits are flattened, as git does by default; the dialog says so), `--onto` with a separate upstream, autosquash and `fixup!` detection, a view of the diff of each commit in the list, reordering by dragging (up and down buttons only), editing the todo list while the rebase is under way (`rebase --edit-todo`), `exec` lines. Not run: the Tauri window.
+
+### 12.14 M16 as built (polish, measurements)
+
+**Measured on this machine** (macOS, git 2.50.1, a synthetic working tree of **100,000 small files** in 1,000 folders, one commit; `cargo test --release perf_ -- --ignored --nocapture`, source in `src-tauri/src/git/perf_tests.rs`):
+
+| What | Time | Target (§12.6) |
+| --- | --- | --- |
+| `git status`, first run (index refresh) | 1.8 to 2.2 s | |
+| `git status`, clean, warm | 0.7 to 0.9 s | under 300 ms: **not met** |
+| `git status`, 1 modified file | 0.7 to 0.8 s | under 300 ms: **not met** |
+| same, **untracked cache on** | 125 to 170 ms | under 300 ms: met |
+| stage one file and read the status again, untracked cache on | 190 ms | under 150 ms: **not met** (close) |
+
+Where the time goes: with `--untracked-files=no` the status takes 140 ms; the rest is git listing 1,000 folders to find untracked files. git can remember that listing (`core.untrackedCache`). The target is therefore reachable only with that cache on, and turning it on is a change to the repository's configuration, so the app **never does it silently**: when a status takes over 400 ms and the cache is off, a notice (shown once per repository, checked on the first three reads) offers *Turn it on*. That runs `git update-index --test-untracked-cache` (refuses if the file system cannot keep it), `git config --local core.untrackedCache true`, `git update-index --untracked-cache` and one status to fill it; every command is in the activity log and it is refused in read-only mode. Background reads cannot update the cache (they take no index lock), so it is refreshed by the app's own writes and by the user's git commands; folders changed in between are listed again, the others are not. The cost of staging is dominated by `git add` rewriting the index of 100,000 entries.
+
+**Never more than one status at a time**: the backend serialises `git status` per repository (`exclusive_status`, with a test that 8 threads asking five times each never overlap), and the interface already merged bursts into one read plus one more (M10). The "opening the working tree row in under 100 ms" target is met by construction: the lists come from the status already in memory; it was not timed in the Tauri window.
+
+**Error and empty states of the new flows.**
+- A lock held by another git process: the notice says so, says the app never deletes lock files, and offers *Try again* for any write (previously the raw git message).
+- Authentication failures and unreachable remotes begin with a plain sentence (check the login, token or SSH key; check the network and the address) followed by git's own message.
+- Fetching in a repository with no remote says so, instead of "nothing new".
+- Pull and Push show how many commits are behind and ahead.
+- Every flow already had its states: nothing to stash, nothing to merge or rebase (dialog explains and disables the button), no remote (push dialog), no upstream, diverged branches, conflicts, a list that does not match (rebase), read-only mode (all buttons greyed with the reason).
+
+**Packaging.** `bun run package` builds the `.app` and `.dmg` with the whole of version 2. The askpass, sequence-editor and todo helpers are small shell scripts written at run time into a temporary folder and the git directory, so nothing extra is bundled. The build is not signed or notarized (unchanged from M9).
+
+**What was never verified, for version 2 as a whole**: the Tauri window itself was not run at any milestone (the interface was exercised in a browser on the demo backend, the backend through 235 Rust tests on throwaway repositories); no test reaches a real SSH or HTTPS server (askpass was tested through `git credential fill`); Windows and Linux are untouched (the askpass and editor scripts assume `sh`). Ideas left for later are listed at the end of each milestone section above.
 

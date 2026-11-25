@@ -1,6 +1,6 @@
 # git-hydra
 
-A desktop git client built around a **metro-style branch graph**: one colored line per branch, commits as stations, merges as interchanges. Browsing history, searching and reading diffs are complete. Writing is being added step by step (version 2): **staging by file and hunk, committing and amending, discarding with undo, branches, checkout, tags, fetch, pull, push, stash, cherry-pick, revert, reset, merge, conflict resolution and rebase** are in (see [SPEC.md](SPEC.md), section 12). Every change the app makes goes through the `git` binary and is listed in an activity log; a read-only switch per repository refuses all writes.
+A desktop git client built around a **metro-style branch graph**: one colored line per branch, commits as stations, merges as interchanges. Browsing history, searching and reading diffs are complete. Writing is in too (version 2): staging by file and hunk, committing and amending, discarding, branches, checkout, tags, fetch, pull, push, stash, cherry-pick, revert, reset, merge, conflict resolution and rebase (see [SPEC.md](SPEC.md), section 12). Every change the app makes goes through the `git` binary and is listed in an activity log; a read-only switch per repository refuses all writes.
 
 Tauri 2 (Rust) + Vue 3 + TypeScript + Tailwind + shadcn-vue. macOS first.
 
@@ -47,6 +47,7 @@ The synthetic generator builds a repository of invented commits (fake authors, n
 bun scripts/gen-synthetic-repo.ts /tmp/synth-100k 100000
 cd src-tauri
 SYNTH_REPO=/tmp/synth-100k cargo test --release -- --ignored --nocapture
+cargo test --release perf_ -- --ignored --nocapture   # status and staging on 100,000 files
 ```
 
 The ignored tests print timings for the layout, paging, search and refresh. `docs/benchmarks/bench_git.rs` is the original `gix` vs `git2` comparison.

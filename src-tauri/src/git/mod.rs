@@ -14,6 +14,7 @@ mod remote;
 mod repo;
 mod rewrite;
 mod search;
+mod speed;
 mod stash;
 mod status;
 mod store;
@@ -53,6 +54,7 @@ pub use rewrite::{
     undo_reset,
 };
 pub use search::SearchResult;
+pub use speed::{StatusHint, enable_untracked_cache, status_hint};
 pub use stash::{
     DroppedStash, StashEntry, list_stashes, stash_apply, stash_drop, stash_pop, stash_push,
     stash_restore,
@@ -72,6 +74,8 @@ mod diff_tests;
 mod merge_tests;
 #[cfg(test)]
 mod ops_tests;
+#[cfg(test)]
+mod perf_tests;
 #[cfg(test)]
 mod rebase_tests;
 #[cfg(test)]

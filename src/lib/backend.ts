@@ -2,6 +2,9 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   type ActivityEntry,
+  type StatusHint,
+  getStatusHint,
+  speedUpStatus,
   type RebasePlan,
   type RebaseResult,
   type TodoItem,
@@ -239,6 +242,10 @@ export interface RepoBackend {
   ): Promise<RebaseResult>;
   /** Leaves out the commit a rebase or a cherry-pick is stuck on. */
   skipOperation(repoId: string): Promise<WorkingStatus>;
+  /** How long `git status` takes and whether the untracked cache would help. */
+  statusHint(repoId: string): Promise<StatusHint>;
+  /** Switches on git's untracked cache for this repository. */
+  speedUpStatus(repoId: string): Promise<StatusHint>;
   /** The names of the remotes. */
   remotes(repoId: string): Promise<string[]>;
   /** Downloads new commits and refs (`remote` null: every remote). */
@@ -309,6 +316,8 @@ export const tauriBackend: RepoBackend = {
     listen<{ repoId: string }>("activity-changed", (event) => handler(event.payload.repoId)),
   createBranch,
   remotes: listRemotes,
+  statusHint: getStatusHint,
+  speedUpStatus,
   rebasePlan: rebasePreview,
   rebase: rebaseOnto,
   skipOperation,

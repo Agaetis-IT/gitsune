@@ -284,6 +284,8 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
       return await worktree.status();
     },
     setUpstream: async () => worktree.status(),
+    statusHint: async () => ({ lastMs: 35, untrackedCache: false, canSpeedUp: false }),
+    speedUpStatus: async () => ({ lastMs: 20, untrackedCache: true, canSpeedUp: false }),
     ...remote,
     ...stash,
     mergeInfo: merge.mergeInfo,

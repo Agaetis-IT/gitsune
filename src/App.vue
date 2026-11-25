@@ -358,6 +358,13 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
               >
                 <ArrowDown class="size-3.5" />
                 Pull
+                <span
+                  v-if="active.status?.behind"
+                  class="bg-primary text-primary-foreground rounded px-1 text-[10px] leading-4"
+                  :title="`${active.status.behind} commit(s) to bring in`"
+                >
+                  {{ active.status.behind }}
+                </span>
               </Button>
               <Button
                 size="sm"
@@ -370,6 +377,13 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
               >
                 <ArrowUp class="size-3.5" />
                 Push
+                <span
+                  v-if="active.status?.ahead"
+                  class="bg-primary text-primary-foreground rounded px-1 text-[10px] leading-4"
+                  :title="`${active.status.ahead} commit(s) to send`"
+                >
+                  {{ active.status.ahead }}
+                </span>
               </Button>
             </div>
             <Button

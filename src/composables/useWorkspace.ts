@@ -207,6 +207,8 @@ export interface RepoTab {
   remote: RemoteOp | null;
   /** The stash list, most recent first. */
   stashes: StashEntry[];
+  /** How many times the speed of `git status` was looked at (it is offered once at most). */
+  speedChecks: number;
   /** The tip of the branch before a rebase that is still going on, for Undo once it ends. */
   rebaseBefore: string | null;
   /** The conflict resolver is open on this file (`""` before a file is chosen); `null` if closed. */
@@ -428,12 +430,39 @@ export function createWorkspace(
         tab.statusQueued = false;
         try {
           applyStatus(tab, await backend.status(tab.id), reloadDiff);
+          void offerSpeedUp(tab);
         } catch {
           // A repository without a working tree, or a transient failure: keep what we have.
         }
       } while (tab.statusQueued && tabs.value.includes(tab));
     } finally {
       tab.statusRefreshing = false;
+    }
+  }
+
+  /** On a large working tree a slow status is worth fixing: offer, once, to switch on git's cache. */
+  async function offerSpeedUp(tab: RepoTab): Promise<void> {
+    if (tab.speedChecks >= 3) return;
+    tab.speedChecks++;
+    try {
+      const hint = await backend.statusHint(tab.id);
+      if (!hint.canSpeedUp) return;
+      tab.speedChecks = 3;
+      notify(
+        "info",
+        `Reading the changes takes ${(hint.lastMs / 1000).toFixed(1)} s in this large repository. Git can remember its folder scan to make it much faster; that adds one setting (core.untrackedCache) to this repository.`,
+        {
+          label: "Turn it on",
+          run: async () => {
+            const faster = await write(tab, () => backend.speedUpStatus(tab.id));
+            if (faster) {
+              notify("info", `Done: the status now takes ${(faster.lastMs / 1000).toFixed(1)} s.`);
+            }
+          },
+        },
+      );
+    } catch {
+      // Not worth bothering the user with.
     }
   }
 
@@ -483,7 +512,20 @@ export function createWorkspace(
     if (failure.kind === "needsIdentity") tab.identityRequired = true;
     if (failure.kind === "staleHunk") void refreshStatus(tab, true);
     if (failure.kind === "readOnly") tab.readOnly = true;
-    if (!INLINE_ERRORS.includes(failure.kind)) notify("error", failure.message);
+    if (failure.kind === "locked") return; // `write` offers to retry
+    if (!INLINE_ERRORS.includes(failure.kind)) notify("error", friendly(failure));
+  }
+
+  /** What git says, with a plain-language first sentence for the failures people meet often. */
+  function friendly(failure: { kind: GitErrorKind; message: string }): string {
+    switch (failure.kind) {
+      case "authFailed":
+        return `The remote refused the credentials. Check your login, token or SSH key. (${failure.message})`;
+      case "unreachable":
+        return `Cannot reach the remote. Check the network and the address of the remote. (${failure.message})`;
+      default:
+        return failure.message;
+    }
   }
 
   /** Runs a write: refused at once in read-only mode, with failures reported. `null` on failure. */
@@ -498,6 +540,14 @@ export function createWorkspace(
       return await action();
     } catch (error) {
       handleWriteError(tab, error);
+      if (toGitError(error).kind === "locked") {
+        // Another git process holds a lock: never remove it, offer to try again.
+        notify(
+          "error",
+          "Another git process is working in this repository (a lock file exists). Wait for it to finish, then try again. The app never deletes lock files.",
+          { label: "Try again", run: () => void write(tab, action) },
+        );
+      }
       return null;
     } finally {
       tab.busy = false;
@@ -841,6 +891,13 @@ export function createWorkspace(
   }
 
   async function fetchRemote(tab: RepoTab, remote: string | null = null, prune = false) {
+    if (remote === null) {
+      const remotes = await backend.remotes(tab.id).catch(() => null);
+      if (remotes !== null && remotes.length === 0) {
+        notify("info", "This repository has no remote to fetch from.");
+        return;
+      }
+    }
     const result = await runRemote(tab, "fetch", "Fetching…", (opId) =>
       backend.fetch(tab.id, opId, remote, prune),
     );
@@ -1444,6 +1501,7 @@ export function createWorkspace(
         stashes: [],
         resolverPath: null,
         rebaseBefore: null,
+        speedChecks: 0,
       });
       tabs.value = [...tabs.value, tab];
       activeId.value = tab.id;

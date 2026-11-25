@@ -2,8 +2,9 @@
 //! only has to read the commits that appeared since the last one.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
 
 use gix::ObjectId;
 
@@ -38,6 +39,13 @@ pub struct RepoStores {
     read_only: AtomicBool,
     /// Writes of the app run one at a time.
     write_lock: Mutex<()>,
+    /// `git status` runs one at a time: a burst of changes never starts several of them.
+    status_lock: Mutex<()>,
+    status_running: AtomicUsize,
+    /// The most `git status` runs seen at once (always 1 unless the lock is broken).
+    pub status_peak: AtomicUsize,
+    /// How long the last `git status` took, in milliseconds.
+    pub last_status_ms: AtomicU64,
     /// Extra environment for every git command (tests).
     pub env: Vec<(String, String)>,
 }
@@ -57,6 +65,19 @@ impl RepoStores {
 
     pub fn is_read_only(&self) -> bool {
         self.read_only.load(Ordering::SeqCst)
+    }
+
+    /// Runs `read` as the only `git status` of this repository at that moment.
+    pub fn exclusive_status<T>(&self, read: impl FnOnce() -> T) -> T {
+        let _only = self.status_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let now = self.status_running.fetch_add(1, Ordering::SeqCst) + 1;
+        self.status_peak.fetch_max(now, Ordering::SeqCst);
+        let started = Instant::now();
+        let result = read();
+        self.last_status_ms
+            .store(started.elapsed().as_millis() as u64, Ordering::SeqCst);
+        self.status_running.fetch_sub(1, Ordering::SeqCst);
+        result
     }
 
     pub fn runner(&self) -> Runner<'_> {

@@ -14,7 +14,7 @@ use crate::git::{
     DroppedStash, FileDiff, GitError, GraphCache, GraphMeta, GraphPage, MergeInfo, MergeMode,
     MergeResult, PullStrategy, PushOptions, RebasePlan, RebaseResult, RefInfo, RemoteResult,
     RepoInfo, RepoStores, RepoWatcher, ResetMode, ResetResult, SearchResult, Side, Snapshot,
-    StashEntry, TodoItem, WorkingStatus,
+    StashEntry, StatusHint, TodoItem, WorkingStatus,
 };
 
 struct OpenRepo {
@@ -1051,4 +1051,24 @@ pub async fn skip_operation(
     registry: State<'_, RepoRegistry>,
 ) -> Result<WorkingStatus, GitError> {
     with_ctx(&registry, &repo_id, git::skip_operation)
+}
+
+// ---------- keeping status fast ----------
+
+/// How long `git status` takes, and whether the untracked cache would help.
+#[tauri::command]
+pub async fn get_status_hint(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<StatusHint, GitError> {
+    with_ctx(&registry, &repo_id, git::status_hint)
+}
+
+/// Switches on git's untracked cache for this repository (a change to its configuration).
+#[tauri::command]
+pub async fn speed_up_status(
+    repo_id: String,
+    registry: State<'_, RepoRegistry>,
+) -> Result<StatusHint, GitError> {
+    with_ctx(&registry, &repo_id, git::enable_untracked_cache)
 }
