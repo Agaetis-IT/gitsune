@@ -168,6 +168,7 @@ function menuContext(canHighlight: boolean, highlighted: boolean, hidden: boolea
     readOnly: tab?.readOnly ?? false,
     headId: head?.target ?? null,
     detached: !!tab && tab.headBranch === null,
+    headBranch: tab?.headBranch ?? null,
     canHighlight,
     highlighted,
     hidden,
@@ -366,6 +367,11 @@ function onMenuSelect(id: string) {
       const name = ref.kind === "remote" ? ref.name.slice(ref.name.indexOf("/") + 1) : ref.name;
       const ticket = ticketFromBranch(name);
       if (ticket) void workspace.openTicket(tab, ticket);
+    } else if (id === "pullRequestInto") {
+      // From the current branch into the branch that was clicked.
+      const slash = ref.name.indexOf("/");
+      const target = ref.kind === "remote" ? ref.name.slice(slash + 1) : ref.name;
+      if (tab.headBranch) void workspace.pullRequestAction(tab, tab.headBranch, target);
     } else if (id === "pullRequest") {
       const slash = ref.name.indexOf("/");
       void workspace.pullRequestAction(

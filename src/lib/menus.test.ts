@@ -127,6 +127,7 @@ describe("ref menu", () => {
       "push",
       "merge",
       "rebase",
+      "pullRequestInto",
       "pullRequest",
       "delete",
       "highlight",
@@ -134,6 +135,30 @@ describe("ref menu", () => {
       "copyName",
     ]);
     expect(find(items, "delete")?.danger).toBe(true);
+  });
+
+  it("offers a pull request from the current branch into the branch that is clicked", () => {
+    const local = find(
+      refMenu(ref("develop", "local"), ctx({ headBranch: "feat/x" })),
+      "pullRequestInto",
+    );
+    expect(local?.label).toBe("Create a pull request into develop…");
+    expect(local?.disabled).toBeUndefined();
+    const remote = find(
+      refMenu(ref("origin/develop", "remote"), ctx({ headBranch: "feat/x" })),
+      "pullRequestInto",
+    );
+    expect(remote?.label).toBe("Create a pull request into develop…");
+    expect(remote?.disabled).toBeUndefined();
+  });
+
+  it("does not offer a pull request of a branch into itself, or without a branch", () => {
+    const current = refMenu(ref("feat/x", "local", true), ctx({ headBranch: "feat/x" }));
+    expect(find(current, "pullRequestInto")?.disabled).toBe("This is the current branch.");
+    const sameOnRemote = refMenu(ref("origin/feat/x", "remote"), ctx({ headBranch: "feat/x" }));
+    expect(find(sameOnRemote, "pullRequestInto")?.disabled).toBe("This is the current branch.");
+    const detached = refMenu(ref("develop", "local"), ctx({ detached: true, headBranch: null }));
+    expect(find(detached, "pullRequestInto")?.disabled).toMatch(/detached/);
   });
 
   it("a pull request can be opened from a branch even in read-only mode", () => {
@@ -163,6 +188,7 @@ describe("ref menu", () => {
       "checkout",
       "merge",
       "rebase",
+      "pullRequestInto",
       "pullRequest",
       "deleteRemote",
       "hide",
