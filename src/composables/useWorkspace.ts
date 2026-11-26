@@ -1214,7 +1214,7 @@ export function createWorkspace(
         await openPushDialog(
           tab,
           full.branch,
-          "The remote has commits you do not have. Pull them first, or overwrite the remote branch only if nobody else pushed since your last fetch.",
+          "The remote has commits you do not have. Pull them first, or force push only if nobody else pushed since your last fetch.",
           true,
           full.remote,
         );

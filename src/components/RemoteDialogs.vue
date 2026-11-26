@@ -23,14 +23,15 @@ const dialog = computed(() => {
 
 const remote = ref("");
 const setUpstream = ref(false);
-const force = ref(false);
+/** A force push asks to be confirmed before it runs. */
+const confirmingForce = ref(false);
 
 watch(dialog, (next) => {
   if (next?.type === "pushTags") remote.value = next.remote;
   if (next?.type !== "push") return;
   remote.value = next.remote;
   setUpstream.value = next.setUpstream;
-  force.value = false;
+  confirmingForce.value = false;
 });
 
 const busy = computed(() => props.tab.busy || props.tab.remote !== null);
@@ -39,14 +40,15 @@ function close() {
   workspace.closeDialog(props.tab);
 }
 
-function submitPush() {
+/** Pushes the branch; a force push replaces what is on the remote, unless someone pushed since. */
+function submitPush(forceWithLease = false) {
   const d = dialog.value;
   if (d?.type !== "push" || busy.value || !remote.value) return;
   void workspace.push(props.tab, {
     remote: remote.value,
     branch: d.branch || null,
     setUpstream: setUpstream.value,
-    forceWithLease: force.value,
+    forceWithLease,
   });
 }
 
@@ -66,9 +68,9 @@ const SELECT_CLASS =
     :open="dialog !== null && tab.remote === null"
     @update:open="(value) => !value && close()"
   >
-    <DialogContent v-if="dialog">
+    <DialogContent v-if="dialog" :class="dialog.type === 'push' ? 'sm:max-w-lg' : undefined">
       <!-- Push -->
-      <form v-if="dialog.type === 'push'" class="space-y-4" @submit.prevent="submitPush">
+      <form v-if="dialog.type === 'push'" class="space-y-4" @submit.prevent="submitPush()">
         <DialogHeader>
           <DialogTitle>Push {{ dialog.branch || "the current branch" }}</DialogTitle>
           <DialogDescription v-if="dialog.reason">{{ dialog.reason }}</DialogDescription>
@@ -84,31 +86,52 @@ const SELECT_CLASS =
           This repository has no remote. Add one in a terminal with
           <code>git remote add</code>.
         </p>
-        <label class="flex items-center gap-2 text-sm">
-          <input v-model="setUpstream" type="checkbox" /> Track it: make
-          <strong>{{ remote || "the remote" }}/{{ dialog.branch }}</strong> its upstream
-        </label>
         <label class="flex items-start gap-2 text-sm">
-          <input v-model="force" type="checkbox" class="mt-1" />
+          <input v-model="setUpstream" type="checkbox" class="mt-1" />
           <span>
-            Overwrite the remote branch (<code>--force-with-lease</code>)
-            <span class="text-muted-foreground block text-xs">
-              Replaces what is on the remote. It is refused if someone pushed since your last fetch.
-            </span>
+            Track it: make
+            <strong class="break-all">{{ remote || "the remote" }}/{{ dialog.branch }}</strong> its
+            upstream
           </span>
         </label>
-        <DialogFooter>
+        <p
+          v-if="confirmingForce"
+          class="border-destructive/50 text-destructive rounded-md border p-2 text-sm"
+          role="alert"
+        >
+          This replaces <strong class="break-all">{{ remote }}/{{ dialog.branch }}</strong> with
+          your branch. The commits that are only on the remote are lost for everyone who relies on
+          them. It is refused if someone pushed since your last fetch.
+        </p>
+        <p v-else class="text-muted-foreground text-xs">
+          A force push (<code>--force-with-lease</code>) replaces what is on the remote. It is
+          refused if someone pushed since your last fetch.
+        </p>
+        <DialogFooter v-if="confirmingForce">
+          <Button type="button" variant="outline" @click="confirmingForce = false">Back</Button>
+          <Button
+            type="button"
+            variant="destructive"
+            :disabled="!remote || busy"
+            @click="submitPush(true)"
+          >
+            Yes, force push
+          </Button>
+        </DialogFooter>
+        <DialogFooter v-else>
           <Button type="button" variant="outline" @click="close">Cancel</Button>
           <Button v-if="dialog.canForce" type="button" variant="outline" @click="pullFirst">
             Pull first
           </Button>
           <Button
-            type="submit"
-            :variant="force ? 'destructive' : 'default'"
+            type="button"
+            variant="destructive"
             :disabled="!remote || busy"
+            @click="confirmingForce = true"
           >
-            {{ force ? "Overwrite and push" : "Push" }}
+            Force push
           </Button>
+          <Button type="submit" :disabled="!remote || busy">Push</Button>
         </DialogFooter>
       </form>
 
