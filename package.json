@@ -1,7 +1,7 @@
 {
   "name": "gitsune",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A git client built around a metro-style branch graph",
   "license": "MIT",
   "author": "Agaetis",
