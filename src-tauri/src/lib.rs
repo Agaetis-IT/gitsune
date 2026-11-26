@@ -7,6 +7,7 @@ mod hosting_create;
 mod hosting_status;
 mod layout;
 mod platform;
+mod updates;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -17,6 +18,7 @@ pub fn run() {
         .manage(commands::RemoteOps::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_diagnostics,
+            commands::check_for_updates,
             commands::platform_info,
             commands::reveal_in_finder,
             commands::list_remote_urls,
