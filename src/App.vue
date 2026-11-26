@@ -349,6 +349,14 @@ function onMenuSelect(id: string) {
     else if (id === "hide" && t.lane.name) void workspace.hideBranch(tab, t.lane.name);
   } else {
     const { ref } = t;
+    if (ref.kind === "stash") {
+      // The stash of the sidebar list that this label stands for.
+      const stash = tab.stashes.find((entry) => entry.id === ref.target);
+      if (stash && id === "stashApply") void workspace.applyStash(tab, stash, false);
+      else if (stash && id === "stashPop") void workspace.applyStash(tab, stash, true);
+      else if (stash && id === "stashDrop") workspace.askDropStash(tab, stash);
+      return;
+    }
     const target = { kind: ref.kind === "local" ? "branch" : ref.kind, name: ref.name } as const;
     if (id === "checkout") void workspace.checkout(tab, target, null);
     else if (id === "rename") workspace.askRenameBranch(tab, ref.name);
@@ -440,6 +448,8 @@ watch(
 function onActivate(target: { commit: GraphRow; ref: RefInfo | null }) {
   const tab = active.value;
   if (!tab) return;
+  // A stash is not a branch: a double click on it does nothing.
+  if (target.ref?.kind === "stash") return;
   // A double click on a remote branch label asks to reset the local branch that follows it.
   if (target.ref?.kind === "remote") {
     const remote = target.ref;

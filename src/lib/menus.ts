@@ -43,7 +43,7 @@ export function pullRequestTargetOf(
   headBranch: string | null,
 ): string | null {
   const names = refs
-    .filter((ref) => ref.kind !== "tag")
+    .filter((ref) => ref.kind === "local" || ref.kind === "remote")
     .map((ref) => (ref.kind === "remote" ? ref.name.slice(ref.name.indexOf("/") + 1) : ref.name))
     .filter((name) => name !== "HEAD" && name !== headBranch);
   return names[0] ?? null;
@@ -102,8 +102,20 @@ export function commitMenu(commit: { id: string; author: string }, ctx: MenuCont
   ];
 }
 
-/** Actions on a branch, a remote branch or a tag. */
+/** Actions on a branch, a remote branch, a tag or a stash. */
 export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
+  if (ref.kind === "stash") {
+    return [
+      write(ctx, { id: "stashApply", label: "Apply the stash and keep it" }),
+      write(ctx, { id: "stashPop", label: "Apply the stash and remove it" }),
+      write(ctx, {
+        id: "stashDrop",
+        label: "Drop the stash…",
+        danger: true,
+        separatorBefore: true,
+      }),
+    ];
+  }
   const view: MenuItem[] = [];
   if (ref.kind !== "tag") {
     if (ctx.canHighlight) {

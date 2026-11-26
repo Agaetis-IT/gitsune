@@ -40,6 +40,8 @@ pub enum RefKind {
     Local,
     Remote,
     Tag,
+    /// A stash: a label on a commit, never the name of a line.
+    Stash,
 }
 
 /// A ref pointing at a row.
@@ -172,6 +174,8 @@ impl LaneBuilder {
             RefKind::Local => 1,
             RefKind::Remote => 2,
             RefKind::Tag => 3,
+            // `stash@{0}` says nothing about the line it sits on.
+            RefKind::Stash => return,
         };
         let better = self.best.as_ref().is_none_or(|best| {
             (rank, reference.row, &reference.name) < (best.rank, best.row, &best.name)
@@ -194,7 +198,7 @@ impl LaneBuilder {
             match reference.kind {
                 RefKind::Local => 1,
                 RefKind::Remote => 2,
-                RefKind::Tag => 3,
+                RefKind::Tag | RefKind::Stash => 3,
             }
         };
         let better_color = self.best_color.as_ref().is_none_or(|best| {
