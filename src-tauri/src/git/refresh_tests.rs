@@ -256,3 +256,91 @@ fn refreshing_a_synthetic_repository() {
         commit(&copy, "another commit");
     }
 }
+
+/// main with two commits, then two stashes: the first of a tracked file only, the second also
+/// with an untracked file (a stash of three commits). Invented file names and contents.
+fn stashed() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join("notes.txt"), "one\n").unwrap();
+    git(dir, &["add", "notes.txt"]);
+    commit(dir, "first");
+    commit(dir, "second");
+    std::fs::write(dir.join("notes.txt"), "two\n").unwrap();
+    git(dir, &["stash", "push", "-q", "-m", "tracked change"]);
+    std::fs::write(dir.join("notes.txt"), "three\n").unwrap();
+    std::fs::write(dir.join("extra.txt"), "new\n").unwrap();
+    git(
+        dir,
+        &[
+            "stash",
+            "push",
+            "-q",
+            "--include-untracked",
+            "-m",
+            "with a new file",
+        ],
+    );
+    tmp
+}
+
+#[test]
+fn stashes_are_stations_on_the_commit_they_were_made_on() {
+    let tmp = stashed();
+    let dir = tmp.path();
+    let (repo, _) = open_repository(dir).unwrap();
+    let cache = build_graph_cache(&repo, &none()).unwrap();
+    let meta = graph_meta(&cache);
+
+    // The two commits and the two stashes, none of their index or untracked commits.
+    assert_eq!(meta.total, 4);
+    let stashes: Vec<_> = meta
+        .refs
+        .iter()
+        .filter(|r| r.info.kind == super::refs::RefKind::Stash)
+        .collect();
+    assert_eq!(stashes.len(), 2);
+    let newest = stashes.iter().find(|r| r.info.name == "stash@{0}").unwrap();
+    assert_eq!(newest.info.target, rev(dir, "stash@{0}"));
+    assert!(
+        stashes
+            .iter()
+            .any(|r| r.info.target == rev(dir, "stash@{1}"))
+    );
+
+    // Each one has the commit it was made on as its only parent.
+    let page = graph_page(&repo, &cache, 0, 1000).unwrap();
+    let main = rev(dir, "main");
+    for stash in &stashes {
+        let row = &page.rows[stash.row];
+        assert_eq!(row.parents, vec![main.clone()]);
+        assert!(row.refs.iter().any(|r| r.name.starts_with("stash@{")));
+    }
+}
+
+#[test]
+fn hiding_refs_stash_leaves_the_stashes_out_of_the_graph() {
+    let tmp = stashed();
+    let (repo, _) = open_repository(tmp.path()).unwrap();
+    let hidden: HashSet<String> = ["refs/stash".to_string()].into();
+    let meta = graph_meta(&build_graph_cache(&repo, &hidden).unwrap());
+    assert_eq!(meta.total, 2);
+    assert!(
+        meta.refs
+            .iter()
+            .all(|r| r.info.kind != super::refs::RefKind::Stash)
+    );
+}
+
+#[test]
+fn a_repository_without_stash_is_unchanged() {
+    let tmp = merged();
+    let (repo, _) = open_repository(tmp.path()).unwrap();
+    let meta = graph_meta(&build_graph_cache(&repo, &none()).unwrap());
+    assert!(
+        meta.refs
+            .iter()
+            .all(|r| r.info.kind != super::refs::RefKind::Stash)
+    );
+}

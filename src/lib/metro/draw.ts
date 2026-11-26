@@ -82,6 +82,7 @@ export interface PillRect {
 /** What a label says about where a branch is: "this computer, origin", "tag". */
 export function describeGroup(group: RefGroup): string {
   const places: string[] = [];
+  if (group.stash) return `${group.name} (stash)`;
   if (group.tag) places.push("tag");
   if (group.local) places.push("this computer");
   for (const { remote } of group.remotes) if (!places.includes(remote)) places.push(remote);
@@ -602,6 +603,7 @@ function pillLayout(
   input: DrawInput,
 ): PillLayout {
   const icons: IconName[] = [];
+  if (group.stash) icons.push("archive");
   if (group.tag) icons.push("tag");
   if (group.local) icons.push("laptop");
   const seen = new Set<IconName>();
@@ -613,7 +615,7 @@ function pillLayout(
     }
   }
   const check = group.isHead ? ICON_STEP : 0;
-  const badge = group.tag ? null : (input.prBadges?.get(group.name) ?? null);
+  const badge = group.tag || group.stash ? null : (input.prBadges?.get(group.name) ?? null);
   const fixed =
     7 + check + (icons.length > 0 ? 4 + icons.length * ICON_STEP : 0) + (badge ? BADGE_W : 0) + 4;
   ctx.font = `${group.isHead ? "700" : "600"} 11px ${FONT}`;
@@ -645,7 +647,7 @@ function drawPill(
       ctx.stroke();
     }
     ink = contrastText(color);
-  } else if (group.tag) {
+  } else if (group.tag || group.stash) {
     ctx.lineWidth = 1;
     ctx.strokeStyle = theme.muted;
     ctx.stroke();

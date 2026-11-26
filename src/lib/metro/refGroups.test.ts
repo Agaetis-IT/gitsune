@@ -24,7 +24,30 @@ const tag = (name: string): RefInfo => ({
   isHead: false,
 });
 
+const stash = (name: string): RefInfo => ({
+  name,
+  fullName: `refs/${name}`,
+  kind: "stash",
+  target: "a",
+  isHead: false,
+});
+
 describe("groupRefs", () => {
+  it("shows a stash as a group of its own, after the branches and tags", () => {
+    const groups = groupRefs([
+      stash("stash@{0}"),
+      tag("v1"),
+      local("main", true),
+      remote("origin/x"),
+    ]);
+    expect(groups.map((g) => g.name)).toEqual(["main", "x", "v1", "stash@{0}"]);
+    const last = groups[groups.length - 1];
+    expect(last.stash?.kind).toBe("stash");
+    expect(last.local).toBeNull();
+    expect(last.tag).toBeNull();
+    expect(last.primary.name).toBe("stash@{0}");
+  });
+
   it("puts a branch and its remote copies in one group", () => {
     const groups = groupRefs([
       remote("origin/feature/x"),

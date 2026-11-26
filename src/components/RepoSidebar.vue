@@ -19,7 +19,7 @@ import {
 } from "@lucide/vue";
 import { computed, ref } from "vue";
 import type { RepoTab } from "@/composables/useWorkspace";
-import type { RefInfo, RefKind, StashEntry, Worktree } from "@/lib/api";
+import { type RefInfo, type RefKind, STASH_REF, type StashEntry, type Worktree } from "@/lib/api";
 import { prBadges } from "@/lib/prStatus";
 import { buildRows, folderPaths } from "@/lib/refTree";
 import { checkedOutElsewhere, folderName, samePath } from "@/lib/worktrees";
@@ -49,6 +49,8 @@ const emit = defineEmits<{
 }>();
 
 const stashesCollapsed = ref(false);
+/** The stashes are left out of the graph when this name is among the hidden ones. */
+const stashesHidden = computed(() => props.tab.hidden.has(STASH_REF));
 const worktreesCollapsed = ref(false);
 
 /** The other working tree that has this local branch checked out, if any. */
@@ -66,13 +68,16 @@ function badgeOf(ref: RefInfo) {
   return badges.value.get(name);
 }
 
-const GROUPS: Array<{ kind: RefKind; title: string; icon: typeof GitBranch }> = [
+/** The kinds the lists of the sidebar show (a stash has its own section). */
+type ListedKind = Exclude<RefKind, "stash">;
+
+const GROUPS: Array<{ kind: ListedKind; title: string; icon: typeof GitBranch }> = [
   { kind: "local", title: "Local branches", icon: GitBranch },
   { kind: "remote", title: "Remotes", icon: Cloud },
   { kind: "tag", title: "Tags", icon: Tag },
 ];
 
-const collapsed = ref<Record<RefKind, boolean>>({ local: false, remote: false, tag: true });
+const collapsed = ref<Record<ListedKind, boolean>>({ local: false, remote: false, tag: true });
 
 /** Lane of each visible ref, to highlight its branch. */
 const laneOf = computed(
@@ -409,18 +414,32 @@ function onRefClick(ref: RefInfo) {
       </ul>
     </section>
     <section v-if="tab.stashes.length" class="border-b py-1">
-      <button
-        class="hover:bg-accent flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left font-medium"
-        :aria-expanded="!stashesCollapsed"
-        @click="stashesCollapsed = !stashesCollapsed"
-      >
-        <component :is="stashesCollapsed ? ChevronRight : ChevronDown" class="size-3.5" />
-        <Archive class="text-muted-foreground size-3.5" />
-        Stashes
-        <span class="text-muted-foreground ml-auto text-xs font-normal">
-          {{ tab.stashes.length }}
-        </span>
-      </button>
+      <div class="flex items-center pr-1">
+        <button
+          class="hover:bg-accent flex flex-1 items-center gap-1.5 rounded px-2 py-1.5 text-left font-medium"
+          :aria-expanded="!stashesCollapsed"
+          @click="stashesCollapsed = !stashesCollapsed"
+        >
+          <component :is="stashesCollapsed ? ChevronRight : ChevronDown" class="size-3.5" />
+          <Archive class="text-muted-foreground size-3.5" />
+          Stashes
+          <span class="text-muted-foreground ml-auto text-xs font-normal">
+            {{ tab.stashes.length }}
+          </span>
+        </button>
+        <button
+          class="text-muted-foreground hover:bg-accent hover:text-foreground rounded p-1.5"
+          :title="
+            stashesHidden ? 'Show the stashes in the graph' : 'Hide the stashes from the graph'
+          "
+          :aria-label="
+            stashesHidden ? 'Show the stashes in the graph' : 'Hide the stashes from the graph'
+          "
+          @click="emit('toggleRef', STASH_REF)"
+        >
+          <component :is="stashesHidden ? EyeOff : Eye" class="size-3.5" />
+        </button>
+      </div>
       <ul v-if="!stashesCollapsed" class="pb-1">
         <li
           v-for="stash in tab.stashes"

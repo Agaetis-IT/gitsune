@@ -13,7 +13,7 @@ use gix::ThreadSafeRepository;
 use serde::Serialize;
 
 use super::graph::{CommitGraph, first_line, load_graph};
-use super::refs::{RefInfo, list_refs};
+use super::refs::{RefInfo, STASH_REF, list_refs, list_stash_refs};
 use super::search::{SearchIndex, SearchResult, SearchStore, build_index, search};
 use super::store::RepoStores;
 use crate::layout::{self, Edge, Lane, Layout};
@@ -111,10 +111,12 @@ pub fn build_graph_cache_with(
     hidden: &HashSet<String>,
     stores: &RepoStores,
 ) -> Result<GraphCache, String> {
-    let refs: Vec<RefInfo> = list_refs(repo)?
-        .into_iter()
-        .filter(|r| !hidden.contains(&r.full_name))
-        .collect();
+    let mut refs = list_refs(repo)?;
+    // Stashes are in the graph unless `refs/stash` is among the hidden names.
+    if !hidden.contains(STASH_REF) {
+        refs.extend(list_stash_refs(repo));
+    }
+    refs.retain(|r| !hidden.contains(&r.full_name));
 
     let started = Instant::now();
     let graph = {

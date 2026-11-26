@@ -117,6 +117,26 @@ describe("commit menu, history rewriting", () => {
   });
 });
 
+describe("stash label menu", () => {
+  it("applies, pops or drops the stash, and nothing about branches", () => {
+    const items = refMenu(ref("stash@{0}", "stash"), ctx());
+    expect(ids(items)).toEqual(["stashApply", "stashPop", "stashDrop"]);
+    expect(find(items, "stashDrop")?.danger).toBe(true);
+  });
+
+  it("greys out the three actions in read-only mode", () => {
+    const items = refMenu(ref("stash@{0}", "stash"), ctx({ readOnly: true }));
+    expect(items.every((i) => i.disabled)).toBe(true);
+  });
+
+  it("is never taken for a branch a pull request could go into", () => {
+    expect(pullRequestTargetOf([ref("stash@{0}", "stash")], "feat/x")).toBeNull();
+    expect(
+      pullRequestTargetOf([ref("stash@{0}", "stash"), ref("develop", "local")], "feat/x"),
+    ).toBe("develop");
+  });
+});
+
 describe("ref menu", () => {
   it("a local branch can be switched to, renamed, re-tracked and deleted", () => {
     const items = refMenu(ref("topic", "local"), ctx({ canHighlight: true }));

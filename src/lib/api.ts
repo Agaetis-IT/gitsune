@@ -14,7 +14,14 @@ export interface RepoInfo {
   isLinked: boolean;
 }
 
-export type RefKind = "local" | "remote" | "tag";
+/**
+ * The name that, among the hidden refs of a repository, leaves every stash out of the graph
+ * (the same as `STASH_REF` of the backend).
+ */
+export const STASH_REF = "refs/stash";
+
+/** A stash is a label of the graph only: it is never in the lists of branches and tags. */
+export type RefKind = "local" | "remote" | "tag" | "stash";
 
 export interface RefInfo {
   name: string;
