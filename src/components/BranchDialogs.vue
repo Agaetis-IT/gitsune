@@ -112,7 +112,10 @@ const SELECT_CLASS =
 
 <template>
   <Dialog :open="open" @update:open="(value) => !value && close()">
-    <DialogContent v-if="dialog && open">
+    <DialogContent
+      v-if="dialog && open"
+      :class="dialog.type === 'dirtyCheckout' ? 'sm:max-w-xl' : undefined"
+    >
       <!-- Create a branch -->
       <form v-if="dialog.type === 'createBranch'" class="space-y-4" @submit.prevent="submit">
         <DialogHeader>
@@ -262,7 +265,9 @@ const SELECT_CLASS =
           </DialogDescription>
         </DialogHeader>
         <ul class="bg-muted max-h-40 overflow-auto rounded p-2 font-mono text-xs">
-          <li v-for="file in dialog.files" :key="file" class="truncate">{{ file }}</li>
+          <li v-for="file in dialog.files" :key="file" :title="file" class="truncate">
+            {{ file }}
+          </li>
           <li v-if="!dialog.files.length" class="text-muted-foreground">{{ dialog.message }}</li>
         </ul>
         <ul class="text-muted-foreground list-disc space-y-1 pl-5 text-sm">
