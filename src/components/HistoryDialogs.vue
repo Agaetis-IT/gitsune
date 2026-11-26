@@ -12,6 +12,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { type CommitTarget, type RepoTab, useWorkspace } from "@/composables/useWorkspace";
 import type { ResetMode } from "@/lib/api";
+import { checkedOutElsewhere, folderName } from "@/lib/worktrees";
 
 const props = defineProps<{ tab: RepoTab }>();
 const workspace = useWorkspace();
@@ -35,8 +36,18 @@ const branches = computed(() =>
 );
 /** A branch that is not there yet is created at the commit. */
 const creating = computed(() => picked.value !== "" && !branches.value.includes(picked.value));
-/** A hard reset rewrites the files, so it needs the checked-out branch (or a detached HEAD). */
-const hardAllowed = computed(() => picked.value === "" || picked.value === props.tab.headBranch);
+/** The reset moves HEAD: the checked-out branch, or a detached HEAD. */
+const isCurrent = computed(() => picked.value === "" || picked.value === props.tab.headBranch);
+/**
+ * Another branch only has its ref moved, whatever the mode, so a hard reset is fine there. Not
+ * when another working tree has it checked out: its files would be left behind.
+ */
+const elsewhere = computed(() =>
+  isCurrent.value
+    ? undefined
+    : checkedOutElsewhere(props.tab.worktrees, props.tab.path, picked.value),
+);
+const hardAllowed = computed(() => elsewhere.value === undefined);
 
 function submitReset(target: CommitTarget) {
   if (picked.value === "") void workspace.reset(props.tab, target, mode.value);
@@ -88,6 +99,12 @@ const MODES: Array<{ mode: ResetMode; title: string; text: string }> = [
     text: "Move the branch and make the files match. Uncommitted changes are discarded (a snapshot is kept for Undo).",
   },
 ];
+
+/** What a mode does; on a branch that is not checked out, hard only moves the branch. */
+const modeText = (option: { mode: ResetMode; text: string }): string =>
+  option.mode === "hard" && !isCurrent.value
+    ? "Move the branch to this commit. It is not checked out, so there are no files to rewrite."
+    : option.text;
 
 function close() {
   workspace.closeDialog(props.tab);
@@ -175,7 +192,9 @@ function close() {
             v-for="option in MODES"
             :key="option.mode"
             class="flex items-start gap-2 rounded border p-2 text-sm"
-            :class="{ 'border-destructive': option.mode === 'hard' && mode === 'hard' }"
+            :class="{
+              'border-destructive': option.mode === 'hard' && mode === 'hard' && isCurrent,
+            }"
             :aria-disabled="option.mode === 'hard' && !hardAllowed ? 'true' : undefined"
           >
             <input
@@ -188,15 +207,16 @@ function close() {
             />
             <span>
               <strong>{{ option.title }}</strong>
-              <span class="text-muted-foreground block text-xs">{{ option.text }}</span>
+              <span class="text-muted-foreground block text-xs">{{ modeText(option) }}</span>
             </span>
           </label>
         </fieldset>
-        <p v-if="!hardAllowed" class="text-muted-foreground text-sm">
-          A hard reset rewrites the files, so it only works on the checked-out branch.
+        <p v-if="elsewhere" class="text-muted-foreground text-sm">
+          {{ picked }} is checked out in another working tree ({{ folderName(elsewhere.path) }}): a
+          hard reset has to be made there.
         </p>
         <p
-          v-if="mode === 'hard' && hardAllowed && changes > 0"
+          v-if="mode === 'hard' && isCurrent && changes > 0"
           class="text-destructive text-sm"
           role="alert"
         >
@@ -207,7 +227,7 @@ function close() {
           <Button type="button" variant="outline" @click="close">Cancel</Button>
           <Button
             type="submit"
-            :variant="mode === 'hard' && !creating ? 'destructive' : 'default'"
+            :variant="mode === 'hard' && !creating && isCurrent ? 'destructive' : 'default'"
             :disabled="busy || (mode === 'hard' && !hardAllowed)"
           >
             {{ creating ? "Create" : `Reset (${mode})` }}

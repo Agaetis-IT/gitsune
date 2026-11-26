@@ -495,14 +495,43 @@ fn a_branch_that_is_not_checked_out_moves_and_the_files_stay() {
 }
 
 #[test]
-fn a_hard_reset_of_another_branch_is_refused_and_runs_nothing() {
-    let (tmp, [c1, c2, _c3]) = three_commits();
+fn a_hard_reset_of_another_branch_only_moves_it_and_undo_brings_it_back() {
+    let (tmp, [c1, c2, c3]) = three_commits();
     let dir = tmp.path();
     git(dir, &["branch", "side", &c2]);
     let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
 
-    let error = reset_branch(&ctx(&tmp, &stores), "side", &c1, ResetMode::Hard).unwrap_err();
-    assert!(error.message.contains("checked out"), "{}", error.message);
+    let result = reset_branch(&ctx, "side", &c1, ResetMode::Hard).unwrap();
+    assert!(!result.current);
+    assert_eq!(text(dir, &["rev-parse", "side"]), c1);
+    // The checked-out branch and its files are not touched.
+    assert_eq!(text(dir, &["rev-parse", "HEAD"]), c3);
+    assert_eq!(read(dir, "a.txt"), "three\n");
+
+    undo_branch_reset(&ctx, "side", result.before.as_deref(), &result.after).unwrap();
+    assert_eq!(text(dir, &["rev-parse", "side"]), c2);
+}
+
+#[test]
+fn a_hard_reset_of_a_branch_that_another_working_tree_has_is_refused() {
+    let (tmp, [c1, c2, _c3]) = three_commits();
+    let dir = tmp.path();
+    git(dir, &["branch", "side", &c2]);
+    let other = tmp.path().join("other-tree");
+    git(
+        dir,
+        &["worktree", "add", "-q", other.to_str().unwrap(), "side"],
+    );
+    let stores = RepoStores::default();
+    let ctx = ctx(&tmp, &stores);
+
+    let error = reset_branch(&ctx, "side", &c1, ResetMode::Hard).unwrap_err();
+    assert!(
+        error.message.contains("another working tree"),
+        "{}",
+        error.message
+    );
     assert_eq!(text(dir, &["rev-parse", "side"]), c2);
 }
 
