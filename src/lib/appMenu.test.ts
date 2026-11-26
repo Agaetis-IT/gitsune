@@ -78,6 +78,7 @@ describe("application menu", () => {
     expect(enabled(none, "Push All Tags…")).toBe(false);
     expect(enabled(none, "Open a Repository…")).toBe(true);
     expect(enabled(none, "Settings…")).toBe(true);
+    expect(enabled(none, "Check for Updates…")).toBe(true);
   });
 
   it("keeps reading actions in read-only mode and greys the writing ones", () => {

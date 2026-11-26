@@ -4,6 +4,7 @@ import { isAutoFetchChoice } from "@/lib/autoFetch";
 const RESTORE_KEY = "gitsune:restore-tabs";
 const TICKET_KEY = "gitsune:ticket-prefill";
 const FETCH_KEY = "gitsune:auto-fetch";
+const UPDATE_KEY = "gitsune:update-check";
 
 function readFlag(key: string): boolean {
   try {
@@ -36,6 +37,8 @@ function readMinutes(): number {
 const autoFetchMinutes = ref(readMinutes());
 /** An empty commit box starts with the ticket of the branch (on unless switched off). */
 const ticketPrefill = ref(readFlag(TICKET_KEY));
+/** Look for a new version of the application once a day (on unless switched off). */
+const updateCheck = ref(readFlag(UPDATE_KEY));
 
 export function useGeneralSettings() {
   function setRestoreTabs(value: boolean) {
@@ -45,6 +48,10 @@ export function useGeneralSettings() {
   function setTicketPrefill(value: boolean) {
     ticketPrefill.value = value;
     writeFlag(TICKET_KEY, value);
+  }
+  function setUpdateCheck(value: boolean) {
+    updateCheck.value = value;
+    writeFlag(UPDATE_KEY, value);
   }
   function setAutoFetchMinutes(value: number) {
     if (!isAutoFetchChoice(value)) return;
@@ -62,5 +69,7 @@ export function useGeneralSettings() {
     setTicketPrefill,
     autoFetchMinutes,
     setAutoFetchMinutes,
+    updateCheck,
+    setUpdateCheck,
   };
 }

@@ -1145,6 +1145,14 @@ pub async fn get_diagnostics() -> Result<crate::diagnostics::Diagnostics, String
         .map_err(|error| error.to_string())
 }
 
+/// Looks for a newer release of the application on GitHub.
+#[tauri::command]
+pub async fn check_for_updates() -> Result<crate::updates::UpdateCheck, String> {
+    tauri::async_runtime::spawn_blocking(|| crate::updates::check(env!("CARGO_PKG_VERSION")))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 /// Stops a running fetch, pull or push.
 #[tauri::command]
 pub async fn cancel_operation(op_id: String, ops: State<'_, RemoteOps>) -> Result<(), GitError> {

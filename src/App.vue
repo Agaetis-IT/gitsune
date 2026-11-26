@@ -27,6 +27,7 @@ import LanePopover from "@/components/LanePopover.vue";
 import SettingsButton from "@/components/SettingsButton.vue";
 import SettingsDialog from "@/components/SettingsDialog.vue";
 import DiagnosticsDialog from "@/components/DiagnosticsDialog.vue";
+import UpdateDialog from "@/components/UpdateDialog.vue";
 import ConflictResolver from "@/components/ConflictResolver.vue";
 import HistoryDialogs from "@/components/HistoryDialogs.vue";
 import MergeDialogs from "@/components/MergeDialogs.vue";
@@ -47,6 +48,7 @@ import WelcomeScreen from "@/components/WelcomeScreen.vue";
 import WorkingPanel from "@/components/WorkingPanel.vue";
 import { useGraphSettings } from "@/composables/useGraphSettings";
 import { useDiagnostics } from "@/composables/useDiagnostics";
+import { useUpdates } from "@/composables/useUpdates";
 import { useFileMenu } from "@/composables/useFileMenu";
 import { useIntegrations } from "@/composables/useIntegrations";
 import { usePlatform } from "@/composables/usePlatform";
@@ -548,7 +550,8 @@ watch(
 
 const settings = useSettings();
 const diagnostics = useDiagnostics();
-const { ticketPrefill, autoFetchMinutes } = useGeneralSettings();
+const updates = useUpdates();
+const { ticketPrefill, autoFetchMinutes, updateCheck } = useGeneralSettings();
 
 // ---------- the fetch made in the background ----------
 
@@ -562,10 +565,16 @@ async function autoFetchTick() {
   }
 }
 let autoFetchTimer: ReturnType<typeof setInterval> | undefined;
+let updateCheckTimer: ReturnType<typeof setTimeout> | undefined;
 onMounted(() => {
   autoFetchTimer = setInterval(() => void autoFetchTick(), 30_000);
+  // Once a day, a few seconds after the start so that the repositories open first.
+  updateCheckTimer = setTimeout(() => void updates.checkIfDue(updateCheck.value), 5_000);
 });
-onBeforeUnmount(() => clearInterval(autoFetchTimer));
+onBeforeUnmount(() => {
+  clearInterval(autoFetchTimer);
+  clearTimeout(updateCheckTimer);
+});
 // Switching the option on fetches at once, not after the next beat.
 watch(autoFetchMinutes, (minutes, before) => {
   if (minutes > 0 && before === 0) void autoFetchTick();
@@ -662,6 +671,9 @@ function onMenuAction(id: string) {
       return;
     case "diagnostics":
       diagnostics.openDiagnostics();
+      return;
+    case "checkUpdates":
+      void updates.checkNow();
       return;
     case "open":
       void workspace.pickAndOpen();
@@ -808,6 +820,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
 <template>
   <div class="bg-background text-foreground flex h-screen flex-col">
     <DiagnosticsDialog />
+    <UpdateDialog />
     <CommandPalette
       v-if="paletteOpen"
       :entries="paletteItems"

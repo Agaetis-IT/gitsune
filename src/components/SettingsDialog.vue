@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useSettings } from "@/composables/useSettings";
+import { useUpdates } from "@/composables/useUpdates";
 import { useDiagnostics } from "@/composables/useDiagnostics";
 import { useGeneralSettings } from "@/composables/useGeneralSettings";
 import { APP_VERSION_LABEL } from "@/lib/appVersion";
@@ -47,7 +48,10 @@ const {
   setTicketPrefill,
   autoFetchMinutes,
   setAutoFetchMinutes,
+  updateCheck,
+  setUpdateCheck,
 } = useGeneralSettings();
+const { checkNow: checkUpdatesNow } = useUpdates();
 /** The system refused notifications: only the badge on the tab tells about new commits. */
 const { openDiagnostics } = useDiagnostics();
 const notificationsDenied = ref(false);
@@ -272,6 +276,35 @@ function onOpenChange(value: boolean) {
                 </span>
               </span>
             </label>
+            <div class="mt-4 text-sm">
+              <label class="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  class="mt-1"
+                  :checked="updateCheck"
+                  @change="setUpdateCheck(($event.target as HTMLInputElement).checked)"
+                />
+                <span>
+                  Look for a new version once a day
+                  <span class="text-muted-foreground block text-xs">
+                    The latest release is read from GitHub when the application starts. Nothing
+                    about you or your repositories is sent, and nothing is installed by itself: a
+                    window tells when a version is out and opens its download page.
+                  </span>
+                </span>
+              </label>
+              <Button
+                class="mt-2"
+                size="sm"
+                variant="outline"
+                @click="
+                  closeSettings();
+                  checkUpdatesNow();
+                "
+              >
+                Check now
+              </Button>
+            </div>
             <div class="mt-6 border-t pt-4 text-sm">
               <h3 class="font-medium">Something does not work as in your terminal?</h3>
               <p class="text-muted-foreground mt-1 text-xs">
