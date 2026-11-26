@@ -416,6 +416,14 @@ const marker = { add: "+", delete: "-", context: " " } as const;
 
         <!-- Side by side -->
         <table v-else class="w-full table-fixed border-collapse font-mono text-xs">
+          <!-- A fixed layout takes the widths from the first row, which is a hunk header spanning
+               every column: without these the four columns would get a quarter each. -->
+          <colgroup>
+            <col class="w-12" />
+            <col />
+            <col class="w-12" />
+            <col />
+          </colgroup>
           <template v-for="{ hunk, rows } in splitHunks" :key="hunk.header + hunk.oldStart">
             <tbody>
               <tr class="bg-muted/60 text-muted-foreground">
