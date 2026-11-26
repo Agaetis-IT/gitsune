@@ -69,7 +69,8 @@ const canCreate = computed(
     target.value !== dialog.value?.branch,
 );
 
-function submit() {
+/** Creates the pull request; `open` shows it in the browser right after. */
+function submit(open = false) {
   if (!canCreate.value) return;
   void workspace.createPullRequest(props.tab, {
     target: target.value,
@@ -77,6 +78,7 @@ function submit() {
     description: description.value,
     draft: draft.value,
     push: push.value,
+    open,
   });
 }
 
@@ -87,7 +89,7 @@ const SELECT_CLASS =
 <template>
   <Dialog :open="dialog !== null" @update:open="(open) => !open && workspace.closeDialog(tab)">
     <DialogContent v-if="dialog" class="sm:max-w-xl">
-      <form class="space-y-4" @submit.prevent="submit">
+      <form class="space-y-4" @submit.prevent="submit()">
         <DialogHeader>
           <DialogTitle>Create a pull request</DialogTitle>
           <DialogDescription>
@@ -130,6 +132,9 @@ const SELECT_CLASS =
         <DialogFooter>
           <Button type="button" variant="outline" @click="workspace.closeDialog(tab)">
             Cancel
+          </Button>
+          <Button type="button" variant="outline" :disabled="!canCreate" @click="submit(true)">
+            {{ draft ? "Create the draft and open" : "Create and open" }}
           </Button>
           <Button type="submit" :disabled="!canCreate">
             {{ draft ? "Create the draft" : "Create" }}

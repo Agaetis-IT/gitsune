@@ -49,6 +49,7 @@ import {
   type HostedRepo,
   pickHostedRepo,
   pullRequestUrl,
+  repoLabel,
 } from "@/lib/remoteUrl";
 import { pullRequestDescription, pullRequestTitle } from "@/lib/pullRequestText";
 import { moveId } from "@/lib/tabOrder";
@@ -2414,8 +2415,8 @@ export function createWorkspace(
     tab.hosted = pickHostedRepo(remotes)?.repo ?? null;
   }
 
-  /** One notice per session for a failed read of the pull requests, so a bad network is not noisy. */
-  let prErrorShown = false;
+  /** One notice per repository and session for a failed read of the pull requests, so a bad network is not noisy. */
+  const prErrorShown = new Set<string>();
 
   /**
    * Reads the open pull requests with their review and build state. Asked at most every 30
@@ -2438,9 +2439,10 @@ export function createWorkspace(
       tab.prStale = false;
     } catch (error) {
       tab.prStale = tab.pullRequests.length > 0;
-      if (!prErrorShown) {
-        prErrorShown = true;
-        notify("error", `Pull request status: ${message(error)}`);
+      const label = repoLabel(hosted);
+      if (!prErrorShown.has(label)) {
+        prErrorShown.add(label);
+        notify("error", `Pull request status of ${label}: ${message(error)}`);
       }
     } finally {
       tab.prLoading = false;
@@ -2547,7 +2549,15 @@ export function createWorkspace(
    */
   async function createPullRequest(
     tab: RepoTab,
-    form: { target: string; title: string; description: string; draft: boolean; push: boolean },
+    form: {
+      target: string;
+      title: string;
+      description: string;
+      draft: boolean;
+      push: boolean;
+      /** Open the new pull request in the browser. */
+      open: boolean;
+    },
   ): Promise<void> {
     const dialog = tab.dialog;
     const hosted = tab.hosted;
@@ -2582,7 +2592,7 @@ export function createWorkspace(
       closeDialog(tab);
       notify("info", `Created pull request ${id}.`);
       void loadPullRequests(tab, true);
-      await backend.openExternal(pullRequestUrl(hosted, id)).catch(() => {});
+      if (form.open) await backend.openExternal(pullRequestUrl(hosted, id)).catch(() => {});
     } catch (error) {
       fail(message(error));
     } finally {

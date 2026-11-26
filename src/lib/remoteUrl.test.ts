@@ -5,6 +5,7 @@ import {
   pickHostedRepo,
   hostOf,
   pullRequestUrl,
+  repoLabel,
 } from "./remoteUrl";
 
 const azure = { kind: "azure", org: "org", project: "My Project", repo: "repo" } as const;
@@ -131,5 +132,15 @@ describe("pickHostedRepo", () => {
       { name: "origin", url: "git@work-github:acme/tool.git", host: "github.com" },
     ]);
     expect(picked?.repo).toEqual({ kind: "github", owner: "acme", repo: "tool" });
+  });
+});
+
+describe("repoLabel", () => {
+  it("names a repository of each host", () => {
+    expect(repoLabel(azure)).toBe("org/My Project/repo");
+    expect(repoLabel({ kind: "github", owner: "acme", repo: "tool" })).toBe("acme/tool");
+    expect(repoLabel({ kind: "gitlab", host: "gitlab.com", path: "group/sub/app" })).toBe(
+      "gitlab.com/group/sub/app",
+    );
   });
 });
