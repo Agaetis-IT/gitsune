@@ -150,6 +150,15 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
           ? [{ id: "pullRequest", label: `Open the pull request of ${branchName}` }]
           : []),
       ];
+  // Resets the checked-out branch to where this ref points.
+  const resetHere = (disabled?: string): MenuItem =>
+    write(ctx, {
+      id: "reset",
+      label: `Reset ${ctx.headBranch ?? "the current branch"} to ${ref.name}…`,
+      danger: true,
+      disabled:
+        ctx.detached || !ctx.headBranch ? "HEAD is detached: check out a branch first." : disabled,
+    });
   const copy: MenuItem = {
     id: "copyName",
     label: "Copy the name",
@@ -176,6 +185,7 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
         label: `Rebase the current branch onto ${ref.name}…`,
         disabled: ref.isHead ? "This is the current branch." : undefined,
       }),
+      resetHere(ref.isHead ? "This is the current branch." : undefined),
       ...pullRequestItems,
       ...openTicket,
       write(ctx, {
@@ -193,6 +203,7 @@ export function refMenu(ref: RefInfo, ctx: MenuContext): MenuItem[] {
       write(ctx, { id: "checkout", label: "Checkout as a local branch" }),
       write(ctx, { id: "merge", label: `Merge ${ref.name} into the current branch…` }),
       write(ctx, { id: "rebase", label: `Rebase the current branch onto ${ref.name}…` }),
+      resetHere(),
       ...pullRequestItems,
       ...openTicket,
       write(ctx, {

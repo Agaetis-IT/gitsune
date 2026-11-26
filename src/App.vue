@@ -357,6 +357,7 @@ function onMenuSelect(id: string) {
     else if (id === "push") void workspace.askPush(tab, ref.name);
     else if (id === "merge") void workspace.askMerge(tab, ref.name);
     else if (id === "rebase") void workspace.askRebase(tab, ref.name);
+    else if (id === "reset") workspace.askReset(tab, { id: ref.target, label: ref.name });
     else if (id === "deleteRemote") {
       const slash = ref.name.indexOf("/");
       workspace.askDeleteRemoteBranch(tab, ref.name.slice(0, slash), ref.name.slice(slash + 1));
