@@ -854,14 +854,22 @@ export function createWorkspace(
     openDialog(tab, { type: "createBranch", start });
   const askRenameBranch = (tab: RepoTab, name: string) =>
     openDialog(tab, { type: "renameBranch", name });
+  /**
+   * The remote-tracking branch with the same name as the local branch `name` (`origin/topic` for
+   * `topic`, never `origin/feature/topic`); `origin` first when several remotes have it.
+   */
+  function remoteCopyOf(tab: RepoTab, name: string): string | null {
+    const copies = tab.refs.filter(
+      (ref) => ref.kind === "remote" && ref.name.slice(ref.name.indexOf("/") + 1) === name,
+    );
+    return (copies.find((ref) => ref.name.startsWith("origin/")) ?? copies[0])?.name ?? null;
+  }
   const askDeleteBranch = (tab: RepoTab, name: string) =>
     openDialog(tab, {
       type: "deleteBranch",
       name,
       unmerged: null,
-      tracking:
-        tab.refs.find((ref) => ref.kind === "remote" && ref.name.endsWith(`/${name}`))?.name ??
-        null,
+      tracking: remoteCopyOf(tab, name),
     });
   const askCreateTag = (tab: RepoTab, target: CommitTarget | null) =>
     openDialog(tab, { type: "createTag", target });
@@ -952,16 +960,16 @@ export function createWorkspace(
   /**
    * Deletes a branch. A branch with commits that are not merged anywhere else is first
    * refused (the dialog then shows git's warning); `force` is the answer to that warning.
+   * `onRemote` (`origin/topic`) also deletes the branch on the server, once the local one is
+   * gone: a refusal of the first leaves the second alone.
    */
   async function deleteBranch(
     tab: RepoTab,
     name: string,
     force = false,
-    removeTracking = false,
+    onRemote: string | null = null,
   ): Promise<void> {
-    const deleted = await write(tab, () =>
-      backend.deleteBranch(tab.id, name, force, removeTracking),
-    );
+    const deleted = await write(tab, () => backend.deleteBranch(tab.id, name, force, false));
     if (!deleted) {
       const failure = tab.writeError;
       if (failure?.kind === "notFullyMerged") {
@@ -972,11 +980,14 @@ export function createWorkspace(
     }
     closeDialog(tab);
     applyStatus(tab, deleted.status);
-    const trackingNote = removeTracking && deleted.upstream ? ` and ${deleted.upstream}` : "";
-    notify("info", `Deleted branch ${name}${trackingNote}.`, {
+    notify("info", `Deleted branch ${name}.`, {
       label: "Undo",
       run: () => restoreDeletedBranch(tab, deleted),
     });
+    if (onRemote) {
+      const slash = onRemote.indexOf("/");
+      await deleteRemoteBranch(tab, onRemote.slice(0, slash), onRemote.slice(slash + 1));
+    }
   }
 
   async function restoreDeletedBranch(tab: RepoTab, deleted: DeletedBranch): Promise<void> {
