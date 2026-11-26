@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::diagnostics::find_tool;
-use crate::platform::Os;
+use crate::platform::{NoWindow, Os};
 use serde_json::Value;
 
 /// The hosts that can be linked to.
@@ -58,6 +58,7 @@ fn run_cli(path: &str, program: &str, args: &[&str], limit: Duration) -> Result<
         .collect();
     let found = find_tool(program, &dirs).ok_or(CliError::Missing)?;
     let mut child = Command::new(found)
+        .no_window()
         .args(args)
         .env("PATH", path)
         .stdin(Stdio::null())

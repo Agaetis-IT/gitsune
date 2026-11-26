@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::platform::NoWindow;
+
 use super::cli::{ErrorKind, GitError, LongIo, RunOptions, RunOutput};
 use super::ops::OpCtx;
 use super::status::WorkingStatus;
@@ -244,6 +246,7 @@ pub fn resolve_ssh_host(alias: &str) -> String {
         return alias.to_string();
     }
     let output = std::process::Command::new("ssh")
+        .no_window()
         .args(["-G", alias])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

@@ -13,6 +13,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 
+use crate::platform::NoWindow;
+
 use super::activity::ActivityLog;
 
 /// What went wrong, so the interface can react with the right dialog.
@@ -169,6 +171,7 @@ impl Runner<'_> {
     fn command(&self, dir: &Path, args: &[&str], options: &RunOptions) -> Command {
         let mut command = Command::new("git");
         command
+            .no_window()
             .current_dir(dir)
             .args(args)
             // Parsable messages, no prompts, no pager, no editor.
@@ -397,6 +400,7 @@ fn signal_group(pid: u32, signal: &str) {
     {
         let _ = signal;
         let _ = Command::new("taskkill")
+            .no_window()
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
