@@ -23,10 +23,14 @@ Windows is experimental: if its build fails, the release is published without it
 
 Run the **Release** workflow by hand (_Actions_, _Release_, _Run workflow_) and uncheck _Publish_. The release stays a draft with all its packages: download them, check them, then publish the draft on the Releases page. A draft left by a failed run is replaced by the next run.
 
+## How the application finds out about a release
+
+Once a day (when the application starts, a few seconds after the window opens) and whenever the user chooses _Gitsune, Check for Updates…_ or _Settings, General, Check now_, the application reads the **latest published release** of the repository through the public GitHub API (`src-tauri/src/updates.rs`, no token). Drafts and pre-releases are not offered. The tag (`v0.2.0`) is compared with the running version as numbers; when it is newer a window shows the notes of the release and opens its page. Nothing about the user or their repositories is sent, and a failed automatic check says nothing and is tried again at the next start. _Settings, General, Look for a new version once a day_ switches the automatic check off. A release is therefore only found once its tag is published: a draft is invisible until the workflow publishes it.
+
 ## Not set up yet
 
 - **Signing and notarization.** The macOS package is not signed or notarized (people open it with a right-click), nor is the Windows installer. For macOS, an Apple Developer account and the secrets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` are read by the Tauri action without a change to the workflow.
-- **Updates from inside the application.**
+- **Updates installed by the application itself.** The application only tells that a version is out and opens its release page (see below); installing it is done by hand. An automatic install needs the Tauri updater: a signing key pair for the updates (`tauri signer generate`), its private key as a secret of the repository, and `latest.json` with the signatures attached to each release.
 - **Intel Macs.** The macOS package is for Apple silicon only.
 
 ## Settings of the repository

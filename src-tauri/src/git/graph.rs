@@ -35,6 +35,22 @@ pub fn load_graph(
         tips.push(id);
     }
 
+    // A stash is a merge of the commit it was made on with the index and, with untracked files,
+    // a third commit. Only the first parent, the commit it was made on, belongs to the history.
+    let stash_tips: HashSet<ObjectId> = refs
+        .iter()
+        .zip(&tips)
+        .filter(|(reference, _)| reference.kind == RefKind::Stash)
+        .map(|(_, tip)| *tip)
+        .collect();
+    let followed = |id: &ObjectId, parents: &'_ [ObjectId]| -> usize {
+        if stash_tips.contains(id) {
+            parents.len().min(1)
+        } else {
+            parents.len()
+        }
+    };
+
     // Walk the parents of every tip, reading only commits the store does not know yet.
     // Unreadable commits (the missing parents of a shallow clone) are left out.
     let mut seen: HashSet<ObjectId> = HashSet::new();
@@ -53,16 +69,22 @@ pub fn load_graph(
             }
         }
         ids.push(id);
+        let parents = &store.commits[&id].parents;
         stack.extend(
-            store.commits[&id]
-                .parents
+            parents[..followed(&id, parents)]
                 .iter()
                 .filter(|p| !seen.contains(*p)),
         );
     }
     ids.sort_unstable();
     let times: Vec<i64> = ids.iter().map(|id| store.commits[id].time).collect();
-    let parent_ids: Vec<&Vec<ObjectId>> = ids.iter().map(|id| &store.commits[id].parents).collect();
+    let parent_ids: Vec<&[ObjectId]> = ids
+        .iter()
+        .map(|id| {
+            let parents = &store.commits[id].parents;
+            &parents[..followed(id, parents)]
+        })
+        .collect();
     let mut subjects: Vec<String> = ids
         .iter()
         .map(|id| store.commits[id].subject.clone())
@@ -112,6 +134,7 @@ pub fn load_graph(
                     RefKind::Local => layout::RefKind::Local,
                     RefKind::Remote => layout::RefKind::Remote,
                     RefKind::Tag => layout::RefKind::Tag,
+                    RefKind::Stash => layout::RefKind::Stash,
                 },
                 is_head: reference.is_head,
             })

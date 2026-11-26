@@ -117,6 +117,26 @@ describe("commit menu, history rewriting", () => {
   });
 });
 
+describe("stash label menu", () => {
+  it("applies, pops or drops the stash, and nothing about branches", () => {
+    const items = refMenu(ref("stash@{0}", "stash"), ctx());
+    expect(ids(items)).toEqual(["stashApply", "stashPop", "stashDrop"]);
+    expect(find(items, "stashDrop")?.danger).toBe(true);
+  });
+
+  it("greys out the three actions in read-only mode", () => {
+    const items = refMenu(ref("stash@{0}", "stash"), ctx({ readOnly: true }));
+    expect(items.every((i) => i.disabled)).toBe(true);
+  });
+
+  it("is never taken for a branch a pull request could go into", () => {
+    expect(pullRequestTargetOf([ref("stash@{0}", "stash")], "feat/x")).toBeNull();
+    expect(
+      pullRequestTargetOf([ref("stash@{0}", "stash"), ref("develop", "local")], "feat/x"),
+    ).toBe("develop");
+  });
+});
+
 describe("ref menu", () => {
   it("a local branch can be switched to, renamed, re-tracked and deleted", () => {
     const items = refMenu(ref("topic", "local"), ctx({ canHighlight: true }));
@@ -127,6 +147,7 @@ describe("ref menu", () => {
       "push",
       "merge",
       "rebase",
+      "reset",
       "pullRequestInto",
       "delete",
       "highlight",
@@ -134,6 +155,26 @@ describe("ref menu", () => {
       "copyName",
     ]);
     expect(find(items, "delete")?.danger).toBe(true);
+  });
+
+  it("offers to reset the checked-out branch to the branch that is clicked", () => {
+    const local = find(refMenu(ref("develop", "local"), ctx({ headBranch: "feat/x" })), "reset");
+    expect(local?.label).toBe("Reset feat/x to develop…");
+    expect(local?.danger).toBe(true);
+    expect(local?.disabled).toBeUndefined();
+    const remote = find(
+      refMenu(ref("origin/develop", "remote"), ctx({ headBranch: "feat/x" })),
+      "reset",
+    );
+    expect(remote?.label).toBe("Reset feat/x to origin/develop…");
+    expect(remote?.disabled).toBeUndefined();
+  });
+
+  it("does not offer to reset a detached HEAD or the branch to itself", () => {
+    const detached = refMenu(ref("develop", "local"), ctx({ detached: true, headBranch: null }));
+    expect(find(detached, "reset")?.disabled).toMatch(/detached/);
+    const self = refMenu(ref("main", "local", true), ctx({ headBranch: "main" }));
+    expect(find(self, "reset")?.disabled).toContain("current branch");
   });
 
   it("offers a pull request from the current branch into the branch that is clicked", () => {
@@ -215,6 +256,7 @@ describe("ref menu", () => {
       "checkout",
       "merge",
       "rebase",
+      "reset",
       "pullRequestInto",
       "deleteRemote",
       "hide",
@@ -261,6 +303,7 @@ describe("ref menu", () => {
       "push",
       "merge",
       "rebase",
+      "reset",
       "delete",
     ]);
     expect(find(items, "hide")?.disabled).toBeUndefined();

@@ -9,7 +9,7 @@ export interface RemoteCopy {
 /**
  * The refs of a commit that are the same branch, in one label: `feature/x`, `origin/feature/x`
  * and `upstream/feature/x` make one group, shown with an icon per place the branch lives in.
- * A tag is a group of its own.
+ * A tag and a stash are groups of their own.
  */
 export interface RefGroup {
   /** The name shown: the branch name without the remote, or the tag name. */
@@ -17,6 +17,8 @@ export interface RefGroup {
   local: RefInfo | null;
   remotes: RemoteCopy[];
   tag: RefInfo | null;
+  /** A stash: a group of its own, with no branch behind it. */
+  stash: RefInfo | null;
   isHead: boolean;
   /** The ref a click, a double click or a context menu acts on: the local one first. */
   primary: RefInfo;
@@ -35,7 +37,7 @@ function branchOf(ref: RefInfo): string {
   return slash < 0 ? ref.name : ref.name.slice(slash + 1);
 }
 
-/** Groups the refs of one commit; the current branch first, then local, remote, tags. */
+/** Groups the refs of one commit; the current branch first, then local, remote, tags, stashes. */
 export function groupRefs(refs: readonly RefInfo[]): RefGroup[] {
   const groups = new Map<string, RefGroup>();
   const order: RefGroup[] = [];
@@ -55,6 +57,19 @@ export function groupRefs(refs: readonly RefInfo[]): RefGroup[] {
         local: null,
         remotes: [],
         tag: ref,
+        stash: null,
+        isHead: false,
+        primary: ref,
+      }));
+      continue;
+    }
+    if (ref.kind === "stash") {
+      add(`stash:${ref.name}`, () => ({
+        name: ref.name,
+        local: null,
+        remotes: [],
+        tag: null,
+        stash: ref,
         isHead: false,
         primary: ref,
       }));
@@ -68,6 +83,7 @@ export function groupRefs(refs: readonly RefInfo[]): RefGroup[] {
       local: null,
       remotes: [],
       tag: null,
+      stash: null,
       isHead: false,
       primary: ref,
     }));
@@ -79,7 +95,7 @@ export function groupRefs(refs: readonly RefInfo[]): RefGroup[] {
       group.remotes.push({ remote: remoteOf(ref), ref });
     }
   }
-  const rank = (g: RefGroup) => (g.isHead ? 0 : g.local ? 1 : g.tag ? 3 : 2);
+  const rank = (g: RefGroup) => (g.isHead ? 0 : g.local ? 1 : g.stash ? 4 : g.tag ? 3 : 2);
   return order
     .map((group, index) => ({ group, index }))
     .sort((a, b) => rank(a.group) - rank(b.group) || a.index - b.index)

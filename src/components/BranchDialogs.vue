@@ -24,7 +24,7 @@ const switchToIt = ref(true);
 const annotated = ref(false);
 const message = ref("");
 const upstream = ref<string>("");
-const removeTracking = ref(false);
+const deleteOnRemote = ref(false);
 
 const remoteBranches = computed(() => props.tab.refs.filter((ref) => ref.kind === "remote"));
 
@@ -33,7 +33,7 @@ watch(dialog, (next, previous) => {
   name.value = next.type === "renameBranch" ? next.name : "";
   switchToIt.value = true;
   annotated.value = false;
-  removeTracking.value = false;
+  deleteOnRemote.value = false;
   message.value = "";
   if (next.type === "upstream") {
     const own = remoteBranches.value.find((r) => r.name.endsWith(`/${next.branch}`));
@@ -83,7 +83,12 @@ function submit() {
       }
       break;
     case "deleteBranch":
-      void workspace.deleteBranch(tab, d.name, d.unmerged !== null, removeTracking.value);
+      void workspace.deleteBranch(
+        tab,
+        d.name,
+        d.unmerged !== null,
+        deleteOnRemote.value ? d.tracking : null,
+      );
       break;
     case "createTag":
       if (name.value.trim() && (!annotated.value || message.value.trim())) {
@@ -112,7 +117,10 @@ const SELECT_CLASS =
 
 <template>
   <Dialog :open="open" @update:open="(value) => !value && close()">
-    <DialogContent v-if="dialog && open">
+    <DialogContent
+      v-if="dialog && open"
+      :class="dialog.type === 'dirtyCheckout' ? 'sm:max-w-xl' : undefined"
+    >
       <!-- Create a branch -->
       <form v-if="dialog.type === 'createBranch'" class="space-y-4" @submit.prevent="submit">
         <DialogHeader>
@@ -165,10 +173,12 @@ const SELECT_CLASS =
           </DialogDescription>
         </DialogHeader>
         <label v-if="dialog.tracking" class="flex items-start gap-2 text-sm">
-          <input v-model="removeTracking" type="checkbox" class="mt-1" />
+          <input v-model="deleteOnRemote" type="checkbox" class="mt-1" />
           <span>
-            Also delete <strong>{{ dialog.tracking }}</strong> in this repository. Deleting the
-            branch leaves it there, and a fetch without prune keeps it.
+            Also delete <strong>{{ dialog.tracking }}</strong> on the remote. It is removed from the
+            server for everyone who uses it, and Undo cannot bring it back. Without this, the branch
+            stays on the server and comes back as <strong>{{ dialog.tracking }}</strong> at the next
+            fetch.
           </span>
         </label>
         <pre
@@ -262,7 +272,9 @@ const SELECT_CLASS =
           </DialogDescription>
         </DialogHeader>
         <ul class="bg-muted max-h-40 overflow-auto rounded p-2 font-mono text-xs">
-          <li v-for="file in dialog.files" :key="file" class="truncate">{{ file }}</li>
+          <li v-for="file in dialog.files" :key="file" :title="file" class="truncate">
+            {{ file }}
+          </li>
           <li v-if="!dialog.files.length" class="text-muted-foreground">{{ dialog.message }}</li>
         </ul>
         <ul class="text-muted-foreground list-disc space-y-1 pl-5 text-sm">

@@ -27,6 +27,7 @@ import LanePopover from "@/components/LanePopover.vue";
 import SettingsButton from "@/components/SettingsButton.vue";
 import SettingsDialog from "@/components/SettingsDialog.vue";
 import DiagnosticsDialog from "@/components/DiagnosticsDialog.vue";
+import UpdateDialog from "@/components/UpdateDialog.vue";
 import ConflictResolver from "@/components/ConflictResolver.vue";
 import HistoryDialogs from "@/components/HistoryDialogs.vue";
 import MergeDialogs from "@/components/MergeDialogs.vue";
@@ -47,6 +48,7 @@ import WelcomeScreen from "@/components/WelcomeScreen.vue";
 import WorkingPanel from "@/components/WorkingPanel.vue";
 import { useGraphSettings } from "@/composables/useGraphSettings";
 import { useDiagnostics } from "@/composables/useDiagnostics";
+import { useUpdates } from "@/composables/useUpdates";
 import { useFileMenu } from "@/composables/useFileMenu";
 import { useIntegrations } from "@/composables/useIntegrations";
 import { usePlatform } from "@/composables/usePlatform";
@@ -349,6 +351,14 @@ function onMenuSelect(id: string) {
     else if (id === "hide" && t.lane.name) void workspace.hideBranch(tab, t.lane.name);
   } else {
     const { ref } = t;
+    if (ref.kind === "stash") {
+      // The stash of the sidebar list that this label stands for.
+      const stash = tab.stashes.find((entry) => entry.id === ref.target);
+      if (stash && id === "stashApply") void workspace.applyStash(tab, stash, false);
+      else if (stash && id === "stashPop") void workspace.applyStash(tab, stash, true);
+      else if (stash && id === "stashDrop") workspace.askDropStash(tab, stash);
+      return;
+    }
     const target = { kind: ref.kind === "local" ? "branch" : ref.kind, name: ref.name } as const;
     if (id === "checkout") void workspace.checkout(tab, target, null);
     else if (id === "rename") workspace.askRenameBranch(tab, ref.name);
@@ -357,6 +367,7 @@ function onMenuSelect(id: string) {
     else if (id === "push") void workspace.askPush(tab, ref.name);
     else if (id === "merge") void workspace.askMerge(tab, ref.name);
     else if (id === "rebase") void workspace.askRebase(tab, ref.name);
+    else if (id === "reset") workspace.askReset(tab, { id: ref.target, label: ref.name });
     else if (id === "deleteRemote") {
       const slash = ref.name.indexOf("/");
       workspace.askDeleteRemoteBranch(tab, ref.name.slice(0, slash), ref.name.slice(slash + 1));
@@ -439,6 +450,8 @@ watch(
 function onActivate(target: { commit: GraphRow; ref: RefInfo | null }) {
   const tab = active.value;
   if (!tab) return;
+  // A stash is not a branch: a double click on it does nothing.
+  if (target.ref?.kind === "stash") return;
   // A double click on a remote branch label asks to reset the local branch that follows it.
   if (target.ref?.kind === "remote") {
     const remote = target.ref;
@@ -547,7 +560,8 @@ watch(
 
 const settings = useSettings();
 const diagnostics = useDiagnostics();
-const { ticketPrefill, autoFetchMinutes } = useGeneralSettings();
+const updates = useUpdates();
+const { ticketPrefill, autoFetchMinutes, updateCheck } = useGeneralSettings();
 
 // ---------- the fetch made in the background ----------
 
@@ -561,10 +575,16 @@ async function autoFetchTick() {
   }
 }
 let autoFetchTimer: ReturnType<typeof setInterval> | undefined;
+let updateCheckTimer: ReturnType<typeof setTimeout> | undefined;
 onMounted(() => {
   autoFetchTimer = setInterval(() => void autoFetchTick(), 30_000);
+  // Once a day, a few seconds after the start so that the repositories open first.
+  updateCheckTimer = setTimeout(() => void updates.checkIfDue(updateCheck.value), 5_000);
 });
-onBeforeUnmount(() => clearInterval(autoFetchTimer));
+onBeforeUnmount(() => {
+  clearInterval(autoFetchTimer);
+  clearTimeout(updateCheckTimer);
+});
 // Switching the option on fetches at once, not after the next beat.
 watch(autoFetchMinutes, (minutes, before) => {
   if (minutes > 0 && before === 0) void autoFetchTick();
@@ -661,6 +681,9 @@ function onMenuAction(id: string) {
       return;
     case "diagnostics":
       diagnostics.openDiagnostics();
+      return;
+    case "checkUpdates":
+      void updates.checkNow();
       return;
     case "open":
       void workspace.pickAndOpen();
@@ -807,6 +830,7 @@ onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
 <template>
   <div class="bg-background text-foreground flex h-screen flex-col">
     <DiagnosticsDialog />
+    <UpdateDialog />
     <CommandPalette
       v-if="paletteOpen"
       :entries="paletteItems"

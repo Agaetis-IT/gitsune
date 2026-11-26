@@ -14,6 +14,8 @@ use gix::ThreadSafeRepository;
 use notify::RecursiveMode;
 use notify_debouncer_mini::{DebounceEventResult, DebouncedEventBatch, new_debouncer};
 
+use crate::platform::NoWindow;
+
 use super::watch::RepoWatcher;
 
 /// Where the paths of the repository are, in the forms events may carry them (on macOS
@@ -86,6 +88,7 @@ fn classify(roots: &Roots, path: &Path) -> Event {
 /// The paths among `candidates` that git ignores.
 fn ignored(workdir: &Path, candidates: &[String]) -> HashSet<String> {
     let Ok(mut child) = Command::new("git")
+        .no_window()
         .current_dir(workdir)
         .args(["check-ignore", "-z", "--stdin"])
         .env("LC_ALL", "C")
@@ -126,6 +129,7 @@ fn shows_untracked(workdir: &Path, folders: &[String]) -> bool {
         return true;
     }
     let Ok(output) = Command::new("git")
+        .no_window()
         .current_dir(workdir)
         .args([
             "ls-files",

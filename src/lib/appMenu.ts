@@ -120,6 +120,7 @@ export function buildMenuModel(state: AppMenuState): MenuNode[] {
         predefined("About"),
         separator,
         item("settings", "Settings…", true, "CmdOrCtrl+,"),
+        item("checkUpdates", "Check for Updates…", true),
         item("diagnostics", "Diagnostics…", true),
         separator,
         predefined("Services"),

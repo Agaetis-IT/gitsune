@@ -14,7 +14,14 @@ export interface RepoInfo {
   isLinked: boolean;
 }
 
-export type RefKind = "local" | "remote" | "tag";
+/**
+ * The name that, among the hidden refs of a repository, leaves every stash out of the graph
+ * (the same as `STASH_REF` of the backend).
+ */
+export const STASH_REF = "refs/stash";
+
+/** A stash is a label of the graph only: it is never in the lists of branches and tags. */
+export type RefKind = "local" | "remote" | "tag" | "stash";
 
 export interface RefInfo {
   name: string;
@@ -352,6 +359,18 @@ export const pruneWorktrees = (repoId: string) => gitInvoke<void>("prune_worktre
 export const blameFile = (repoId: string, commit: string | null, path: string) =>
   gitInvoke<Blame>("blame_file", { repoId, commit, path });
 export const getPlatformInfo = () => plainInvoke<PlatformInfo>("platform_info");
+/** The latest published release of the application, compared with the running version. */
+export interface UpdateCheck {
+  current: string;
+  latest: string;
+  available: boolean;
+  /** The page of the release, where the packages are. */
+  url: string;
+  /** What is new, as written in the release (plain text, possibly shortened). */
+  notes: string;
+}
+
+export const checkForUpdates = () => plainInvoke<UpdateCheck>("check_for_updates");
 export const getDiagnostics = () => plainInvoke<Diagnostics>("get_diagnostics");
 export const listAuthors = (repoId: string) => gitInvoke<AuthorCount[]>("list_authors", { repoId });
 export const commitsBetween = (repoId: string, base: string, head: string) =>

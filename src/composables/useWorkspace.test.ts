@@ -1992,6 +1992,8 @@ describe("pushing tags", () => {
 });
 
 describe("deleting branches and tags", () => {
+  const result = (summary = "") => ({ status: cleanStatus(), summary });
+
   it("deletes a branch and offers to bring it back with its tip and upstream", async () => {
     const restoreBranch = vi.fn(async () => cleanStatus());
     const { workspace, tab } = await openWorktree(cleanStatus(), {
@@ -2018,6 +2020,70 @@ describe("deleting branches and tags", () => {
     await notice?.action?.run();
     expect(restoreBranch).toHaveBeenCalledWith("/fake/a", "topic", "t".repeat(40), "origin/topic");
     expect(lastOf(workspace.notices.value)?.text).toBe("Branch topic is back.");
+  });
+
+  it("offers the remote copy with the same name, never one in a folder", async () => {
+    const { workspace, tab } = await openWorktree();
+    tab.refs = [
+      ref("topic", "local"),
+      ref("origin/feature/topic", "remote"),
+      ref("upstream/topic", "remote"),
+      ref("origin/topic", "remote"),
+    ];
+    workspace.askDeleteBranch(tab, "topic");
+    expect(tab.dialog).toMatchObject({ type: "deleteBranch", tracking: "origin/topic" });
+
+    tab.refs = [ref("topic", "local"), ref("origin/feature/topic", "remote")];
+    workspace.askDeleteBranch(tab, "topic");
+    expect(tab.dialog).toMatchObject({ type: "deleteBranch", tracking: null });
+  });
+
+  it("deletes the branch on the server too, once the local one is gone", async () => {
+    const order: string[] = [];
+    const deleteBranch = vi.fn(async (_id: string, name: string) => {
+      order.push("local");
+      return { name, tip: "t".repeat(40), upstream: "origin/topic", status: cleanStatus() };
+    });
+    const deleteRemoteBranch = vi.fn(async () => {
+      order.push("remote");
+      return result();
+    });
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      deleteBranch,
+      deleteRemoteBranch,
+    });
+    await workspace.deleteBranch(tab, "topic", false, "origin/topic");
+    expect(order).toEqual(["local", "remote"]);
+    // The remote-tracking branch is not removed by hand: the deletion on the server does it.
+    expect(deleteBranch).toHaveBeenCalledWith("/fake/a", "topic", false, false);
+    expect(deleteRemoteBranch).toHaveBeenCalledWith(
+      "/fake/a",
+      expect.any(String),
+      "origin",
+      "topic",
+    );
+    expect(lastOf(workspace.notices.value)?.text).toBe("Deleted topic on origin.");
+  });
+
+  it("leaves the server alone when the local branch is refused", async () => {
+    const deleteRemoteBranch = vi.fn(async () => result());
+    const { workspace, tab } = await openWorktree(cleanStatus(), {
+      deleteBranch: async () => {
+        throw new GitCommandError("notFullyMerged", "the branch 'topic' is not fully merged.");
+      },
+      deleteRemoteBranch,
+    });
+    workspace.askDeleteBranch(tab, "topic");
+    await workspace.deleteBranch(tab, "topic", false, "origin/topic");
+    expect(deleteRemoteBranch).not.toHaveBeenCalled();
+    expect(tab.dialog).toMatchObject({ type: "deleteBranch", unmerged: expect.any(String) });
+  });
+
+  it("without the option the server keeps the branch", async () => {
+    const deleteRemoteBranch = vi.fn(async () => result());
+    const { workspace, tab } = await openWorktree(cleanStatus(), { deleteRemoteBranch });
+    await workspace.deleteBranch(tab, "topic");
+    expect(deleteRemoteBranch).not.toHaveBeenCalled();
   });
 
   it("warns about unmerged commits first, and only deletes after being told to force", async () => {

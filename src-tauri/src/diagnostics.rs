@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::hosting::{host_statuses, tool_line};
-use crate::platform::{Os, executable_names, home_dir};
+use crate::platform::{NoWindow, Os, executable_names, home_dir};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -131,6 +131,7 @@ fn count_keys(output_code: i32, stdout: &str) -> Option<usize> {
 
 fn git_config(name: &str) -> Option<String> {
     let output = Command::new("git")
+        .no_window()
         .args(["config", "--get", name])
         .env("PATH", crate::git::tool_path())
         .stdin(Stdio::null())
@@ -146,6 +147,7 @@ fn git_config(name: &str) -> Option<String> {
 fn ssh_keys(socket: &str) -> Option<usize> {
     let mut command = Command::new("ssh-add");
     command
+        .no_window()
         .arg("-l")
         .env("PATH", crate::git::tool_path())
         .stdin(Stdio::null());
