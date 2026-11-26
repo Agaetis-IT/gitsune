@@ -9,6 +9,14 @@ export type HostedRepo =
 export const hostOf = (repo: HostedRepo): string =>
   repo.kind === "github" ? "github.com" : repo.kind === "azure" ? "dev.azure.com" : repo.host;
 
+/** How a repository is named in a message: `org/project/repo`, `owner/repo` or the GitLab path. */
+export const repoLabel = (repo: HostedRepo): string =>
+  repo.kind === "github"
+    ? `${repo.owner}/${repo.repo}`
+    : repo.kind === "azure"
+      ? `${repo.org}/${repo.project}/${repo.repo}`
+      : `${repo.host}/${repo.path}`;
+
 /** A host name GitLab can be on: `gitlab.com`, or an instance with "gitlab" in its name. */
 const isGitlabHost = (host: string): boolean => host === "gitlab.com" || host.includes("gitlab");
 
