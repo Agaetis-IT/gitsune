@@ -221,9 +221,11 @@ fn branch_tip(ctx: &OpCtx, full: &str) -> Result<Option<String>, GitError> {
 }
 
 /// Moves any local branch to `target`. The checked-out branch goes through `reset`. Another
-/// branch only has its ref moved: soft and mixed change nothing else, and hard is refused since
-/// it would rewrite the files of the checked-out branch. A branch that does not exist is created
-/// at `target` (a remote-tracking `target` also sets its upstream).
+/// branch only has its ref moved, whatever the mode: it has no files of its own to rewrite, so
+/// hard does what soft and mixed do. The exception is a branch that another working tree has
+/// checked out: moving it from here would leave the files of that tree behind, so a hard reset
+/// is refused there. A branch that does not exist is created at `target` (a remote-tracking
+/// `target` also sets its upstream).
 pub fn reset_branch(
     ctx: &OpCtx,
     branch: &str,
@@ -242,9 +244,11 @@ pub fn reset_branch(
             snapshot: result.snapshot,
         });
     }
-    if mode == ResetMode::Hard {
+    if mode == ResetMode::Hard
+        && let Some(tree) = checked_out_elsewhere(ctx, branch)?
+    {
         return Err(GitError::other(format!(
-            "A hard reset rewrites the files, so '{branch}' must be checked out first. Use soft or mixed, or check it out."
+            "'{branch}' is checked out in another working tree ({tree}): a hard reset has to be made there."
         )));
     }
     let _write = ctx.stores.begin_write()?;
@@ -286,6 +290,19 @@ pub fn reset_branch(
         current: false,
         snapshot: None,
     })
+}
+
+/// The folder of another working tree that has `branch` checked out, if there is one.
+fn checked_out_elsewhere(ctx: &OpCtx, branch: &str) -> Result<Option<String>, GitError> {
+    let output = ctx.runner().run(
+        ctx.workdir,
+        &["worktree", "list", "--porcelain"],
+        RunOptions::background(),
+    )?;
+    Ok(super::worktrees::parse_porcelain(&output.stdout_text())
+        .into_iter()
+        .find(|tree| tree.branch.as_deref() == Some(branch))
+        .map(|tree| tree.path))
 }
 
 /// Takes back `reset_branch` on a branch that is not checked out: the branch goes back to

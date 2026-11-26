@@ -282,12 +282,9 @@ export async function createFixtureBackend(): Promise<RepoBackend> {
       );
       return await worktree.status();
     },
-    resetBranch: async (_repoId, branch, target, mode) => {
+    resetBranch: async (_repoId, branch, target) => {
       const row = rowOf(target);
       const found = data.meta.refs.find((r) => r.kind === "local" && r.name === branch);
-      if (mode === "hard" && !found?.isHead) {
-        throw new GitCommandError("other", `A hard reset needs '${branch}' to be checked out.`);
-      }
       const before = found ? found.target : null;
       editRefs((refs) => [...refs.filter((r) => r !== found), addRef("local", branch, row, found?.isHead ?? false)]);
       return {
