@@ -36,7 +36,8 @@
     "category": "DeveloperTool",
     "shortDescription": "A git client built around a metro-style branch graph",
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
     }
   }
 }
