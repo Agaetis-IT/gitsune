@@ -3275,6 +3275,9 @@ describe("opening things outside the application", () => {
     expect(errors()).toBe(1);
     await workspace.loadPullRequests(tab, true);
     expect(errors()).toBe(1);
+    expect(lastOf(workspace.notices.value)?.text).toBe(
+      "Pull request status of acme/Demo/repo: Could not reach dev.azure.com.",
+    );
   });
 
   it("opens a pull request from its number", async () => {
@@ -3425,6 +3428,7 @@ describe("opening things outside the application", () => {
         description: "Body",
         draft: true,
         push: true,
+        open: true,
       });
       expect(push).toHaveBeenCalledWith(
         "/fake/alpha",
@@ -3448,6 +3452,23 @@ describe("opening things outside the application", () => {
       );
     });
 
+    it("does not open the pull request in the browser unless asked", async () => {
+      const { workspace, backend, tab } = await ready();
+      await workspace.pullRequestAction(tab, "feat/login/5310");
+      await workspace.createPullRequest(tab, {
+        target: "main",
+        title: "T",
+        description: "",
+        draft: false,
+        push: false,
+        open: false,
+      });
+      expect(backend.createPullRequest).toHaveBeenCalledTimes(1);
+      expect(tab.dialog).toBeNull();
+      expect(lastOf(workspace.notices.value)?.text).toBe("Created pull request 99.");
+      expect(backend.openExternal).not.toHaveBeenCalled();
+    });
+
     it("keeps the dialog and its text when the host refuses", async () => {
       const { workspace, tab } = await ready({
         createPullRequest: vi.fn(async () => {
@@ -3461,6 +3482,7 @@ describe("opening things outside the application", () => {
         description: "",
         draft: false,
         push: false,
+        open: false,
       });
       expect(tab.dialog).toMatchObject({
         type: "createPullRequest",
