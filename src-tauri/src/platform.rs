@@ -8,6 +8,29 @@ use std::process::Command;
 
 use serde::Serialize;
 
+/// `CREATE_NO_WINDOW` of the Windows process creation flags.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Keeps a console program that the application starts for its own needs (git, ssh, `gh`,
+/// `az`...) from opening a console window. The application has no console, so Windows would
+/// otherwise show a new one, for a moment, each time. Nothing changes on the other systems.
+/// Not for a program the user asked for, such as a terminal: that one is meant to be seen.
+pub trait NoWindow {
+    fn no_window(&mut self) -> &mut Self;
+}
+
+impl NoWindow for Command {
+    fn no_window(&mut self) -> &mut Self {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            self.creation_flags(CREATE_NO_WINDOW);
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
     Mac,
